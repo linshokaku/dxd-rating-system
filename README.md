@@ -41,3 +41,14 @@ cp .env.example .env
 ```bash
 uv sync
 ```
+2. Bot 起動
+```bash
+uv run python -m bot.main
+```
+
+## コード品質チェック
+```bash
+uv run ruff format .
+uv run ruff check .
+uv run mypy
+```

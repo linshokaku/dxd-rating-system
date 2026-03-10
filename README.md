@@ -28,6 +28,7 @@ AGENTS.md
 ## 必須環境変数
 - `DISCORD_BOT_TOKEN`
 - `DATABASE_URL`
+- `SUPER_ADMIN_USER_IDS` (任意。カンマ区切りの Discord user ID。例: `123456789012345678,234567890123456789`)
 - `LOG_LEVEL` (任意。未指定時は `INFO`)
 
 ローカルでは `.env.example` をコピーして `.env` を作成してください。

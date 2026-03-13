@@ -37,61 +37,56 @@ AGENTS.md
 cp .env.example .env
 ```
 
-## ローカル DB 起動
+## セットアップ
 ローカル開発用の PostgreSQL は `docker compose` で起動できます。
 
 ```bash
 docker compose up -d db
 ```
 
-起動確認:
-
-```bash
-docker compose ps
-```
-
-停止:
-
-```bash
-docker compose down
-```
-
-データも削除して作り直す場合:
-
-```bash
-docker compose down -v
-```
-
-`docker-compose.yml` の DB 設定は `.env.example` の `DATABASE_URL` と対応しています。
-
 ```env
 DATABASE_URL=postgresql+psycopg://user:password@localhost:5432/dxd_rating
 ```
 
 ## ローカル起動手順
-1. 環境変数ファイルを作成
 ```bash
 cp .env.example .env
-```
-
-2. ローカル DB 起動
-```bash
 docker compose up -d db
-```
-
-3. 依存インストール
-```bash
 uv sync
-```
-
-4. Bot 起動
-```bash
+uv run alembic upgrade head
 uv run python -m bot.main
 ```
 
-## コード品質チェック
+## モデル更新
 ```bash
-uv run ruff format .
-uv run ruff check .
-uv run mypy
+./migrate.sh "describe schema change"
+```
+
+生成された migration は `alembic/versions/` で確認してください。
+
+## テスト
+```bash
+./test.sh
+```
+
+`pytest` に渡したいオプションもそのまま指定できます。
+
+```bash
+./test.sh -k registration -q
+```
+
+## Lint
+```bash
+./lint.sh
+```
+
+## DB 停止
+```bash
+docker compose down
+```
+
+ローカルデータも削除する場合:
+
+```bash
+docker compose down -v
 ```

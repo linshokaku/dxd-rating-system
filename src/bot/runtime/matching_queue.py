@@ -269,9 +269,11 @@ class MatchingQueueRuntime:
             if self._reconcile_task is not None:
                 raise RuntimeError("MatchingQueueRuntime is already started")
 
-            self.scheduler.bind_loop(asyncio.get_running_loop())
+            loop = asyncio.get_running_loop()
+            self.scheduler.bind_loop(loop)
             startup_result = await self.run_startup_sync()
             if self.outbox_dispatcher is not None:
+                self.outbox_dispatcher.bind_loop(loop)
                 await self.outbox_dispatcher.start()
             self._reconcile_task = asyncio.create_task(
                 self._run_reconcile_loop(),

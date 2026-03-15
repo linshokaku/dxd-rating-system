@@ -23,6 +23,7 @@ from bot.services import (
     MATCH_QUEUE_TTL,
     PRESENCE_REMINDER_LEAD_TIME,
     ExpireTask,
+    MatchingQueueNotificationContext,
     MatchingQueueService,
     PlayerNotRegisteredError,
     PresenceReminderTask,
@@ -94,6 +95,10 @@ def create_queue_entry(
     expire_at: datetime | None = None,
     revision: int = 1,
     last_reminded_revision: int | None = None,
+    notification_channel_id: int | None = None,
+    notification_guild_id: int | None = None,
+    notification_mention_discord_user_id: int | None = None,
+    notification_recorded_at: datetime | None = None,
     removed_at: datetime | None = None,
     removal_reason: MatchQueueRemovalReason | None = None,
     commit: bool = True,
@@ -111,6 +116,10 @@ def create_queue_entry(
         expire_at=resolved_expire_at,
         revision=revision,
         last_reminded_revision=last_reminded_revision,
+        notification_channel_id=notification_channel_id,
+        notification_guild_id=notification_guild_id,
+        notification_mention_discord_user_id=notification_mention_discord_user_id,
+        notification_recorded_at=notification_recorded_at,
         removed_at=removed_at,
         removal_reason=removal_reason,
     )
@@ -224,6 +233,35 @@ def test_join_queue_creates_waiting_entry_and_schedules_timers(
     )
 
 
+# `join` 成功時に、新しく作成された `waiting` 行へ通知先コンテキストを保存する
+# 保存する `channel_id` は `join` を実行した channel とする
+# 保存する `mention_discord_user_id` は `join` を実行した Discord user ID とする
+def test_join_queue_stores_notification_context(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    player = create_player(session, 10_001_1)
+    service = create_matching_queue_service(session_factory)
+
+    result = service.join_queue(
+        player.id,
+        notification_context=MatchingQueueNotificationContext(
+            channel_id=333_001,
+            guild_id=444_001,
+            mention_discord_user_id=555_001,
+        ),
+    )
+
+    entries = get_queue_entries_for_player(session, player.id)
+    entry = entries[0]
+
+    assert result.queue_entry_id == entry.id
+    assert entry.notification_channel_id == 333_001
+    assert entry.notification_guild_id == 444_001
+    assert entry.notification_mention_discord_user_id == 555_001
+    assert entry.notification_recorded_at == entry.joined_at
+
+
 # 有効な `waiting` 行がある状態での重複 `join` が失敗すること
 def test_join_queue_raises_when_player_is_already_waiting(
     session: Session,
@@ -305,6 +343,44 @@ def test_present_updates_waiting_entry_and_reschedules_timers(
         expected_revision=2,
         expire_at=entry.expire_at,
     )
+
+
+# `present` 成功時に、対象の `waiting` 行の通知先コンテキストを上書きする
+# 上書き後は、新しい reminder / expire はその最新コンテキストを使う
+def test_present_overwrites_notification_context(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    player = create_player(session, 10_004_1)
+    initial_recorded_at = get_database_now(session) - timedelta(minutes=3)
+    create_queue_entry(
+        session,
+        player_id=player.id,
+        notification_channel_id=333_010,
+        notification_guild_id=444_010,
+        notification_mention_discord_user_id=555_010,
+        notification_recorded_at=initial_recorded_at,
+    )
+    service = create_matching_queue_service(session_factory)
+
+    result = service.present(
+        player.id,
+        notification_context=MatchingQueueNotificationContext(
+            channel_id=333_011,
+            guild_id=444_011,
+            mention_discord_user_id=555_011,
+        ),
+    )
+
+    entries = get_queue_entries_for_player(session, player.id)
+    entry = entries[0]
+
+    assert result.queue_entry_id == entry.id
+    assert entry.notification_channel_id == 333_011
+    assert entry.notification_guild_id == 444_011
+    assert entry.notification_mention_discord_user_id == 555_011
+    assert entry.notification_recorded_at == entry.last_present_at
+    assert entry.notification_recorded_at != initial_recorded_at
 
 
 # `waiting` 行が存在しない場合の `present` が失敗すること

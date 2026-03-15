@@ -26,10 +26,15 @@ class PendingOutboxEvent:
 
 
 class OutboxEventPublisher(Protocol):
+    def bind_loop(self, loop: asyncio.AbstractEventLoop) -> None: ...
+
     def publish(self, event: PendingOutboxEvent) -> None: ...
 
 
 class NoopOutboxEventPublisher:
+    def bind_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        del loop
+
     def publish(self, event: PendingOutboxEvent) -> None:
         del event
 
@@ -51,6 +56,9 @@ class OutboxDispatcher:
         self.logger = logger or logging.getLogger(__name__)
         self._dispatch_task: asyncio.Task[None] | None = None
         self._state_lock = asyncio.Lock()
+
+    def bind_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        self.publisher.bind_loop(loop)
 
     async def start(self) -> tuple[int, ...]:
         async with self._state_lock:

@@ -8,14 +8,18 @@ from bot.services.errors import (
 )
 from bot.services.matching_queue import (
     DEFAULT_CLEANUP_BATCH_SIZE,
+    MATCH_CREATED_NOTIFICATION_MESSAGE,
     MATCH_PLAYER_COUNT,
     MATCH_QUEUE_TTL,
     PRESENCE_REMINDER_LEAD_TIME,
+    PRESENCE_REMINDER_NOTIFICATION_MESSAGE,
+    QUEUE_EXPIRED_NOTIFICATION_MESSAGE,
     CreatedMatchResult,
     ExpireQueueEntryResult,
     ExpireTask,
     JoinQueueResult,
     LeaveQueueResult,
+    MatchingQueueNotificationContext,
     MatchingQueueService,
     MatchingQueueTaskScheduler,
     NoopMatchingQueueTaskScheduler,
@@ -24,7 +28,7 @@ from bot.services.matching_queue import (
     PresentQueueResult,
     StartupSyncResult,
 )
-from bot.services.registration import register_player
+from bot.services.registration import PlayerLookupService, register_player
 
 __all__ = [
     "CreatedMatchResult",
@@ -35,16 +39,21 @@ __all__ = [
     "LeaveQueueResult",
     "MATCH_PLAYER_COUNT",
     "MATCH_QUEUE_TTL",
+    "MATCH_CREATED_NOTIFICATION_MESSAGE",
     "MatchingQueueError",
+    "MatchingQueueNotificationContext",
     "MatchingQueueService",
     "MatchingQueueTaskScheduler",
     "NoopMatchingQueueTaskScheduler",
     "PlayerAlreadyRegisteredError",
+    "PlayerLookupService",
     "PlayerNotRegisteredError",
     "PRESENCE_REMINDER_LEAD_TIME",
+    "PRESENCE_REMINDER_NOTIFICATION_MESSAGE",
     "PresenceReminderResult",
     "PresenceReminderTask",
     "PresentQueueResult",
+    "QUEUE_EXPIRED_NOTIFICATION_MESSAGE",
     "QueueAlreadyJoinedError",
     "QueueNotJoinedError",
     "RegistrationError",

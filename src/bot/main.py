@@ -5,7 +5,7 @@ from pydantic import ValidationError
 
 from bot.config import Settings
 from bot.db.session import create_db_engine, create_session_factory
-from bot.runtime import MatchingQueueRuntime
+from bot.runtime import DiscordOutboxEventPublisher, MatchingQueueRuntime
 
 logger = logging.getLogger(__name__)
 
@@ -92,8 +92,16 @@ def main() -> None:
 
     engine = create_db_engine(settings.database_url)
     session_factory = create_session_factory(engine)
-    matching_queue_runtime = MatchingQueueRuntime.create(session_factory=session_factory)
-    client = create_client(settings, matching_queue_runtime=matching_queue_runtime)
+    client = create_client(settings)
+    outbox_publisher = DiscordOutboxEventPublisher(
+        client=client,
+        session_factory=session_factory,
+    )
+    matching_queue_runtime = MatchingQueueRuntime.create(
+        session_factory=session_factory,
+        outbox_publisher=outbox_publisher,
+    )
+    client.matching_queue_runtime = matching_queue_runtime
 
     try:
         client.run(settings.discord_bot_token)

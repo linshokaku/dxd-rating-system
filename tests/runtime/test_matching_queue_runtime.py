@@ -804,13 +804,20 @@ def test_discord_outbox_publisher_deduplicates_match_created_destinations(
     # - 現時点では、参加した各 `queue_entry` ごとに通知先コンテキストを解決できるようにする
     # - runtime 層は、各参加者の通知先コンテキストに対して通知を配送する
     # - 同じ `(channel_id, mention_discord_user_id)` に重複する配送先があれば 1 回にまとめてよい
-    player_ids = create_players(session, 3, start_discord_user_id=80_100)
+    team_a_discord_user_ids = [80_100, 777, 80_102]
+    team_b_discord_user_ids = [888, 80_104, 80_105]
+    player_ids = [
+        create_player(session, team_a_discord_user_ids[0]),
+        create_player(session, team_a_discord_user_ids[1]),
+        create_player(session, team_a_discord_user_ids[2]),
+        create_player(session, team_b_discord_user_ids[0]),
+        create_player(session, team_b_discord_user_ids[1]),
+        create_player(session, team_b_discord_user_ids[2]),
+    ]
     first_channel_id = 900_010
     first_guild_id = 910_010
-    first_mention_discord_user_id = 920_010
     second_channel_id = 900_011
     second_guild_id = 910_011
-    second_mention_discord_user_id = 920_011
     queue_entries = [
         MatchQueueEntry(
             player_id=player_ids[0],
@@ -821,7 +828,7 @@ def test_discord_outbox_publisher_deduplicates_match_created_destinations(
             revision=1,
             notification_channel_id=first_channel_id,
             notification_guild_id=first_guild_id,
-            notification_mention_discord_user_id=first_mention_discord_user_id,
+            notification_mention_discord_user_id=team_a_discord_user_ids[0],
             notification_recorded_at=datetime.now(timezone.utc),
         ),
         MatchQueueEntry(
@@ -833,7 +840,7 @@ def test_discord_outbox_publisher_deduplicates_match_created_destinations(
             revision=1,
             notification_channel_id=first_channel_id,
             notification_guild_id=first_guild_id,
-            notification_mention_discord_user_id=first_mention_discord_user_id,
+            notification_mention_discord_user_id=team_a_discord_user_ids[1],
             notification_recorded_at=datetime.now(timezone.utc),
         ),
         MatchQueueEntry(
@@ -845,7 +852,43 @@ def test_discord_outbox_publisher_deduplicates_match_created_destinations(
             revision=1,
             notification_channel_id=second_channel_id,
             notification_guild_id=second_guild_id,
-            notification_mention_discord_user_id=second_mention_discord_user_id,
+            notification_mention_discord_user_id=team_a_discord_user_ids[2],
+            notification_recorded_at=datetime.now(timezone.utc),
+        ),
+        MatchQueueEntry(
+            player_id=player_ids[3],
+            status=MatchQueueEntryStatus.MATCHED,
+            joined_at=datetime.now(timezone.utc),
+            last_present_at=datetime.now(timezone.utc),
+            expire_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+            revision=1,
+            notification_channel_id=first_channel_id,
+            notification_guild_id=first_guild_id,
+            notification_mention_discord_user_id=team_b_discord_user_ids[0],
+            notification_recorded_at=datetime.now(timezone.utc),
+        ),
+        MatchQueueEntry(
+            player_id=player_ids[4],
+            status=MatchQueueEntryStatus.MATCHED,
+            joined_at=datetime.now(timezone.utc),
+            last_present_at=datetime.now(timezone.utc),
+            expire_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+            revision=1,
+            notification_channel_id=second_channel_id,
+            notification_guild_id=second_guild_id,
+            notification_mention_discord_user_id=team_b_discord_user_ids[1],
+            notification_recorded_at=datetime.now(timezone.utc),
+        ),
+        MatchQueueEntry(
+            player_id=player_ids[5],
+            status=MatchQueueEntryStatus.MATCHED,
+            joined_at=datetime.now(timezone.utc),
+            last_present_at=datetime.now(timezone.utc),
+            expire_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+            revision=1,
+            notification_channel_id=second_channel_id,
+            notification_guild_id=second_guild_id,
+            notification_mention_discord_user_id=team_b_discord_user_ids[2],
             notification_recorded_at=datetime.now(timezone.utc),
         ),
     ]
@@ -875,17 +918,37 @@ def test_discord_outbox_publisher_deduplicates_match_created_destinations(
                 id=3,
                 event_type=OutboxEventType.MATCH_CREATED,
                 dedupe_key="match_created:1",
-                payload={"queue_entry_ids": [entry.id for entry in queue_entries]},
+                payload={
+                    "queue_entry_ids": [entry.id for entry in queue_entries],
+                    "teams": {
+                        "team_a": [player_ids[0], player_ids[1], player_ids[2]],
+                        "team_b": [player_ids[3], player_ids[4], player_ids[5]],
+                    },
+                },
                 created_at=datetime.now(timezone.utc),
             ),
         )
     )
 
+    expected_message = "\n".join(
+        [
+            MATCH_CREATED_NOTIFICATION_MESSAGE,
+            "Team A",
+            f"    <@{team_a_discord_user_ids[0]}>",
+            f"    <dummy_{team_a_discord_user_ids[1]}>",
+            f"    <@{team_a_discord_user_ids[2]}>",
+            "Team B",
+            f"    <dummy_{team_b_discord_user_ids[0]}>",
+            f"    <@{team_b_discord_user_ids[1]}>",
+            f"    <@{team_b_discord_user_ids[2]}>",
+        ]
+    )
+
     assert first_channel.sent_messages == [
-        f"<@{first_mention_discord_user_id}> {MATCH_CREATED_NOTIFICATION_MESSAGE}",
+        expected_message,
     ]
     assert second_channel.sent_messages == [
-        f"<@{second_mention_discord_user_id}> {MATCH_CREATED_NOTIFICATION_MESSAGE}",
+        expected_message,
     ]
 
 

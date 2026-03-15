@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import NoReturn, Protocol, cast
 
@@ -11,7 +12,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from bot.constants import is_dummy_discord_user_id
 from bot.db.session import session_scope
-from bot.models import MatchQueueEntry, OutboxEventType
+from bot.models import MatchParticipantTeam, MatchQueueEntry, OutboxEventType
 from bot.runtime.outbox import PendingOutboxEvent
 from bot.services import (
     MATCH_CREATED_NOTIFICATION_MESSAGE,
@@ -41,7 +42,12 @@ class DiscordChannelClient(Protocol):
 class NotificationDestination:
     channel_id: int
     guild_id: int | None
-    mention_discord_user_id: int
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedNotification:
+    destination: NotificationDestination
+    content: str
 
 
 class DiscordOutboxEventPublisher:
@@ -78,23 +84,21 @@ class DiscordOutboxEventPublisher:
         future.result()
 
     async def _publish_event(self, event: PendingOutboxEvent) -> None:
-        destinations = await asyncio.to_thread(self._resolve_destinations, event)
-        message_body = self._message_body_for_event_type(event.event_type)
+        notifications = await asyncio.to_thread(self._resolve_notifications, event)
 
-        for destination in destinations:
-            channel = await self._resolve_channel(destination.channel_id)
-            self._log_channel_guild_mismatch(destination=destination, channel=channel, event=event)
+        for notification in notifications:
+            channel = await self._resolve_channel(notification.destination.channel_id)
+            self._log_channel_guild_mismatch(
+                destination=notification.destination,
+                channel=channel,
+                event=event,
+            )
             await channel.send(
-                self._render_message(
-                    mention_discord_user_id=destination.mention_discord_user_id,
-                    message_body=message_body,
-                ),
+                notification.content,
                 allowed_mentions=self._allowed_mentions,
             )
 
-    def _resolve_destinations(
-        self, event: PendingOutboxEvent
-    ) -> tuple[NotificationDestination, ...]:
+    def _resolve_notifications(self, event: PendingOutboxEvent) -> tuple[ResolvedNotification, ...]:
         if event.event_type in (
             OutboxEventType.PRESENCE_REMINDER,
             OutboxEventType.QUEUE_EXPIRED,
@@ -106,7 +110,20 @@ class DiscordOutboxEventPublisher:
                     self._raise_publish_error(
                         f"Queue entry not found for outbox event id={event.id}: {queue_entry_id}"
                     )
-                return (self._build_destination(entry=entry, event=event),)
+                destination, mention_discord_user_id = self._build_destination(
+                    entry=entry,
+                    event=event,
+                )
+                message_body = self._message_body_for_event_type(event.event_type)
+                return (
+                    ResolvedNotification(
+                        destination=destination,
+                        content=self._render_prefixed_message(
+                            mention_discord_user_id=mention_discord_user_id,
+                            message_body=message_body,
+                        ),
+                    ),
+                )
 
         if event.event_type == OutboxEventType.MATCH_CREATED:
             queue_entry_ids = self._require_payload_int_list(event.payload, "queue_entry_ids")
@@ -134,16 +151,37 @@ class DiscordOutboxEventPublisher:
                     f"event id={event.id}: {missing_queue_entry_ids}"
                 )
 
-            unique_destinations: dict[tuple[int, int], NotificationDestination] = {}
+            teams = self._require_payload_teams(event.payload)
+            display_user_ids_by_player_id = self._build_display_user_ids_by_player_id(
+                entries=entries,
+                event=event,
+            )
+            message_body = self._render_match_created_message(
+                team_a_display_labels=self._build_team_display_labels(
+                    player_ids=teams[MatchParticipantTeam.TEAM_A.value],
+                    display_user_ids_by_player_id=display_user_ids_by_player_id,
+                    event=event,
+                ),
+                team_b_display_labels=self._build_team_display_labels(
+                    player_ids=teams[MatchParticipantTeam.TEAM_B.value],
+                    display_user_ids_by_player_id=display_user_ids_by_player_id,
+                    event=event,
+                ),
+            )
+
+            unique_notifications: dict[int, ResolvedNotification] = {}
             for queue_entry_id in queue_entry_ids:
                 entry = entries_by_id[queue_entry_id]
-                destination = self._build_destination(entry=entry, event=event)
-                unique_destinations.setdefault(
-                    (destination.channel_id, destination.mention_discord_user_id),
-                    destination,
+                destination, _mention_discord_user_id = self._build_destination(
+                    entry=entry,
+                    event=event,
+                )
+                unique_notifications.setdefault(
+                    destination.channel_id,
+                    ResolvedNotification(destination=destination, content=message_body),
                 )
 
-            return tuple(unique_destinations.values())
+            return tuple(unique_notifications.values())
 
         self._raise_publish_error(f"Unsupported outbox event type: {event.event_type}")
 
@@ -162,7 +200,7 @@ class DiscordOutboxEventPublisher:
         *,
         entry: MatchQueueEntry,
         event: PendingOutboxEvent,
-    ) -> NotificationDestination:
+    ) -> tuple[NotificationDestination, int]:
         if entry.notification_channel_id is None:
             self._raise_publish_error(
                 "notification_channel_id is missing for outbox "
@@ -174,10 +212,12 @@ class DiscordOutboxEventPublisher:
                 f"event id={event.id} queue_entry_id={entry.id}"
             )
 
-        return NotificationDestination(
-            channel_id=entry.notification_channel_id,
-            guild_id=entry.notification_guild_id,
-            mention_discord_user_id=entry.notification_mention_discord_user_id,
+        return (
+            NotificationDestination(
+                channel_id=entry.notification_channel_id,
+                guild_id=entry.notification_guild_id,
+            ),
+            entry.notification_mention_discord_user_id,
         )
 
     def _message_body_for_event_type(self, event_type: OutboxEventType) -> str:
@@ -189,10 +229,99 @@ class DiscordOutboxEventPublisher:
             return MATCH_CREATED_NOTIFICATION_MESSAGE
         self._raise_publish_error(f"Unsupported outbox event type: {event_type}")
 
-    def _render_message(self, *, mention_discord_user_id: int, message_body: str) -> str:
+    def _render_prefixed_message(self, *, mention_discord_user_id: int, message_body: str) -> str:
         if is_dummy_discord_user_id(mention_discord_user_id):
             return f"<dummy_{mention_discord_user_id}> {message_body}"
         return f"<@{mention_discord_user_id}> {message_body}"
+
+    def _render_match_created_message(
+        self,
+        *,
+        team_a_display_labels: list[str],
+        team_b_display_labels: list[str],
+    ) -> str:
+        indented_team_a_display_labels = [f"    {label}" for label in team_a_display_labels]
+        indented_team_b_display_labels = [f"    {label}" for label in team_b_display_labels]
+        return "\n".join(
+            [
+                MATCH_CREATED_NOTIFICATION_MESSAGE,
+                "Team A",
+                *indented_team_a_display_labels,
+                "Team B",
+                *indented_team_b_display_labels,
+            ]
+        )
+
+    def _build_display_user_ids_by_player_id(
+        self,
+        *,
+        entries: Sequence[MatchQueueEntry],
+        event: PendingOutboxEvent,
+    ) -> dict[int, int]:
+        display_user_ids_by_player_id: dict[int, int] = {}
+        for entry in entries:
+            display_user_id = entry.notification_mention_discord_user_id
+            if display_user_id is None:
+                self._raise_publish_error(
+                    "notification_mention_discord_user_id is missing for match_created "
+                    f"event id={event.id} queue_entry_id={entry.id}"
+                )
+            display_user_ids_by_player_id[entry.player_id] = display_user_id
+        return display_user_ids_by_player_id
+
+    def _build_team_display_labels(
+        self,
+        *,
+        player_ids: list[int],
+        display_user_ids_by_player_id: dict[int, int],
+        event: PendingOutboxEvent,
+    ) -> list[str]:
+        display_labels: list[str] = []
+        for player_id in player_ids:
+            display_user_id = display_user_ids_by_player_id.get(player_id)
+            if display_user_id is None:
+                self._raise_publish_error(
+                    "Player is missing from match_created payload resolution "
+                    f"event id={event.id} player_id={player_id}"
+                )
+            display_labels.append(self._format_participant_label(display_user_id))
+        return display_labels
+
+    def _format_participant_label(self, discord_user_id: int) -> str:
+        if is_dummy_discord_user_id(discord_user_id):
+            return f"<dummy_{discord_user_id}>"
+        return f"<@{discord_user_id}>"
+
+    def _require_payload_teams(self, payload: dict[str, object]) -> dict[str, list[int]]:
+        value = payload.get("teams")
+        if not isinstance(value, dict):
+            self._raise_publish_error(
+                f"Outbox payload 'teams' must be a dict[str, list[int]]: {value!r}"
+            )
+
+        teams = {
+            MatchParticipantTeam.TEAM_A.value: self._require_team_player_ids(
+                value,
+                MatchParticipantTeam.TEAM_A.value,
+            ),
+            MatchParticipantTeam.TEAM_B.value: self._require_team_player_ids(
+                value,
+                MatchParticipantTeam.TEAM_B.value,
+            ),
+        }
+        return teams
+
+    def _require_team_player_ids(
+        self,
+        teams: dict[object, object],
+        team_name: str,
+    ) -> list[int]:
+        value = teams.get(team_name)
+        if not isinstance(value, list) or any(not isinstance(item, int) for item in value):
+            self._raise_publish_error(
+                f"Outbox payload teams['{team_name}'] must be a list[int]: {value!r}"
+            )
+        return cast(list[int], value)
 
     def _log_channel_guild_mismatch(
         self,

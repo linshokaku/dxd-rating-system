@@ -46,7 +46,7 @@ PRESENCE_REMINDER_NOTIFICATION_MESSAGE = (
     "在席確認です。1分以内に在席更新がない場合はマッチングキューから外れます。"
 )
 QUEUE_EXPIRED_NOTIFICATION_MESSAGE = "期限切れでマッチングキューから外れました。"
-MATCH_CREATED_NOTIFICATION_MESSAGE = "マッチ成立です。対戦相手とチーム分けを確認してください。"
+MATCH_CREATED_NOTIFICATION_MESSAGE = "マッチ成立です。"
 
 
 @dataclass(frozen=True, slots=True)

@@ -9,6 +9,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from bot.models.base import Base
 
 if TYPE_CHECKING:
+    from bot.models.match_participant import MatchParticipant
     from bot.models.match_queue_entry import MatchQueueEntry
 
 INITIAL_RATING = 1500
@@ -27,3 +28,4 @@ class Player(Base):
     )
 
     match_queue_entries: Mapped[list[MatchQueueEntry]] = relationship(back_populates="player")
+    match_participants: Mapped[list[MatchParticipant]] = relationship(back_populates="player")

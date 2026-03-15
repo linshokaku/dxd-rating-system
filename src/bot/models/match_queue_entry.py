@@ -10,13 +10,11 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
 from bot.models.base import Base
+from bot.models.enum_utils import enum_values
 
 if TYPE_CHECKING:
+    from bot.models.match_participant import MatchParticipant
     from bot.models.player import Player
-
-
-def _enum_values(enum_type: type[StrEnum]) -> list[str]:
-    return [member.value for member in enum_type]
 
 
 class MatchQueueEntryStatus(StrEnum):
@@ -51,7 +49,7 @@ class MatchQueueEntry(Base):
             native_enum=False,
             create_constraint=True,
             validate_strings=True,
-            values_callable=_enum_values,
+            values_callable=enum_values,
         ),
         nullable=False,
         server_default=text(f"'{MatchQueueEntryStatus.WAITING.value}'"),
@@ -77,9 +75,10 @@ class MatchQueueEntry(Base):
             native_enum=False,
             create_constraint=True,
             validate_strings=True,
-            values_callable=_enum_values,
+            values_callable=enum_values,
         ),
         nullable=True,
     )
 
     player: Mapped[Player] = relationship(back_populates="match_queue_entries")
+    match_participant: Mapped[MatchParticipant | None] = relationship(back_populates="queue_entry")

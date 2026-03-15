@@ -378,71 +378,71 @@ Discord Bot 上で 3v3 対戦向けのマッチングキューを管理する。
 
 ### join
 
-- 未登録プレイヤーの `join` が失敗すること
-- 初回 `join` で `waiting` 行が作成され、`joined_at`、`last_present_at`、`expire_at`、`revision = 1`、`last_reminded_revision = NULL` が設定されること
-- 有効な `waiting` 行がある状態での重複 `join` が失敗すること
-- 期限切れの `waiting` 行が残っている状態で `join` すると、古い行が `expired` になり、新しい `waiting` 行が作られること
-- `join` 後に在席確認リマインドタスクと expire タスクが登録されること
-- `join` 後に別トランザクションで `try_create_matches()` が呼ばれること
-- `try_create_matches()` が失敗しても `join` 自体は成功のまま残ること
-- `join` の応答が先に返り、その後に別通知で `マッチ成立` を送れること
+- [x] 未登録プレイヤーの `join` が失敗すること
+- [x] 初回 `join` で `waiting` 行が作成され、`joined_at`、`last_present_at`、`expire_at`、`revision = 1`、`last_reminded_revision = NULL` が設定されること
+- [x] 有効な `waiting` 行がある状態での重複 `join` が失敗すること
+- [x] 期限切れの `waiting` 行が残っている状態で `join` すると、古い行が `expired` になり、新しい `waiting` 行が作られること
+- [x] `join` 後に在席確認リマインドタスクと expire タスクが登録されること
+- [ ] `join` 後に別トランザクションで `try_create_matches()` が呼ばれること
+- [ ] `try_create_matches()` が失敗しても `join` 自体は成功のまま残ること
+- [ ] `join` の応答が先に返り、その後に別通知で `マッチ成立` を送れること
 
 ### present
 
-- 有効な `waiting` 行に対する `present` で `last_present_at` と `expire_at` が更新され、`revision` が増加し、`last_reminded_revision = NULL` に戻ること
-- `present` 後に新しい在席確認リマインドタスクと expire タスクが登録されること
-- `waiting` 行が存在しない場合の `present` が失敗すること
-- `expire_at <= now()` の行に対する `present` は `expired` に遷移して timeout 応答になること
-- 古い `revision` を持つ reminder / expire タスクが起きても no-op になること
+- [x] 有効な `waiting` 行に対する `present` で `last_present_at` と `expire_at` が更新され、`revision` が増加し、`last_reminded_revision = NULL` に戻ること
+- [x] `present` 後に新しい在席確認リマインドタスクと expire タスクが登録されること
+- [x] `waiting` 行が存在しない場合の `present` が失敗すること
+- [x] `expire_at <= now()` の行に対する `present` は `expired` に遷移して timeout 応答になること
+- [x] 古い `revision` を持つ reminder / expire タスクが起きても no-op になること
 
 ### leave
 
-- 有効な `waiting` 行に対する `leave` で `left` に遷移し、`removed_at` と `removal_reason = 'user_leave'` が設定されること
-- `waiting` 行がない場合の `leave` が冪等に成功扱いできること
-- `expire_at <= now()` の行に対する `leave` は `left` ではなく `expired` になること
-- `leave` 後にローカルの在席確認リマインドタスクと expire タスクが cancel されること
+- [x] 有効な `waiting` 行に対する `leave` で `left` に遷移し、`removed_at` と `removal_reason = 'user_leave'` が設定されること
+- [x] `waiting` 行がない場合の `leave` が冪等に成功扱いできること
+- [x] `expire_at <= now()` の行に対する `leave` は `left` ではなく `expired` になること
+- [x] `leave` 後にローカルの在席確認リマインドタスクと expire タスクが cancel されること
 
 ### 在席確認リマインド
 
-- `expire_at - 1分` に達した `waiting` 行に対して在席確認リマインドが 1 回だけ送られること
-- 同じ `revision` に対して reminder タスクが複数回起きても、実際の通知は 1 回だけであること
-- `matched`、`left`、`expired` の行にはリマインドが送られないこと
-- `present` で `revision` が進んだあとは、新しい 5 分サイクルで再度 1 回だけリマインド可能になること
-- 起動時再同期で最終 1 分に入っており、かつ未通知の行があれば即時にリマインド処理を試みること
-- 起動時再同期で `last_reminded_revision = revision` の行には reminder タスクを再登録しないこと
+- [x] `expire_at - 1分` に達した `waiting` 行に対して在席確認リマインドが 1 回だけ送られること
+- [x] 同じ `revision` に対して reminder タスクが複数回起きても、実際の通知は 1 回だけであること
+- [x] `matched`、`left`、`expired` の行にはリマインドが送られないこと
+- [x] `present` で `revision` が進んだあとは、新しい 5 分サイクルで再度 1 回だけリマインド可能になること
+- [x] 起動時再同期で最終 1 分に入っており、かつ未通知の行があれば即時にリマインド処理を試みること
+- [x] 起動時再同期で `last_reminded_revision = revision` の行には reminder タスクを再登録しないこと
 
 ### expire
 
-- `expire_at <= now()` の `waiting` 行が `expired` に遷移し、`removed_at` と `removal_reason = 'timeout'` が設定されること
-- `status != 'waiting'`、`revision` 不一致、`expire_at > now()` の場合に expire が no-op になること
-- 同じ行に対して複数プロセスが expire を実行しても、実際に `expired` へ遷移できるのは 1 プロセスだけであること
-- `present` / `leave` と expire が境界タイミングで競合した場合、期限切れ側が一貫して勝つこと
-- 通常の expire が info log を出すこと
-- reconcile による cleanup が発生した場合に warning log を出すこと
+- [x] `expire_at <= now()` の `waiting` 行が `expired` に遷移し、`removed_at` と `removal_reason = 'timeout'` が設定されること
+- [x] `status != 'waiting'`、`revision` 不一致、`expire_at > now()` の場合に expire が no-op になること
+- [ ] 同じ行に対して複数プロセスが expire を実行しても、実際に `expired` へ遷移できるのは 1 プロセスだけであること
+- [ ] `present` / `leave` と expire が境界タイミングで競合した場合、期限切れ側が一貫して勝つこと
+- [x] 通常の expire が info log を出すこと
+- [x] reconcile による cleanup が発生した場合に warning log を出すこと
 
 ### マッチング試行
 
-- 待機人数が 6 人未満のとき、`try_create_matches()` が no-op で終了すること
-- 6 人ちょうどの待機で 1 マッチが作成され、対象のキュー行が `matched` になること
-- 12 人以上の待機で 1 回の `try_create_matches()` が複数マッチを連続生成できること
-- 候補抽出が `joined_at, id` の古い順で行われること
-- `expire_at <= now()` の行が候補から除外されること
-- 複数プロセスが同時に `try_create_matches()` を走らせても、同じプレイヤーが二重にマッチへ入らないこと
-- `join` を起点にマッチ成立した場合でも、`join` 応答は先に返り、`マッチ成立` は別通知になること
-- `matched` になった行に対して後から reminder / expire タスクが起きても no-op になること
+- [x] 待機人数が 6 人未満のとき、`try_create_matches()` が no-op で終了すること
+- [x] 6 人ちょうどの待機で 1 マッチが作成され、対象のキュー行が `matched` になること
+- [x] 12 人以上の待機で 1 回の `try_create_matches()` が複数マッチを連続生成できること
+- [x] 候補抽出が `joined_at, id` の古い順で行われること
+- [x] `expire_at <= now()` の行が候補から除外されること
+- [ ] 複数プロセスが同時に `try_create_matches()` を走らせても、同じプレイヤーが二重にマッチへ入らないこと
+- [ ] `join` を起点にマッチ成立した場合でも、`join` 応答は先に返り、`マッチ成立` は別通知になること
+- [x] `matched` になった行に対して後から reminder / expire タスクが起きても no-op になること
 
 ### 起動時・再起動時
 
-- 起動時に期限切れ行の cleanup が行われること
-- 起動時に `try_create_matches()` が実行され、すでに 6 人以上待機しているケースを回収できること
-- 起動時に reminder 対象の行へ即時リマインドできること
-- 起動時に将来期限の `waiting` 行へ reminder タスクと expire タスクが再登録されること
-- `join` commit 後にプロセスが落ちてタスク未登録になっても、起動時再同期で復旧できること
-- `join` commit 後にプロセスが落ちてマッチング試行が走らなくても、起動時再同期の `try_create_matches()` で回収できること
+- [x] 起動時に期限切れ行の cleanup が行われること
+- [x] 起動時に `try_create_matches()` が実行され、すでに 6 人以上待機しているケースを回収できること
+- [x] 起動時に reminder 対象の行へ即時リマインドできること
+- [x] 起動時に将来期限の `waiting` 行へ reminder タスクと expire タスクが再登録されること
+- [ ] `join` commit 後にプロセスが落ちてタスク未登録になっても、起動時再同期で復旧できること
+- [ ] `join` commit 後にプロセスが落ちてマッチング試行が走らなくても、起動時再同期の `try_create_matches()` で回収できること
 
 ### outbox / 通知
 
-- `presence_reminder`、`queue_expired`、`match_created` のイベント種別が正しく生成されること
-- 同一事象に対して outbox イベントが重複生成されないこと
-- `join` 時の内部 cleanup では通知イベントを作らないこと
-- `present` / `leave` が遅すぎて同期的に `expired` になった場合、非同期通知イベントを作らないこと
+- [x] `presence_reminder`、`queue_expired`、`match_created` のイベント種別が正しく生成されること
+- [x] 同一事象に対して outbox イベントが重複生成されないこと
+- [x] `join` 時の内部 cleanup では通知イベントを作らないこと
+- [x] `present` / `leave` が遅すぎて同期的に `expired` になった場合、非同期通知イベントを作らないこと

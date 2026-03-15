@@ -750,6 +750,51 @@ def test_discord_outbox_publisher_fetches_uncached_channel_for_queue_expired(
     ]
 
 
+def test_discord_outbox_publisher_renders_dummy_prefix_for_dummy_user_id(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    player_id = create_player(session, 80_020)
+    channel_id = 900_020
+    guild_id = 910_020
+    dummy_discord_user_id = 777
+    queue_entry = MatchQueueEntry(
+        player_id=player_id,
+        status=MatchQueueEntryStatus.WAITING,
+        joined_at=datetime.now(timezone.utc),
+        last_present_at=datetime.now(timezone.utc),
+        expire_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+        revision=1,
+        notification_channel_id=channel_id,
+        notification_guild_id=guild_id,
+        notification_mention_discord_user_id=dummy_discord_user_id,
+        notification_recorded_at=datetime.now(timezone.utc),
+    )
+    session.add(queue_entry)
+    session.commit()
+
+    channel = FakeDiscordChannel(id=channel_id, guild=FakeDiscordGuild(id=guild_id))
+    client = FakeDiscordClient(channels={channel.id: channel})
+    publisher = DiscordOutboxEventPublisher(client=client, session_factory=session_factory)
+
+    asyncio.run(
+        publish_with_bound_loop(
+            publisher,
+            PendingOutboxEvent(
+                id=20,
+                event_type=OutboxEventType.PRESENCE_REMINDER,
+                dedupe_key="presence_reminder:20:1",
+                payload={"queue_entry_id": queue_entry.id},
+                created_at=datetime.now(timezone.utc),
+            ),
+        )
+    )
+
+    assert channel.sent_messages == [
+        f"<dummy_{dummy_discord_user_id}> {PRESENCE_REMINDER_NOTIFICATION_MESSAGE}",
+    ]
+
+
 def test_discord_outbox_publisher_deduplicates_match_created_destinations(
     session: Session,
     session_factory: sessionmaker[Session],

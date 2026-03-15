@@ -243,12 +243,23 @@ def test_dev_register_validates_discord_user_id(session_factory: sessionmaker[Se
     assert interaction.response.messages == ["discord_user_id が不正です。"]
 
 
-def test_dev_join_targets_provided_user_and_uses_executor_for_notification_context(
+def test_dev_register_rejects_non_dummy_discord_user_id(
+    session_factory: sessionmaker[Session],
+) -> None:
+    handlers = create_handlers(session_factory, super_admin_user_ids=frozenset({10}))
+    interaction = FakeInteraction(user=FakeUser(id=10))
+
+    asyncio.run(handlers.dev_register(as_interaction(interaction), "1001"))
+
+    assert interaction.response.messages == ["discord_user_id が不正です。"]
+
+
+def test_dev_join_targets_provided_user_and_uses_target_for_notification_context(
     session: Session,
     session_factory: sessionmaker[Session],
 ) -> None:
     executor_discord_user_id = 10
-    target_discord_user_id = 123_456_789_012_345_686
+    target_discord_user_id = 777
     player = create_player(session, target_discord_user_id)
     handlers = create_handlers(
         session_factory,
@@ -268,7 +279,7 @@ def test_dev_join_targets_provided_user_and_uses_executor_for_notification_conte
     assert interaction.response.messages == ["指定したユーザーをキューに参加させました。"]
     assert queue_entry.notification_channel_id == 11_001
     assert queue_entry.notification_guild_id == 12_001
-    assert queue_entry.notification_mention_discord_user_id == executor_discord_user_id
+    assert queue_entry.notification_mention_discord_user_id == target_discord_user_id
 
 
 def test_dev_present_returns_expired_message_for_expired_target(

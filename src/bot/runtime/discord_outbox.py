@@ -9,6 +9,7 @@ import discord
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
+from bot.constants import is_dummy_discord_user_id
 from bot.db.session import session_scope
 from bot.models import MatchQueueEntry, OutboxEventType
 from bot.runtime.outbox import PendingOutboxEvent
@@ -189,6 +190,8 @@ class DiscordOutboxEventPublisher:
         self._raise_publish_error(f"Unsupported outbox event type: {event_type}")
 
     def _render_message(self, *, mention_discord_user_id: int, message_body: str) -> str:
+        if is_dummy_discord_user_id(mention_discord_user_id):
+            return f"<dummy_{mention_discord_user_id}> {message_body}"
         return f"<@{mention_discord_user_id}> {message_body}"
 
     def _log_channel_guild_mismatch(

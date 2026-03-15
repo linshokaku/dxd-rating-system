@@ -9,6 +9,7 @@ from discord import app_commands
 from sqlalchemy.orm import Session, sessionmaker
 
 from bot.config import Settings
+from bot.constants import is_dummy_discord_user_id
 from bot.db.session import session_scope
 from bot.services import (
     MatchingQueueNotificationContext,
@@ -185,7 +186,7 @@ class BotCommandHandlers:
             return
 
         try:
-            target_discord_user_id = self._parse_discord_user_id(discord_user_id)
+            target_discord_user_id = self._parse_dummy_discord_user_id(discord_user_id)
             await asyncio.to_thread(self._register_player, target_discord_user_id)
         except ValueError:
             await self._send_message(interaction, INVALID_DISCORD_USER_ID_MESSAGE)
@@ -214,8 +215,11 @@ class BotCommandHandlers:
             return
 
         try:
-            notification_context = self._build_notification_context(interaction)
             target_discord_user_id = self._parse_discord_user_id(discord_user_id)
+            notification_context = self._build_notification_context(
+                interaction,
+                mention_discord_user_id=target_discord_user_id,
+            )
             player_id = await asyncio.to_thread(self._lookup_player_id, target_discord_user_id)
             service = self._require_matching_queue_service()
             await asyncio.to_thread(
@@ -256,8 +260,11 @@ class BotCommandHandlers:
             return
 
         try:
-            notification_context = self._build_notification_context(interaction)
             target_discord_user_id = self._parse_discord_user_id(discord_user_id)
+            notification_context = self._build_notification_context(
+                interaction,
+                mention_discord_user_id=target_discord_user_id,
+            )
             player_id = await asyncio.to_thread(self._lookup_player_id, target_discord_user_id)
             service = self._require_matching_queue_service()
             result = await asyncio.to_thread(
@@ -356,6 +363,8 @@ class BotCommandHandlers:
     def _build_notification_context(
         self,
         interaction: discord.Interaction[Any],
+        *,
+        mention_discord_user_id: int | None = None,
     ) -> MatchingQueueNotificationContext:
         if interaction.channel_id is None:
             raise ValueError("interaction.channel_id is required")
@@ -363,7 +372,11 @@ class BotCommandHandlers:
         return MatchingQueueNotificationContext(
             channel_id=interaction.channel_id,
             guild_id=interaction.guild_id,
-            mention_discord_user_id=interaction.user.id,
+            mention_discord_user_id=(
+                interaction.user.id
+                if mention_discord_user_id is None
+                else mention_discord_user_id
+            ),
         )
 
     async def _ensure_admin(self, interaction: discord.Interaction[Any]) -> bool:
@@ -382,6 +395,12 @@ class BotCommandHandlers:
         if discord_user_id <= 0:
             raise ValueError("discord_user_id must be a positive integer")
 
+        return discord_user_id
+
+    def _parse_dummy_discord_user_id(self, value: str) -> int:
+        discord_user_id = self._parse_discord_user_id(value)
+        if not is_dummy_discord_user_id(discord_user_id):
+            raise ValueError("dummy discord_user_id must be between 1 and 1000")
         return discord_user_id
 
     async def _send_message(

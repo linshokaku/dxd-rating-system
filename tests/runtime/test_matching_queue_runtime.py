@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from typing import Callable
 
 import discord
 import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
+import bot.runtime.outbox as outbox_runtime
 from bot.models import Match, MatchQueueEntry, MatchQueueEntryStatus, OutboxEvent, OutboxEventType
 from bot.runtime import (
     AsyncioMatchingQueueTaskScheduler,
@@ -82,6 +85,59 @@ class RecordingOutboxPublisher:
         self.events.append(event)
 
 
+@dataclass
+class FlakyOutboxPublisher:
+    failures_remaining: int = 1
+    attempts: int = 0
+    events: list[PendingOutboxEvent] = field(default_factory=list)
+
+    def bind_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        del loop
+
+    def publish(self, event: PendingOutboxEvent) -> None:
+        self.attempts += 1
+        if self.failures_remaining > 0:
+            self.failures_remaining -= 1
+            raise RuntimeError("temporary Discord failure")
+        self.events.append(event)
+
+
+@dataclass
+class FakeOutboxNotificationListener:
+    on_notification: Callable[[], None]
+    on_reconnected: Callable[[], None]
+    started: bool = False
+    stopped: bool = False
+
+    def start(self) -> None:
+        self.started = True
+
+    def stop(self) -> None:
+        self.stopped = True
+
+    def notify(self) -> None:
+        self.on_notification()
+
+    def reconnect(self) -> None:
+        self.on_reconnected()
+
+
+@dataclass
+class FakeOutboxNotificationListenerFactory:
+    listener: FakeOutboxNotificationListener | None = None
+
+    def __call__(
+        self,
+        on_notification: Callable[[], None],
+        on_reconnected: Callable[[], None],
+    ) -> FakeOutboxNotificationListener:
+        self.listener = FakeOutboxNotificationListener(
+            on_notification=on_notification,
+            on_reconnected=on_reconnected,
+        )
+        return self.listener
+
+
 @dataclass(frozen=True)
 class FakeDiscordGuild:
     id: int
@@ -149,6 +205,20 @@ async def publish_with_bound_loop(
 ) -> None:
     publisher.bind_loop(asyncio.get_running_loop())
     await asyncio.to_thread(publisher.publish, event)
+
+
+async def wait_until(
+    predicate: Callable[[], bool],
+    *,
+    timeout: float = 1.0,
+    interval: float = 0.01,
+) -> None:
+    deadline = asyncio.get_running_loop().time() + timeout
+    while asyncio.get_running_loop().time() < deadline:
+        if predicate():
+            return
+        await asyncio.sleep(interval)
+    raise AssertionError("Condition was not met before timeout")
 
 
 def test_asyncio_matching_queue_task_scheduler_runs_due_tasks() -> None:
@@ -398,6 +468,181 @@ def test_outbox_dispatcher_publishes_pending_events(
     assert published_event_ids == expected_event_ids
     assert [event.id for event in publisher.events] == list(expected_event_ids)
     assert all(event.published_at is not None for event in events)
+
+
+def test_outbox_dispatcher_receives_listen_notify_events(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    player_id = create_player(session, 75_001)
+    queue_entry = MatchQueueEntry(
+        player_id=player_id,
+        status=MatchQueueEntryStatus.WAITING,
+        joined_at=datetime.now(timezone.utc),
+        last_present_at=datetime.now(timezone.utc),
+        expire_at=datetime.now(timezone.utc) + timedelta(seconds=30),
+        revision=1,
+    )
+    session.add(queue_entry)
+    session.commit()
+
+    publisher = RecordingOutboxPublisher()
+
+    async def scenario() -> None:
+        dispatcher = OutboxDispatcher(
+            session_factory=session_factory,
+            publisher=publisher,
+            poll_interval=timedelta(hours=1),
+        )
+        service = MatchingQueueService(session_factory=session_factory)
+
+        try:
+            await dispatcher.start()
+            reminder_result = await asyncio.to_thread(
+                service.process_presence_reminder,
+                queue_entry.id,
+                1,
+            )
+            assert reminder_result.reminded is True
+            await wait_until(lambda: len(publisher.events) == 1, timeout=2.0)
+        finally:
+            await dispatcher.stop()
+
+    asyncio.run(scenario())
+
+    assert [event.event_type for event in publisher.events] == [OutboxEventType.PRESENCE_REMINDER]
+
+
+def test_outbox_dispatcher_fallback_poll_logs_warning_when_it_publishes(
+    session: Session,
+    session_factory: sessionmaker[Session],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    publisher = RecordingOutboxPublisher()
+    listener_factory = FakeOutboxNotificationListenerFactory()
+
+    async def scenario() -> None:
+        dispatcher = OutboxDispatcher(
+            session_factory=session_factory,
+            publisher=publisher,
+            poll_interval=timedelta(milliseconds=20),
+            notification_listener_factory=listener_factory,
+        )
+
+        try:
+            await dispatcher.start()
+            session.add(
+                OutboxEvent(
+                    event_type=OutboxEventType.PRESENCE_REMINDER,
+                    dedupe_key="presence-reminder:fallback",
+                    payload={"queue_entry_id": 1},
+                )
+            )
+            session.commit()
+            await wait_until(
+                lambda: (
+                    len(publisher.events) == 1
+                    and "Fallback outbox poll published events" in caplog.text
+                ),
+                timeout=1.0,
+            )
+        finally:
+            await dispatcher.stop()
+
+    with caplog.at_level(logging.WARNING, logger="bot.runtime.outbox"):
+        asyncio.run(scenario())
+
+    assert "Fallback outbox poll published events" in caplog.text
+    assert listener_factory.listener is not None
+    assert listener_factory.listener.started is True
+    assert listener_factory.listener.stopped is True
+
+
+def test_outbox_dispatcher_retries_temporary_failures_with_backoff_timer(
+    session: Session,
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session.add(
+        OutboxEvent(
+            event_type=OutboxEventType.MATCH_CREATED,
+            dedupe_key="match-created:retry",
+            payload={"match_id": 1},
+        )
+    )
+    session.commit()
+
+    monkeypatch.setattr(
+        outbox_runtime,
+        "retry_delay_for_failure_count",
+        lambda failure_count: timedelta(milliseconds=20),
+    )
+    publisher = FlakyOutboxPublisher(failures_remaining=1)
+    listener_factory = FakeOutboxNotificationListenerFactory()
+
+    async def scenario() -> None:
+        dispatcher = OutboxDispatcher(
+            session_factory=session_factory,
+            publisher=publisher,
+            poll_interval=timedelta(hours=1),
+            notification_listener_factory=listener_factory,
+        )
+        try:
+            await dispatcher.start()
+            await wait_until(lambda: len(publisher.events) == 1, timeout=1.0)
+        finally:
+            await dispatcher.stop()
+
+    asyncio.run(scenario())
+
+    session.expire_all()
+    outbox_event = session.scalar(select(OutboxEvent))
+    assert outbox_event is not None
+    assert publisher.attempts >= 2
+    assert outbox_event.failure_count == 1
+    assert outbox_event.published_at is not None
+    assert outbox_event.last_error is None
+    assert outbox_event.last_failed_at is None
+
+
+def test_outbox_dispatcher_rebuilds_retry_timers_on_start(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    session.add(
+        OutboxEvent(
+            event_type=OutboxEventType.MATCH_CREATED,
+            dedupe_key="match-created:startup-retry",
+            payload={"match_id": 2},
+            failure_count=1,
+            next_attempt_at=datetime.now(timezone.utc) + timedelta(milliseconds=20),
+        )
+    )
+    session.commit()
+
+    publisher = RecordingOutboxPublisher()
+    listener_factory = FakeOutboxNotificationListenerFactory()
+
+    async def scenario() -> None:
+        dispatcher = OutboxDispatcher(
+            session_factory=session_factory,
+            publisher=publisher,
+            poll_interval=timedelta(hours=1),
+            notification_listener_factory=listener_factory,
+        )
+        try:
+            await dispatcher.start()
+            await wait_until(lambda: len(publisher.events) == 1, timeout=1.0)
+        finally:
+            await dispatcher.stop()
+
+    asyncio.run(scenario())
+
+    session.expire_all()
+    outbox_event = session.scalar(select(OutboxEvent))
+    assert outbox_event is not None
+    assert outbox_event.published_at is not None
+    assert [event.event_type for event in publisher.events] == [OutboxEventType.MATCH_CREATED]
 
 
 def test_discord_outbox_publisher_sends_presence_reminder_to_stored_channel(

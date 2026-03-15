@@ -10,6 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session, sessionmaker
 
+from bot.constants import OUTBOX_NOTIFY_CHANNEL
 from bot.db.session import session_scope
 from bot.models import (
     Match,
@@ -686,7 +687,7 @@ class MatchingQueueService:
         dedupe_key: str,
         payload: dict[str, Any],
     ) -> None:
-        session.execute(
+        inserted_event_id = session.execute(
             pg_insert(OutboxEvent)
             .values(
                 event_type=event_type,
@@ -694,6 +695,19 @@ class MatchingQueueService:
                 payload=payload,
             )
             .on_conflict_do_nothing(index_elements=[OutboxEvent.dedupe_key])
+            .returning(OutboxEvent.id)
+        ).scalar_one_or_none()
+
+        if inserted_event_id is None:
+            return
+
+        session.execute(
+            select(
+                func.pg_notify(
+                    OUTBOX_NOTIFY_CHANNEL,
+                    str(inserted_event_id),
+                )
+            )
         )
 
     def _schedule_waiting_entry(self, entry: MatchQueueEntry, *, replace_existing: bool) -> None:

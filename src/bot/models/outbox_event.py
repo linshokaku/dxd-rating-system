@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
-from sqlalchemy import JSON, DateTime, String
+from sqlalchemy import JSON, DateTime, Integer, String, Text
 from sqlalchemy import Enum as SQLAlchemyEnum
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
@@ -40,4 +40,13 @@ class OutboxEvent(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+    failure_count: Mapped[int] = mapped_column(Integer, server_default="0", nullable=False)
+    next_attempt_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+        index=True,
+    )
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

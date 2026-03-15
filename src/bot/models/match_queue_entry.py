@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, text
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, Integer, text
 from sqlalchemy import Enum as SQLAlchemyEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
@@ -67,6 +67,16 @@ class MatchQueueEntry(Base):
         server_default=text("1"),
     )
     last_reminded_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    notification_channel_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    notification_guild_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    notification_mention_discord_user_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        nullable=True,
+    )
+    notification_recorded_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
     removed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     removal_reason: Mapped[MatchQueueRemovalReason | None] = mapped_column(
         SQLAlchemyEnum(

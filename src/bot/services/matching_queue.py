@@ -10,6 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session, sessionmaker
 
+from bot.constants import OUTBOX_NOTIFY_CHANNEL
 from bot.db.session import session_scope
 from bot.models import (
     Match,
@@ -41,6 +42,11 @@ QUEUE_NOT_JOINED_MESSAGE = "キューに参加していません。"
 QUEUE_PRESENT_EXPIRED_MESSAGE = "期限切れのためキューから外れました。"
 QUEUE_LEFT_MESSAGE = "キューから退出しました。"
 QUEUE_ALREADY_EXPIRED_MESSAGE = "すでに期限切れでキューから外れています。"
+PRESENCE_REMINDER_NOTIFICATION_MESSAGE = (
+    "在席確認です。1分以内に在席更新がない場合はマッチングキューから外れます。"
+)
+QUEUE_EXPIRED_NOTIFICATION_MESSAGE = "期限切れでマッチングキューから外れました。"
+MATCH_CREATED_NOTIFICATION_MESSAGE = "マッチ成立です。"
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,6 +121,13 @@ class _WaitingEntryTimerState:
     last_reminded_revision: int | None
 
 
+@dataclass(frozen=True, slots=True)
+class MatchingQueueNotificationContext:
+    channel_id: int
+    guild_id: int | None
+    mention_discord_user_id: int
+
+
 class MatchingQueueTaskScheduler(Protocol):
     def schedule_presence_reminder(self, task: PresenceReminderTask) -> None: ...
 
@@ -150,7 +163,12 @@ class MatchingQueueService:
         self.task_scheduler = task_scheduler or NoopMatchingQueueTaskScheduler()
         self.logger = logger or logging.getLogger(__name__)
 
-    def join_queue(self, player_id: int) -> JoinQueueResult:
+    def join_queue(
+        self,
+        player_id: int,
+        *,
+        notification_context: MatchingQueueNotificationContext | None = None,
+    ) -> JoinQueueResult:
         result: JoinQueueResult | None = None
         scheduled_entry: MatchQueueEntry | None = None
 
@@ -181,6 +199,11 @@ class MatchingQueueService:
                 revision=1,
                 last_reminded_revision=None,
             )
+            self._apply_notification_context(
+                new_entry,
+                notification_context,
+                recorded_at=current_time,
+            )
             session.add(new_entry)
             session.flush()
 
@@ -195,7 +218,12 @@ class MatchingQueueService:
             raise RuntimeError("join_queue result was not created")
         return result
 
-    def present(self, player_id: int) -> PresentQueueResult:
+    def present(
+        self,
+        player_id: int,
+        *,
+        notification_context: MatchingQueueNotificationContext | None = None,
+    ) -> PresentQueueResult:
         result: PresentQueueResult | None = None
         scheduled_entry: MatchQueueEntry | None = None
         cancel_queue_entry_id: int | None = None
@@ -228,6 +256,11 @@ class MatchingQueueService:
                 waiting_entry.expire_at = current_time + MATCH_QUEUE_TTL
                 waiting_entry.revision += 1
                 waiting_entry.last_reminded_revision = None
+                self._apply_notification_context(
+                    waiting_entry,
+                    notification_context,
+                    recorded_at=current_time,
+                )
                 scheduled_entry = waiting_entry
                 result = PresentQueueResult(
                     queue_entry_id=waiting_entry.id,
@@ -321,12 +354,7 @@ class MatchingQueueService:
                 session,
                 event_type=OutboxEventType.PRESENCE_REMINDER,
                 dedupe_key=f"presence_reminder:{entry.id}:{entry.revision}",
-                payload={
-                    "queue_entry_id": entry.id,
-                    "player_id": entry.player_id,
-                    "revision": entry.revision,
-                    "expire_at": entry.expire_at.isoformat(),
-                },
+                payload=self._build_presence_reminder_payload(entry),
             )
             reminded = True
 
@@ -648,12 +676,7 @@ class MatchingQueueService:
             session,
             event_type=OutboxEventType.QUEUE_EXPIRED,
             dedupe_key=f"queue_expired:{entry.id}:{entry.revision}",
-            payload={
-                "queue_entry_id": entry.id,
-                "player_id": entry.player_id,
-                "revision": entry.revision,
-                "expire_at": entry.expire_at.isoformat(),
-            },
+            payload=self._build_queue_expired_payload(entry),
         )
 
     def _enqueue_outbox_event(
@@ -664,7 +687,7 @@ class MatchingQueueService:
         dedupe_key: str,
         payload: dict[str, Any],
     ) -> None:
-        session.execute(
+        inserted_event_id = session.execute(
             pg_insert(OutboxEvent)
             .values(
                 event_type=event_type,
@@ -672,6 +695,19 @@ class MatchingQueueService:
                 payload=payload,
             )
             .on_conflict_do_nothing(index_elements=[OutboxEvent.dedupe_key])
+            .returning(OutboxEvent.id)
+        ).scalar_one_or_none()
+
+        if inserted_event_id is None:
+            return
+
+        session.execute(
+            select(
+                func.pg_notify(
+                    OUTBOX_NOTIFY_CHANNEL,
+                    str(inserted_event_id),
+                )
+            )
         )
 
     def _schedule_waiting_entry(self, entry: MatchQueueEntry, *, replace_existing: bool) -> None:
@@ -736,3 +772,34 @@ class MatchingQueueService:
             self.try_create_matches()
         except Exception:
             self.logger.exception("Failed to try_create_matches after %s", context)
+
+    def _apply_notification_context(
+        self,
+        entry: MatchQueueEntry,
+        notification_context: MatchingQueueNotificationContext | None,
+        *,
+        recorded_at: datetime,
+    ) -> None:
+        if notification_context is None:
+            return
+
+        entry.notification_channel_id = notification_context.channel_id
+        entry.notification_guild_id = notification_context.guild_id
+        entry.notification_mention_discord_user_id = notification_context.mention_discord_user_id
+        entry.notification_recorded_at = recorded_at
+
+    def _build_presence_reminder_payload(self, entry: MatchQueueEntry) -> dict[str, Any]:
+        return {
+            "queue_entry_id": entry.id,
+            "player_id": entry.player_id,
+            "revision": entry.revision,
+            "expire_at": entry.expire_at.isoformat(),
+        }
+
+    def _build_queue_expired_payload(self, entry: MatchQueueEntry) -> dict[str, Any]:
+        return {
+            "queue_entry_id": entry.id,
+            "player_id": entry.player_id,
+            "revision": entry.revision,
+            "expire_at": entry.expire_at.isoformat(),
+        }

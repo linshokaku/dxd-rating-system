@@ -1,0 +1,85 @@
+from __future__ import annotations
+
+from datetime import datetime
+from enum import StrEnum
+from typing import TYPE_CHECKING
+
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, text
+from sqlalchemy import Enum as SQLAlchemyEnum
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.sql import func
+
+from bot.models.base import Base
+
+if TYPE_CHECKING:
+    from bot.models.player import Player
+
+
+def _enum_values(enum_type: type[StrEnum]) -> list[str]:
+    return [member.value for member in enum_type]
+
+
+class MatchQueueEntryStatus(StrEnum):
+    WAITING = "waiting"
+    LEFT = "left"
+    EXPIRED = "expired"
+    MATCHED = "matched"
+
+
+class MatchQueueRemovalReason(StrEnum):
+    USER_LEAVE = "user_leave"
+    TIMEOUT = "timeout"
+
+
+class MatchQueueEntry(Base):
+    __tablename__ = "match_queue_entries"
+    __table_args__ = (
+        Index(
+            "uq_match_queue_entries_waiting_player_id",
+            "player_id",
+            unique=True,
+            postgresql_where=text("status = 'waiting'"),
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    player_id: Mapped[int] = mapped_column(ForeignKey("players.id"), nullable=False, index=True)
+    status: Mapped[MatchQueueEntryStatus] = mapped_column(
+        SQLAlchemyEnum(
+            MatchQueueEntryStatus,
+            name="match_queue_entry_status",
+            native_enum=False,
+            create_constraint=True,
+            validate_strings=True,
+            values_callable=_enum_values,
+        ),
+        nullable=False,
+        server_default=text(f"'{MatchQueueEntryStatus.WAITING.value}'"),
+    )
+    joined_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    last_present_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    expire_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revision: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        server_default=text("1"),
+    )
+    last_reminded_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    removed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    removal_reason: Mapped[MatchQueueRemovalReason | None] = mapped_column(
+        SQLAlchemyEnum(
+            MatchQueueRemovalReason,
+            name="match_queue_removal_reason",
+            native_enum=False,
+            create_constraint=True,
+            validate_strings=True,
+            values_callable=_enum_values,
+        ),
+        nullable=True,
+    )
+
+    player: Mapped[Player] = relationship(back_populates="match_queue_entries")

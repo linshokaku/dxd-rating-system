@@ -1,9 +1,15 @@
+from __future__ import annotations
+
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import BigInteger, DateTime, Integer, func, text
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from bot.models.base import Base
+
+if TYPE_CHECKING:
+    from bot.models.match_queue_entry import MatchQueueEntry
 
 INITIAL_RATING = 1500
 
@@ -19,3 +25,5 @@ class Player(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+    match_queue_entries: Mapped[list[MatchQueueEntry]] = relationship(back_populates="player")

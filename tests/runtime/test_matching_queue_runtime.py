@@ -12,6 +12,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
+import bot.runtime.matching_queue as matching_queue_runtime
 import bot.runtime.outbox as outbox_runtime
 from bot.models import Match, MatchQueueEntry, MatchQueueEntryStatus, OutboxEvent, OutboxEventType
 from bot.runtime import (
@@ -23,6 +24,7 @@ from bot.runtime import (
 )
 from bot.services import (
     MATCH_CREATED_NOTIFICATION_MESSAGE,
+    PRESENCE_REMINDER_LEAD_TIME,
     PRESENCE_REMINDER_NOTIFICATION_MESSAGE,
     QUEUE_EXPIRED_NOTIFICATION_MESSAGE,
     ExpireQueueEntryResult,
@@ -31,6 +33,7 @@ from bot.services import (
     NoopMatchingQueueTaskScheduler,
     PresenceReminderResult,
     PresenceReminderTask,
+    RetryableTaskError,
     StartupSyncResult,
     register_player,
 )
@@ -326,6 +329,172 @@ def test_asyncio_matching_queue_task_scheduler_cancels_pending_tasks() -> None:
 
     assert not reminder_event.is_set()
     assert not expire_event.is_set()
+
+
+def test_asyncio_matching_queue_task_scheduler_retries_retryable_failures() -> None:
+    reminder_event = threading.Event()
+    expire_event = threading.Event()
+    reminder_attempts = 0
+    expire_attempts = 0
+
+    def handle_presence_reminder(
+        queue_entry_id: int, expected_revision: int
+    ) -> PresenceReminderResult:
+        nonlocal reminder_attempts
+        reminder_attempts += 1
+        if reminder_attempts == 1:
+            raise RetryableTaskError("temporary presence reminder failure")
+        reminder_event.set()
+        return PresenceReminderResult(queue_entry_id=queue_entry_id, reminded=True)
+
+    def handle_expire(queue_entry_id: int, expected_revision: int) -> ExpireQueueEntryResult:
+        nonlocal expire_attempts
+        expire_attempts += 1
+        if expire_attempts == 1:
+            raise RetryableTaskError("temporary expire failure")
+        expire_event.set()
+        return ExpireQueueEntryResult(queue_entry_id=queue_entry_id, expired=True)
+
+    async def scenario() -> None:
+        scheduler = AsyncioMatchingQueueTaskScheduler(
+            presence_reminder_handler=handle_presence_reminder,
+            expire_handler=handle_expire,
+        )
+        scheduler.bind_loop(asyncio.get_running_loop())
+        current_time = datetime.now(timezone.utc)
+
+        original_delay_fn = matching_queue_runtime.retry_delay_for_failure_count
+        matching_queue_runtime.retry_delay_for_failure_count = (
+            lambda failure_count: timedelta(milliseconds=10)
+        )
+        try:
+            scheduler.schedule_presence_reminder(
+                PresenceReminderTask(
+                    queue_entry_id=301,
+                    expected_revision=7,
+                    remind_at=current_time + timedelta(milliseconds=10),
+                )
+            )
+            scheduler.schedule_expire(
+                ExpireTask(
+                    queue_entry_id=302,
+                    expected_revision=8,
+                    expire_at=current_time + timedelta(milliseconds=10),
+                )
+            )
+
+            assert await asyncio.to_thread(reminder_event.wait, 1.0)
+            assert await asyncio.to_thread(expire_event.wait, 1.0)
+        finally:
+            matching_queue_runtime.retry_delay_for_failure_count = original_delay_fn
+            await scheduler.aclose()
+
+    asyncio.run(scenario())
+
+    assert reminder_attempts == 2
+    assert expire_attempts == 2
+
+
+def test_asyncio_matching_queue_task_scheduler_stops_presence_retry_after_deadline() -> None:
+    reminder_attempts = 0
+
+    def handle_presence_reminder(
+        queue_entry_id: int, expected_revision: int
+    ) -> PresenceReminderResult:
+        nonlocal reminder_attempts
+        del queue_entry_id, expected_revision
+        reminder_attempts += 1
+        raise RetryableTaskError("temporary presence reminder failure")
+
+    async def scenario() -> None:
+        scheduler = AsyncioMatchingQueueTaskScheduler(
+            presence_reminder_handler=handle_presence_reminder,
+            expire_handler=lambda queue_entry_id, expected_revision: ExpireQueueEntryResult(
+                queue_entry_id=queue_entry_id,
+                expired=False,
+            ),
+        )
+        scheduler.bind_loop(asyncio.get_running_loop())
+        current_time = datetime.now(timezone.utc)
+        remind_at = current_time - PRESENCE_REMINDER_LEAD_TIME + timedelta(milliseconds=5)
+
+        original_delay_fn = matching_queue_runtime.retry_delay_for_failure_count
+        matching_queue_runtime.retry_delay_for_failure_count = (
+            lambda failure_count: timedelta(milliseconds=20)
+        )
+        try:
+            scheduler.schedule_presence_reminder(
+                PresenceReminderTask(
+                    queue_entry_id=401,
+                    expected_revision=2,
+                    remind_at=remind_at,
+                )
+            )
+            await asyncio.sleep(0.05)
+        finally:
+            matching_queue_runtime.retry_delay_for_failure_count = original_delay_fn
+            await scheduler.aclose()
+
+    asyncio.run(scenario())
+
+    assert reminder_attempts == 1
+
+
+def test_asyncio_matching_queue_task_scheduler_replaces_pending_retry_when_rescheduled() -> None:
+    calls: list[tuple[int, int]] = []
+    reminder_event = threading.Event()
+
+    def handle_presence_reminder(
+        queue_entry_id: int, expected_revision: int
+    ) -> PresenceReminderResult:
+        calls.append((queue_entry_id, expected_revision))
+        if expected_revision == 1:
+            raise RetryableTaskError("temporary presence reminder failure")
+        reminder_event.set()
+        return PresenceReminderResult(queue_entry_id=queue_entry_id, reminded=True)
+
+    async def scenario() -> None:
+        scheduler = AsyncioMatchingQueueTaskScheduler(
+            presence_reminder_handler=handle_presence_reminder,
+            expire_handler=lambda queue_entry_id, expected_revision: ExpireQueueEntryResult(
+                queue_entry_id=queue_entry_id,
+                expired=False,
+            ),
+        )
+        scheduler.bind_loop(asyncio.get_running_loop())
+        current_time = datetime.now(timezone.utc)
+
+        original_delay_fn = matching_queue_runtime.retry_delay_for_failure_count
+        matching_queue_runtime.retry_delay_for_failure_count = (
+            lambda failure_count: timedelta(milliseconds=50)
+        )
+        try:
+            scheduler.schedule_presence_reminder(
+                PresenceReminderTask(
+                    queue_entry_id=501,
+                    expected_revision=1,
+                    remind_at=current_time + timedelta(milliseconds=10),
+                )
+            )
+            await wait_until(lambda: calls == [(501, 1)], timeout=1.0)
+
+            scheduler.schedule_presence_reminder(
+                PresenceReminderTask(
+                    queue_entry_id=501,
+                    expected_revision=2,
+                    remind_at=datetime.now(timezone.utc) + timedelta(milliseconds=10),
+                )
+            )
+
+            assert await asyncio.to_thread(reminder_event.wait, 1.0)
+            await asyncio.sleep(0.08)
+        finally:
+            matching_queue_runtime.retry_delay_for_failure_count = original_delay_fn
+            await scheduler.aclose()
+
+    asyncio.run(scenario())
+
+    assert calls == [(501, 1), (501, 2)]
 
 
 def test_matching_queue_runtime_runs_startup_sync_and_reconcile_loop() -> None:

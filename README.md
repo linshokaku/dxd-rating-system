@@ -64,6 +64,7 @@ uv run python -m bot.main
 ```
 
 生成された migration は `alembic/versions/` で確認してください。
+許可なく、生成されたmigrationファイルを手更新しないでください。
 
 ## テスト
 ```bash

@@ -125,3 +125,33 @@ AGENTS.md
 * DB 接続先は Railway Postgres を前提とする
 * 環境変数未設定時は起動時に明確に失敗させる
 * 本番で必要な migration 実行手順を明記する
+
+--- 
+
+## モデル更新
+```bash
+./migrate.sh "describe schema change"
+```
+
+生成された migration は `alembic/versions/` で確認してください。
+許可なく、生成されたmigrationファイルを手更新しないでください。
+
+---
+
+## テスト
+```bash
+./test.sh
+```
+
+`pytest` に渡したいオプションもそのまま指定できます。
+
+```bash
+./test.sh -k registration -q
+```
+
+---
+
+## Lint
+```bash
+./lint.sh
+```

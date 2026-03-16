@@ -12,14 +12,17 @@ from bot.runtime.outbox import (
     DEFAULT_OUTBOX_POLL_INTERVAL,
     OutboxDispatcher,
     OutboxEventPublisher,
+    retry_delay_for_failure_count,
 )
 from bot.services import (
+    PRESENCE_REMINDER_LEAD_TIME,
     ExpireQueueEntryResult,
     ExpireTask,
     MatchingQueueService,
     MatchingQueueTaskScheduler,
     PresenceReminderResult,
     PresenceReminderTask,
+    RetryableTaskError,
     StartupSyncResult,
 )
 
@@ -115,9 +118,15 @@ class AsyncioMatchingQueueTaskScheduler(MatchingQueueTaskScheduler):
 
     async def _run_presence_reminder(self, task: PresenceReminderTask) -> None:
         try:
-            await self._sleep_until(task.remind_at)
             handler = self._require_presence_reminder_handler()
-            await asyncio.to_thread(handler, task.queue_entry_id, task.expected_revision)
+            await self._run_handler_with_retry(
+                task_name="presence reminder",
+                queue_entry_id=task.queue_entry_id,
+                expected_revision=task.expected_revision,
+                scheduled_at=task.remind_at,
+                deadline=task.remind_at + PRESENCE_REMINDER_LEAD_TIME,
+                handler=handler,
+            )
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -133,9 +142,15 @@ class AsyncioMatchingQueueTaskScheduler(MatchingQueueTaskScheduler):
 
     async def _run_expire(self, task: ExpireTask) -> None:
         try:
-            await self._sleep_until(task.expire_at)
             handler = self._require_expire_handler()
-            await asyncio.to_thread(handler, task.queue_entry_id, task.expected_revision)
+            await self._run_handler_with_retry(
+                task_name="expire",
+                queue_entry_id=task.queue_entry_id,
+                expected_revision=task.expected_revision,
+                scheduled_at=task.expire_at,
+                deadline=None,
+                handler=handler,
+            )
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -154,6 +169,64 @@ class AsyncioMatchingQueueTaskScheduler(MatchingQueueTaskScheduler):
         if delay_seconds > 0:
             await asyncio.sleep(delay_seconds)
 
+    async def _run_handler_with_retry(
+        self,
+        *,
+        task_name: str,
+        queue_entry_id: int,
+        expected_revision: int,
+        scheduled_at: datetime,
+        deadline: datetime | None,
+        handler: Callable[[int, int], object],
+    ) -> None:
+        failure_count = 0
+        await self._sleep_until(scheduled_at)
+
+        while True:
+            try:
+                await asyncio.to_thread(handler, queue_entry_id, expected_revision)
+            except RetryableTaskError as exc:
+                failure_count += 1
+                retry_delay = retry_delay_for_failure_count(failure_count)
+                next_retry_at = self._current_time_for(scheduled_at) + retry_delay
+
+                if deadline is not None and next_retry_at >= deadline:
+                    self._logger.info(
+                        "Stopped retrying %s queue_entry_id=%s revision=%s "
+                        "failure_count=%s next_retry_at=%s deadline=%s",
+                        task_name,
+                        queue_entry_id,
+                        expected_revision,
+                        failure_count,
+                        next_retry_at.isoformat(),
+                        deadline.isoformat(),
+                    )
+                    return
+
+                self._logger.warning(
+                    "Retrying %s queue_entry_id=%s revision=%s failure_count=%s "
+                    "next_retry_at=%s error_type=%s",
+                    task_name,
+                    queue_entry_id,
+                    expected_revision,
+                    failure_count,
+                    next_retry_at.isoformat(),
+                    type(exc).__name__,
+                    exc_info=exc,
+                )
+                await asyncio.sleep(retry_delay.total_seconds())
+                continue
+
+            if failure_count > 0:
+                self._logger.info(
+                    "Recovered %s queue_entry_id=%s revision=%s failure_count=%s",
+                    task_name,
+                    queue_entry_id,
+                    expected_revision,
+                    failure_count,
+                )
+            return
+
     def _seconds_until(self, scheduled_at: datetime) -> float:
         if scheduled_at.tzinfo is None:
             current_time = datetime.now()
@@ -161,6 +234,11 @@ class AsyncioMatchingQueueTaskScheduler(MatchingQueueTaskScheduler):
             current_time = datetime.now(tz=scheduled_at.tzinfo)
 
         return max((scheduled_at - current_time).total_seconds(), 0.0)
+
+    def _current_time_for(self, reference: datetime) -> datetime:
+        if reference.tzinfo is None:
+            return datetime.now()
+        return datetime.now(tz=reference.tzinfo)
 
     async def _aclose_on_loop(self) -> None:
         self._closed = True
@@ -177,8 +255,11 @@ class AsyncioMatchingQueueTaskScheduler(MatchingQueueTaskScheduler):
             await asyncio.gather(*presence_tasks, *expire_tasks, return_exceptions=True)
 
     def _cancel_task(self, task: asyncio.Task[Any] | None) -> None:
-        if task is not None:
-            task.cancel()
+        if task is None:
+            return
+        if task is asyncio.current_task():
+            return
+        task.cancel()
 
     def _require_presence_reminder_handler(self) -> PresenceReminderHandler:
         if self._presence_reminder_handler is None:

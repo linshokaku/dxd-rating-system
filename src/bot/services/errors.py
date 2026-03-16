@@ -20,3 +20,7 @@ class QueueAlreadyJoinedError(MatchingQueueError):
 
 class QueueNotJoinedError(MatchingQueueError):
     pass
+
+
+class RetryableTaskError(Exception):
+    pass

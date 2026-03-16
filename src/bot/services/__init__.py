@@ -5,6 +5,7 @@ from bot.services.errors import (
     QueueAlreadyJoinedError,
     QueueNotJoinedError,
     RegistrationError,
+    RetryableTaskError,
 )
 from bot.services.matching_queue import (
     DEFAULT_CLEANUP_BATCH_SIZE,
@@ -57,6 +58,7 @@ __all__ = [
     "QueueAlreadyJoinedError",
     "QueueNotJoinedError",
     "RegistrationError",
+    "RetryableTaskError",
     "register_player",
     "StartupSyncResult",
 ]

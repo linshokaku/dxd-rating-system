@@ -270,6 +270,80 @@ Discord Bot 上で 3v3 対戦向けのマッチングキューを管理する。
 - 実際に `expired` に遷移できるのは、ロックを取って条件を満たした 1 プロセスのみ
 - 他プロセスは no-op になる
 
+## 単発 reminder / expire タスクの一時エラー時 retry 仕様
+
+### 目的
+
+- DB の一時的な切断や接続回復中の失敗で、単発 reminder / expire タスクを取りこぼしにくくする
+- retry 方針を `AsyncioMatchingQueueTaskScheduler` と service 層の間で疎結合に保つ
+- retry 中に DB transaction や row lock を保持しない
+
+### 適用対象
+
+- `join` / `present` 後に登録される単発在席確認リマインドタスク
+- `join` / `present` 後に登録される単発 expire タスク
+
+起動時再同期や reconcile から同期的に呼ばれる処理は、この節の in-memory retry の対象外とする。
+
+### handler と scheduler の責務分担
+
+- scheduler は handler の具体的な失敗理由を解釈しない
+- scheduler は SQLAlchemy や psycopg の具体例外型に依存しない
+- service 層の task handler は、成功または no-op の場合は通常どおり戻り値を返す
+- service 層の task handler は、「同じ引数で後から再試行してよい一時失敗」だけを包括的な retryable 例外へ変換して raise する
+- retryable 例外の名前は実装で決めてよいが、仮称 `RetryableTaskError` とする
+- retryable 例外へ変換する際は、元例外を `raise ... from exc` で保持する
+- scheduler は retryable 例外だけを捕捉し、指数バックオフで同じ task を再登録する
+- retryable 例外以外は恒久失敗として扱い、error log を出して task を終了する
+
+### retry 対象の例
+
+- DB 接続断
+- 接続回復中の一時失敗
+- connection pool から取得した接続の失効
+- transaction の開始、commit、rollback 時に発生する一時的な接続系失敗
+
+### retry 対象外の例
+
+- `asyncio.CancelledError`
+- SQL 文の誤りやスキーマ不整合
+- 一意制約違反などのデータ整合性違反
+- 実装バグや設定ミスに起因する恒久失敗
+
+### backoff 方式
+
+- retry の待機時間は指数バックオフとする
+- 初回待機は `1s` とする
+- 以後、失敗のたびに待機時間を 2 倍にする
+- 上限は `512s` とする
+- 想定する待機列は `1s, 2s, 4s, 8s, 16s, 32s, 64s, 128s, 256s, 512s` とする
+- `512s` 到達後は、成功または task の無効化まで `512s` 間隔で再試行する
+- 初期段階では jitter は入れない
+- backoff 係数は outbox の retry 方針とそろえる
+
+### retry 状態の保持
+
+- retry 状態は in-memory で保持する
+- reminder / expire のために DB へ専用の retry 状態は保存しない
+- 1 つの `queue_entry_id` と task 種別に対して、同時に有効な待機 task は常に 1 つだけとする
+- `join` / `present` により同じ `queue_entry_id` の新しい task が登録された場合、古い待機 task と retry 待機は cancel して置き換える
+- `leave`、`matched`、`expired`、runtime stop 時は pending retry も含めて cancel する
+
+### task 種別ごとの打ち切り条件
+
+- `presence_reminder` は、元の `remind_at + interval '1 minute'` 以上へ次回 retry がずれ込む場合は新たな retry を登録しない
+- これは `presence_reminder` が有効なのは元の `expire_at` までであり、`remind_at + interval '1 minute'` がその上限に等しいためである
+- `expire` は期限超過後も意味を失わないため、ローカルの retry 締切は設けない
+- `expire` の retry は、成功するか、他経路で `waiting` 以外に変化して次回実行が no-op になるまで継続してよい
+
+### 冪等性と安全性
+
+- commit 成否が不明な接続断が起きても、retry は同じ引数で安全に再実行できることを前提とする
+- `presence_reminder` は `last_reminded_revision` 判定により、同じ revision への二重通知を防ぐ
+- `presence_reminder` の outbox event は `dedupe_key` により重複生成を防ぐ
+- `expire` は `status`、`revision`、`expire_at`、`FOR UPDATE` により二重 expire を防ぐ
+- 複数プロセスが同じ行に対して retry しても、実際に状態を確定できるのは条件を満たした 1 プロセスのみである
+
 ## マッチング試行仕様
 
 ### 目的
@@ -367,9 +441,11 @@ Team B
 
 - プロセスが落ちた場合でも、基本的にはすぐに新しいプロセスが起動し、総プロセス数は減らない想定とする
 - そのため、在席確認リマインドタスクと expire タスクは通常、起動時再同期と通常イベント処理で復旧される前提とする
+- 単発 task の retry 待機状態は in-memory のみで保持し、プロセス再起動時には失われる
 - `join` や `present` の commit 後にプロセスが落ちると、まれにタスク未登録のままになる可能性がある
 - `join` の commit 後にマッチング試行前にプロセスが落ちても、起動時再同期の `try_create_matches()` で回収する
 - 起動時再同期で最終 1 分に入っている行を見つけた場合は、即時に在席確認リマインド処理を試みる
+- retry 待機中にプロセスが落ちた場合でも、起動時再同期と reconcile で待機行から task を再構築できることを前提とする
 - reconcile ループはその取りこぼしを回収するための保険としてのみ入れる
 - reconcile ループは 5 分おきに実行する
 - reconcile ループで cleanup が発生した場合は、想定外の取りこぼしが起きていたことを示すため warning log を出す
@@ -392,6 +468,16 @@ Team B
 - 単発タスクによる通常の在席確認リマインドは info log を基本とする
 - 起動時再同期で即時に在席確認リマインドを送った場合も info log を基本とする
 - 単発タスクによる通常の expire は info log を基本とする
+- 単発 reminder / expire task が retryable 例外で失敗した場合は warning log を出す
+- warning log には少なくとも以下を含める
+  - task 種別
+  - `queue_entry_id`
+  - `expected_revision`
+  - `failure_count`
+  - `next_retry_at`
+  - 例外型
+- retry 後に task が成功した場合は、何回目で回復したか分かる info log を出してよい
+- `presence_reminder` が締切超過で retry を打ち切った場合は info log を出してよい
 - reconcile ループによって cleanup が実行された場合は warning log を出す
 - warning log には少なくとも以下を含める
   - 実行プロセスが保険 cleanup を行ったこと
@@ -440,6 +526,10 @@ Team B
 - [x] `present` で `revision` が進んだあとは、新しい 5 分サイクルで再度 1 回だけリマインド可能になること
 - [x] 起動時再同期で最終 1 分に入っており、かつ未通知の行があれば即時にリマインド処理を試みること
 - [x] 起動時再同期で `last_reminded_revision = revision` の行には reminder タスクを再登録しないこと
+- [ ] 一時的な DB エラーで単発 reminder task が失敗した場合、retryable 例外に変換されて指数バックオフで再試行されること
+- [ ] reminder retry でも同じ revision に対する outbox event が重複生成されないこと
+- [ ] reminder retry が元の `expire_at` を超える場合は追加 retry されないこと
+- [ ] reminder retry 待機中に `present` で revision が進んだ場合、古い retry 待機が cancel されること
 
 ### expire
 
@@ -449,6 +539,8 @@ Team B
 - [ ] `present` / `leave` と expire が境界タイミングで競合した場合、期限切れ側が一貫して勝つこと
 - [x] 通常の expire が info log を出すこと
 - [x] reconcile による cleanup が発生した場合に warning log を出すこと
+- [ ] 一時的な DB エラーで単発 expire task が失敗した場合、retryable 例外に変換されて指数バックオフで再試行されること
+- [ ] expire retry により回復した場合でも、`expired` 遷移と outbox event 生成は 1 回だけであること
 
 ### マッチング試行
 
@@ -467,6 +559,7 @@ Team B
 - [x] 起動時に `try_create_matches()` が実行され、すでに 6 人以上待機しているケースを回収できること
 - [x] 起動時に reminder 対象の行へ即時リマインドできること
 - [x] 起動時に将来期限の `waiting` 行へ reminder タスクと expire タスクが再登録されること
+- [ ] 単発 task の retry 待機中にプロセスが落ちても、起動時再同期で reminder / expire task を再構築できること
 - [ ] `join` commit 後にプロセスが落ちてタスク未登録になっても、起動時再同期で復旧できること
 - [ ] `join` commit 後にプロセスが落ちてマッチング試行が走らなくても、起動時再同期の `try_create_matches()` で回収できること
 

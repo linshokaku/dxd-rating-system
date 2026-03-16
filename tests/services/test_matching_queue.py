@@ -5,8 +5,10 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
+import psycopg
 import pytest
 from sqlalchemy import func, select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
 from bot.models import (
@@ -29,6 +31,7 @@ from bot.services import (
     PresenceReminderTask,
     QueueAlreadyJoinedError,
     QueueNotJoinedError,
+    RetryableTaskError,
     register_player,
 )
 
@@ -446,6 +449,33 @@ def test_stale_revision_tasks_become_noop(
     assert entries[0].status == MatchQueueEntryStatus.WAITING
     assert entries[0].last_reminded_revision is None
     assert get_outbox_events(session) == []
+
+
+@pytest.mark.parametrize("handler_name", ["process_presence_reminder", "process_expire"])
+def test_task_handlers_wrap_transient_db_errors_as_retryable(
+    session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+    handler_name: str,
+) -> None:
+    service = create_matching_queue_service(session_factory)
+    transient_error = OperationalError(
+        "SELECT 1",
+        {},
+        psycopg.OperationalError("temporary db disconnect"),
+        connection_invalidated=True,
+    )
+
+    def raise_transient_error(session: Session, queue_entry_id: int) -> MatchQueueEntry | None:
+        del session, queue_entry_id
+        raise transient_error
+
+    monkeypatch.setattr(service, "_get_queue_entry_for_update", raise_transient_error)
+    handler = getattr(service, handler_name)
+
+    with pytest.raises(RetryableTaskError) as excinfo:
+        handler(101, expected_revision=1)
+
+    assert excinfo.value.__cause__ is transient_error
 
 
 # 有効な `waiting` 行に対する `leave` で `left` に遷移し、`removed_at` と

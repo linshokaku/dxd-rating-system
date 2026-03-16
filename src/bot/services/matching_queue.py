@@ -6,8 +6,10 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Protocol
 
+import psycopg
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import DBAPIError, InterfaceError, OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
 from bot.constants import OUTBOX_NOTIFY_CHANNEL
@@ -27,6 +29,7 @@ from bot.services.errors import (
     PlayerNotRegisteredError,
     QueueAlreadyJoinedError,
     QueueNotJoinedError,
+    RetryableTaskError,
 )
 
 MATCH_QUEUE_TTL = timedelta(minutes=5)
@@ -47,6 +50,22 @@ PRESENCE_REMINDER_NOTIFICATION_MESSAGE = (
 )
 QUEUE_EXPIRED_NOTIFICATION_MESSAGE = "期限切れでマッチングキューから外れました。"
 MATCH_CREATED_NOTIFICATION_MESSAGE = "マッチ成立です。"
+
+
+def _is_transient_task_db_error(exc: Exception) -> bool:
+    if isinstance(exc, (psycopg.OperationalError, psycopg.InterfaceError)):
+        return True
+
+    if isinstance(exc, (OperationalError, InterfaceError)):
+        return True
+
+    if not isinstance(exc, DBAPIError):
+        return False
+
+    if exc.connection_invalidated:
+        return True
+
+    return isinstance(exc.orig, (psycopg.OperationalError, psycopg.InterfaceError))
 
 
 @dataclass(frozen=True, slots=True)
@@ -331,32 +350,36 @@ class MatchingQueueService:
     ) -> PresenceReminderResult:
         reminded = False
 
-        with session_scope(self.session_factory) as session:
-            entry = self._get_queue_entry_for_update(session, queue_entry_id)
-            if entry is None:
-                return PresenceReminderResult(queue_entry_id=queue_entry_id, reminded=False)
+        try:
+            with session_scope(self.session_factory) as session:
+                entry = self._get_queue_entry_for_update(session, queue_entry_id)
+                if entry is None:
+                    return PresenceReminderResult(queue_entry_id=queue_entry_id, reminded=False)
 
-            current_time = self._get_database_now(session)
-            remind_at = entry.expire_at - PRESENCE_REMINDER_LEAD_TIME
-            already_reminded = entry.last_reminded_revision == entry.revision
+                current_time = self._get_database_now(session)
+                remind_at = entry.expire_at - PRESENCE_REMINDER_LEAD_TIME
+                already_reminded = entry.last_reminded_revision == entry.revision
 
-            if (
-                entry.status != MatchQueueEntryStatus.WAITING
-                or entry.revision != expected_revision
-                or entry.expire_at <= current_time
-                or remind_at > current_time
-                or already_reminded
-            ):
-                return PresenceReminderResult(queue_entry_id=queue_entry_id, reminded=False)
+                if (
+                    entry.status != MatchQueueEntryStatus.WAITING
+                    or entry.revision != expected_revision
+                    or entry.expire_at <= current_time
+                    or remind_at > current_time
+                    or already_reminded
+                ):
+                    return PresenceReminderResult(queue_entry_id=queue_entry_id, reminded=False)
 
-            entry.last_reminded_revision = entry.revision
-            self._enqueue_outbox_event(
-                session,
-                event_type=OutboxEventType.PRESENCE_REMINDER,
-                dedupe_key=f"presence_reminder:{entry.id}:{entry.revision}",
-                payload=self._build_presence_reminder_payload(entry),
-            )
-            reminded = True
+                entry.last_reminded_revision = entry.revision
+                self._enqueue_outbox_event(
+                    session,
+                    event_type=OutboxEventType.PRESENCE_REMINDER,
+                    dedupe_key=f"presence_reminder:{entry.id}:{entry.revision}",
+                    payload=self._build_presence_reminder_payload(entry),
+                )
+                reminded = True
+        except Exception as exc:
+            self._raise_retryable_task_error(exc, operation="processing presence reminder")
+            raise
 
         if reminded:
             self.logger.info("Queued presence reminder for queue_entry_id=%s", queue_entry_id)
@@ -365,26 +388,30 @@ class MatchingQueueService:
     def process_expire(self, queue_entry_id: int, expected_revision: int) -> ExpireQueueEntryResult:
         expired = False
 
-        with session_scope(self.session_factory) as session:
-            entry = self._get_queue_entry_for_update(session, queue_entry_id)
-            if entry is None:
-                return ExpireQueueEntryResult(queue_entry_id=queue_entry_id, expired=False)
+        try:
+            with session_scope(self.session_factory) as session:
+                entry = self._get_queue_entry_for_update(session, queue_entry_id)
+                if entry is None:
+                    return ExpireQueueEntryResult(queue_entry_id=queue_entry_id, expired=False)
 
-            current_time = self._get_database_now(session)
-            if (
-                entry.status != MatchQueueEntryStatus.WAITING
-                or entry.revision != expected_revision
-                or entry.expire_at > current_time
-            ):
-                return ExpireQueueEntryResult(queue_entry_id=queue_entry_id, expired=False)
+                current_time = self._get_database_now(session)
+                if (
+                    entry.status != MatchQueueEntryStatus.WAITING
+                    or entry.revision != expected_revision
+                    or entry.expire_at > current_time
+                ):
+                    return ExpireQueueEntryResult(queue_entry_id=queue_entry_id, expired=False)
 
-            self._mark_entry_expired(
-                session,
-                entry,
-                removed_at=current_time,
-                emit_outbox_event=True,
-            )
-            expired = True
+                self._mark_entry_expired(
+                    session,
+                    entry,
+                    removed_at=current_time,
+                    emit_outbox_event=True,
+                )
+                expired = True
+        except Exception as exc:
+            self._raise_retryable_task_error(exc, operation="processing expire")
+            raise
 
         if expired:
             self._cancel_queue_entry_tasks(queue_entry_id)
@@ -631,6 +658,13 @@ class MatchingQueueService:
         player = session.get(Player, player_id)
         if player is None:
             raise PlayerNotRegisteredError(f"Player is not registered: {player_id}")
+
+    def _raise_retryable_task_error(self, exc: Exception, *, operation: str) -> None:
+        if isinstance(exc, RetryableTaskError):
+            return
+
+        if _is_transient_task_db_error(exc):
+            raise RetryableTaskError(f"Temporary database failure while {operation}") from exc
 
     def _acquire_player_lock(self, session: Session, player_id: int) -> None:
         session.execute(select(func.pg_advisory_xact_lock(player_id)))

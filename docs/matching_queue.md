@@ -49,6 +49,41 @@ Discord Bot 上で 3v3 対戦向けのマッチングキューを管理する。
 - PostgreSQL の部分ユニークインデックスを利用する
   - 例: `UNIQUE (player_id) WHERE status = 'waiting'`
 
+## テーブル分類
+
+運用上、このプロジェクトのテーブルは「完全ダウン後に破棄してよい一時状態」と
+「再作成してはいけない永続データ」を分けて扱う。
+
+### 一時状態テーブル
+
+- `match_queue_entries`
+- `matches`
+- `match_participants`
+- `outbox_events`
+
+意図:
+
+- `match_queue_entries` は現在の待機状態を表す一時状態である
+- `matches` と `match_participants` は現時点ではマッチ成立直後の一時状態を表す
+- `outbox_events` は未送信または送信済み通知の配送状態を表す一時状態である
+
+補足:
+
+- システムが完全にダウンし、待機中キューや未通知イベント、成立直後マッチなどの
+  一時状態を破棄してよいと判断した場合、上記テーブルは初期化対象として扱ってよい
+- ただし、将来 `matches` や `match_participants` を対戦履歴として恒久保持する仕様に
+  変更した場合は、この分類も更新する
+
+### 永続データテーブル
+
+- `players`
+- `alembic_version`
+
+意図:
+
+- `players` はプレイヤー登録情報とレーティングを保持する永続データである
+- `alembic_version` はマイグレーション状態を保持する管理用テーブルである
+
 ## 共通ルール
 
 - `join`、`present`、`leave` はプレイヤー単位で `pg_advisory_xact_lock(player_id)` を取得する

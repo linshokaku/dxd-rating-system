@@ -413,7 +413,12 @@ Discord Bot 上で 3v3 対戦の試合進行を管理し、親決定、勝敗報
 
 ## 必要な管理データ
 
-### 試合単位
+補足:
+
+- DB table は、試合の進行状況を管理するものと、結果確定後の試合結果を永続化するものを分ける。
+- 両者は同じ `match_id` を持つ前提とし、進行中の更新責務と確定済み結果の参照責務を分離する。
+
+### 試合進行管理単位
 
 - `match_id`
 - `created_at`
@@ -426,10 +431,19 @@ Discord Bot 上で 3v3 対戦の試合進行を管理し、親決定、勝敗報
 - `approval_started_at`
 - `approval_deadline_at`
 - `provisional_result`
-- `final_result`
-- `finalized_at`
 - `admin_review_required`
 - `state`
+
+### 確定済み試合結果単位
+
+- `match_id`
+- `created_at`
+- `team_a_player_ids`
+- `team_b_player_ids`
+- `parent_player_id`
+- `parent_decided_at`
+- `final_result`
+- `finalized_at`
 
 ### 勝敗報告単位
 

@@ -137,9 +137,7 @@ class PostgresOutboxNotificationListener:
                     autocommit=True,
                 ) as connection:
                     self._set_current_connection(connection)
-                    connection.execute(
-                        sql.SQL("LISTEN {}").format(sql.Identifier(self.channel))
-                    )
+                    connection.execute(sql.SQL("LISTEN {}").format(sql.Identifier(self.channel)))
                     self.logger.info(
                         "Listening for outbox notifications channel=%s",
                         self.channel,

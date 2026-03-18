@@ -373,9 +373,7 @@ class BotCommandHandlers:
             channel_id=interaction.channel_id,
             guild_id=interaction.guild_id,
             mention_discord_user_id=(
-                interaction.user.id
-                if mention_discord_user_id is None
-                else mention_discord_user_id
+                interaction.user.id if mention_discord_user_id is None else mention_discord_user_id
             ),
         )
 

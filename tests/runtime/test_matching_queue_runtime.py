@@ -364,8 +364,8 @@ def test_asyncio_matching_queue_task_scheduler_retries_retryable_failures() -> N
         current_time = datetime.now(timezone.utc)
 
         original_delay_fn = matching_queue_runtime.retry_delay_for_failure_count
-        matching_queue_runtime.retry_delay_for_failure_count = (
-            lambda failure_count: timedelta(milliseconds=10)
+        matching_queue_runtime.retry_delay_for_failure_count = lambda failure_count: timedelta(
+            milliseconds=10
         )
         try:
             scheduler.schedule_presence_reminder(
@@ -419,8 +419,8 @@ def test_asyncio_matching_queue_task_scheduler_stops_presence_retry_after_deadli
         remind_at = current_time - PRESENCE_REMINDER_LEAD_TIME + timedelta(milliseconds=5)
 
         original_delay_fn = matching_queue_runtime.retry_delay_for_failure_count
-        matching_queue_runtime.retry_delay_for_failure_count = (
-            lambda failure_count: timedelta(milliseconds=20)
+        matching_queue_runtime.retry_delay_for_failure_count = lambda failure_count: timedelta(
+            milliseconds=20
         )
         try:
             scheduler.schedule_presence_reminder(
@@ -465,8 +465,8 @@ def test_asyncio_matching_queue_task_scheduler_replaces_pending_retry_when_resch
         current_time = datetime.now(timezone.utc)
 
         original_delay_fn = matching_queue_runtime.retry_delay_for_failure_count
-        matching_queue_runtime.retry_delay_for_failure_count = (
-            lambda failure_count: timedelta(milliseconds=50)
+        matching_queue_runtime.retry_delay_for_failure_count = lambda failure_count: timedelta(
+            milliseconds=50
         )
         try:
             scheduler.schedule_presence_reminder(

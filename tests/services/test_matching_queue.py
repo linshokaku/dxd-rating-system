@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
-from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
 import psycopg
@@ -23,12 +22,9 @@ from bot.models import (
 )
 from bot.services import (
     MATCH_QUEUE_TTL,
-    PRESENCE_REMINDER_LEAD_TIME,
-    ExpireTask,
     MatchingQueueNotificationContext,
     MatchingQueueService,
     PlayerNotRegisteredError,
-    PresenceReminderTask,
     QueueAlreadyJoinedError,
     QueueNotJoinedError,
     RetryableTaskError,
@@ -36,37 +32,8 @@ from bot.services import (
 )
 
 
-@dataclass
-class RecordingTaskScheduler:
-    presence_reminder_tasks: list[PresenceReminderTask] = field(default_factory=list)
-    expire_tasks: list[ExpireTask] = field(default_factory=list)
-    cancelled_presence_reminders: list[int] = field(default_factory=list)
-    cancelled_expires: list[int] = field(default_factory=list)
-
-    def schedule_presence_reminder(self, task: PresenceReminderTask) -> None:
-        self.presence_reminder_tasks.append(task)
-
-    def schedule_expire(self, task: ExpireTask) -> None:
-        self.expire_tasks.append(task)
-
-    def cancel_presence_reminder(self, queue_entry_id: int) -> None:
-        self.cancelled_presence_reminders.append(queue_entry_id)
-
-    def cancel_expire(self, queue_entry_id: int) -> None:
-        self.cancelled_expires.append(queue_entry_id)
-
-    def reset(self) -> None:
-        self.presence_reminder_tasks.clear()
-        self.expire_tasks.clear()
-        self.cancelled_presence_reminders.clear()
-        self.cancelled_expires.clear()
-
-
-def create_matching_queue_service(
-    session_factory: sessionmaker[Session],
-    scheduler: RecordingTaskScheduler | None = None,
-) -> MatchingQueueService:
-    return MatchingQueueService(session_factory=session_factory, task_scheduler=scheduler)
+def create_matching_queue_service(session_factory: sessionmaker[Session]) -> MatchingQueueService:
+    return MatchingQueueService(session_factory=session_factory)
 
 
 def get_database_now(session: Session) -> datetime:
@@ -116,17 +83,19 @@ def create_queue_entry(
 
     resolved_notification_channel_id = notification_channel_id
     resolved_notification_guild_id = notification_guild_id
-    resolved_notification_mention_discord_user_id = notification_mention_discord_user_id
+    resolved_notification_mention_discord_user_id = (
+        player.discord_user_id
+        if notification_mention_discord_user_id is None
+        else notification_mention_discord_user_id
+    )
     resolved_notification_recorded_at = notification_recorded_at
     if (
         resolved_notification_channel_id is None
         and resolved_notification_guild_id is None
-        and resolved_notification_mention_discord_user_id is None
         and resolved_notification_recorded_at is None
     ):
         resolved_notification_channel_id = 600_000 + player_id
         resolved_notification_guild_id = 700_000 + player_id
-        resolved_notification_mention_discord_user_id = player.discord_user_id
         resolved_notification_recorded_at = resolved_last_present_at
 
     queue_entry = MatchQueueEntry(
@@ -192,28 +161,6 @@ def create_waiting_entries(
     return entries
 
 
-def assert_single_scheduled_timer(
-    scheduler: RecordingTaskScheduler,
-    *,
-    queue_entry_id: int,
-    expected_revision: int,
-    expire_at: datetime,
-) -> None:
-    assert len(scheduler.presence_reminder_tasks) == 1
-    assert len(scheduler.expire_tasks) == 1
-
-    reminder_task = scheduler.presence_reminder_tasks[0]
-    expire_task = scheduler.expire_tasks[0]
-
-    assert reminder_task.queue_entry_id == queue_entry_id
-    assert reminder_task.expected_revision == expected_revision
-    assert reminder_task.remind_at == expire_at - PRESENCE_REMINDER_LEAD_TIME
-
-    assert expire_task.queue_entry_id == queue_entry_id
-    assert expire_task.expected_revision == expected_revision
-    assert expire_task.expire_at == expire_at
-
-
 # 未登録プレイヤーの `join` が失敗すること
 def test_join_queue_raises_for_unregistered_player(session_factory: sessionmaker[Session]) -> None:
     service = create_matching_queue_service(session_factory)
@@ -225,33 +172,29 @@ def test_join_queue_raises_for_unregistered_player(session_factory: sessionmaker
 # 初回 `join` で `waiting` 行が作成され、`joined_at`、`last_present_at`、
 # `expire_at`、`revision = 1`、`last_reminded_revision = NULL` が
 # 設定されること
-# `join` 後に在席確認リマインドタスクと expire タスクが登録されること
-def test_join_queue_creates_waiting_entry_and_schedules_timers(
+# `join` 結果に runtime 側がスケジュールに必要な情報が含まれること
+def test_join_queue_creates_waiting_entry(
     session: Session,
     session_factory: sessionmaker[Session],
 ) -> None:
     player = create_player(session, 10_001)
-    scheduler = RecordingTaskScheduler()
-    service = create_matching_queue_service(session_factory, scheduler)
+    service = create_matching_queue_service(session_factory)
 
     result = service.join_queue(player.id)
 
     entries = get_queue_entries_for_player(session, player.id)
 
     assert result.queue_entry_id == entries[0].id
+    assert result.revision == 1
+    assert result.expire_at == entries[0].expire_at
     assert entries[0].status == MatchQueueEntryStatus.WAITING
     assert entries[0].joined_at == entries[0].last_present_at
     assert entries[0].expire_at > entries[0].joined_at
     assert entries[0].revision == 1
     assert entries[0].last_reminded_revision is None
+    assert entries[0].notification_mention_discord_user_id == player.discord_user_id
     assert entries[0].removed_at is None
     assert entries[0].removal_reason is None
-    assert_single_scheduled_timer(
-        scheduler,
-        queue_entry_id=entries[0].id,
-        expected_revision=1,
-        expire_at=entries[0].expire_at,
-    )
 
 
 # `join` 成功時に、新しく作成された `waiting` 行へ通知先コンテキストを保存する
@@ -332,17 +275,14 @@ def test_join_queue_expires_stale_waiting_entry_and_creates_new_entry_without_ou
 
 # 有効な `waiting` 行に対する `present` で `last_present_at` と `expire_at` が
 # 更新され、`revision` が増加し、`last_reminded_revision = NULL` に戻ること
-# `present` 後に新しい在席確認リマインドタスクと expire タスクが
-# 登録されること
-def test_present_updates_waiting_entry_and_reschedules_timers(
+# `present` 結果に runtime 側が再スケジュールに必要な情報が含まれること
+def test_present_updates_waiting_entry(
     session: Session,
     session_factory: sessionmaker[Session],
 ) -> None:
     player = create_player(session, 10_004)
-    scheduler = RecordingTaskScheduler()
-    service = create_matching_queue_service(session_factory, scheduler)
+    service = create_matching_queue_service(session_factory)
     joined = service.join_queue(player.id)
-    scheduler.reset()
 
     result = service.present(player.id)
 
@@ -351,19 +291,13 @@ def test_present_updates_waiting_entry_and_reschedules_timers(
 
     assert result.queue_entry_id == joined.queue_entry_id
     assert result.expired is False
+    assert result.revision == 2
     assert result.expire_at == entry.expire_at
     assert entry.status == MatchQueueEntryStatus.WAITING
     assert entry.revision == 2
     assert entry.last_reminded_revision is None
     assert entry.last_present_at >= entry.joined_at
-    assert scheduler.cancelled_presence_reminders == [entry.id]
-    assert scheduler.cancelled_expires == [entry.id]
-    assert_single_scheduled_timer(
-        scheduler,
-        queue_entry_id=entry.id,
-        expected_revision=2,
-        expire_at=entry.expire_at,
-    )
+    assert entry.notification_mention_discord_user_id == player.discord_user_id
 
 
 # `present` 成功時に、対象の `waiting` 行の通知先コンテキストを上書きする
@@ -425,14 +359,13 @@ def test_present_expires_stale_entry_and_does_not_create_outbox_event(
     session_factory: sessionmaker[Session],
 ) -> None:
     player = create_player(session, 10_006)
-    scheduler = RecordingTaskScheduler()
     now = get_database_now(session)
     entry = create_queue_entry(
         session,
         player_id=player.id,
         expire_at=now - timedelta(seconds=1),
     )
-    service = create_matching_queue_service(session_factory, scheduler)
+    service = create_matching_queue_service(session_factory)
 
     result = service.present(player.id)
 
@@ -440,12 +373,11 @@ def test_present_expires_stale_entry_and_does_not_create_outbox_event(
 
     assert result.queue_entry_id == entry.id
     assert result.expired is True
+    assert result.revision is None
     assert result.expire_at is None
     assert entries[0].status == MatchQueueEntryStatus.EXPIRED
     assert entries[0].removal_reason == MatchQueueRemovalReason.TIMEOUT
     assert get_outbox_events(session) == []
-    assert scheduler.cancelled_presence_reminders == [entry.id]
-    assert scheduler.cancelled_expires == [entry.id]
 
 
 # 古い `revision` を持つ reminder / expire タスクが起きても no-op になること
@@ -498,17 +430,13 @@ def test_task_handlers_wrap_transient_db_errors_as_retryable(
 
 # 有効な `waiting` 行に対する `leave` で `left` に遷移し、`removed_at` と
 # `removal_reason = 'user_leave'` が設定されること
-# `leave` 後にローカルの在席確認リマインドタスクと expire タスクが
-# cancel されること
-def test_leave_marks_waiting_entry_as_left_and_cancels_timers(
+def test_leave_marks_waiting_entry_as_left(
     session: Session,
     session_factory: sessionmaker[Session],
 ) -> None:
     player = create_player(session, 10_008)
-    scheduler = RecordingTaskScheduler()
-    service = create_matching_queue_service(session_factory, scheduler)
+    service = create_matching_queue_service(session_factory)
     joined = service.join_queue(player.id)
-    scheduler.reset()
 
     result = service.leave(player.id)
 
@@ -519,8 +447,6 @@ def test_leave_marks_waiting_entry_as_left_and_cancels_timers(
     assert entries[0].status == MatchQueueEntryStatus.LEFT
     assert entries[0].removed_at is not None
     assert entries[0].removal_reason == MatchQueueRemovalReason.USER_LEAVE
-    assert scheduler.cancelled_presence_reminders == [entries[0].id]
-    assert scheduler.cancelled_expires == [entries[0].id]
 
 
 # `waiting` 行がない場合の `leave` が冪等に成功扱いできること
@@ -545,14 +471,13 @@ def test_leave_expires_stale_waiting_entry_without_creating_outbox_event(
     session_factory: sessionmaker[Session],
 ) -> None:
     player = create_player(session, 10_010)
-    scheduler = RecordingTaskScheduler()
     now = get_database_now(session)
     entry = create_queue_entry(
         session,
         player_id=player.id,
         expire_at=now - timedelta(seconds=1),
     )
-    service = create_matching_queue_service(session_factory, scheduler)
+    service = create_matching_queue_service(session_factory)
 
     result = service.leave(player.id)
 
@@ -563,8 +488,6 @@ def test_leave_expires_stale_waiting_entry_without_creating_outbox_event(
     assert entries[0].status == MatchQueueEntryStatus.EXPIRED
     assert entries[0].removal_reason == MatchQueueRemovalReason.TIMEOUT
     assert get_outbox_events(session) == []
-    assert scheduler.cancelled_presence_reminders == [entry.id]
-    assert scheduler.cancelled_expires == [entry.id]
 
 
 # `expire_at - 1分` に達した `waiting` 行に対して在席確認リマインドが
@@ -865,130 +788,6 @@ def test_matched_entries_make_reminder_and_expire_tasks_noop(
     assert expire_result.expired is False
     assert len(outbox_events) == len({entry.notification_channel_id for entry in entries})
     assert all(event.event_type == OutboxEventType.MATCH_CREATED for event in outbox_events)
-
-
-# 起動時に期限切れ行の cleanup が行われること
-def test_run_startup_sync_cleans_up_expired_entries(
-    session: Session,
-    session_factory: sessionmaker[Session],
-) -> None:
-    player = create_player(session, 40_001)
-    now = get_database_now(session)
-    entry = create_queue_entry(
-        session,
-        player_id=player.id,
-        expire_at=now - timedelta(seconds=1),
-    )
-    service = create_matching_queue_service(session_factory)
-
-    result = service.run_startup_sync()
-
-    session.expire_all()
-    refreshed_entry = session.get(MatchQueueEntry, entry.id)
-    assert refreshed_entry is not None
-    assert result.cleaned_up_queue_entry_ids == (entry.id,)
-    assert refreshed_entry.status == MatchQueueEntryStatus.EXPIRED
-
-
-# 起動時に `try_create_matches()` が実行され、
-# すでに 6 人以上待機しているケースを回収できること
-def test_run_startup_sync_creates_matches_for_existing_waiting_entries(
-    session: Session,
-    session_factory: sessionmaker[Session],
-) -> None:
-    players = create_players(session, 6, start_discord_user_id=40_101)
-    create_waiting_entries(session, players)
-    service = create_matching_queue_service(session_factory)
-
-    result = service.run_startup_sync()
-
-    assert len(result.created_match_ids) == 1
-
-
-# 起動時に reminder 対象の行へ即時リマインドできること
-def test_run_startup_sync_immediately_processes_due_presence_reminders(
-    session: Session,
-    session_factory: sessionmaker[Session],
-) -> None:
-    player = create_player(session, 40_201)
-    now = get_database_now(session)
-    entry = create_queue_entry(
-        session,
-        player_id=player.id,
-        expire_at=now + timedelta(seconds=30),
-    )
-    service = create_matching_queue_service(session_factory)
-
-    result = service.run_startup_sync()
-
-    session.expire_all()
-    refreshed_entry = session.get(MatchQueueEntry, entry.id)
-    outbox_events = get_outbox_events(session)
-
-    assert result.reminded_queue_entry_ids == (entry.id,)
-    assert refreshed_entry is not None
-    assert refreshed_entry.last_reminded_revision == refreshed_entry.revision
-    assert [event.event_type for event in outbox_events] == [OutboxEventType.PRESENCE_REMINDER]
-
-
-# 起動時に将来期限の `waiting` 行へ reminder タスクと expire タスクが
-# 再登録されること
-# 起動時再同期で `last_reminded_revision = revision` の行には
-# reminder タスクを再登録しないこと
-def test_run_startup_sync_reschedules_future_tasks_and_skips_already_reminded_entries(
-    session: Session,
-    session_factory: sessionmaker[Session],
-) -> None:
-    players = create_players(session, 2, start_discord_user_id=40_301)
-    scheduler = RecordingTaskScheduler()
-    now = get_database_now(session)
-    first_entry = create_queue_entry(
-        session,
-        player_id=players[0].id,
-        expire_at=now + timedelta(minutes=3),
-        revision=2,
-        last_reminded_revision=None,
-    )
-    second_entry = create_queue_entry(
-        session,
-        player_id=players[1].id,
-        expire_at=now + timedelta(minutes=3),
-        revision=4,
-        last_reminded_revision=4,
-    )
-    service = create_matching_queue_service(session_factory, scheduler)
-
-    result = service.run_startup_sync()
-
-    assert result.rescheduled_reminder_queue_entry_ids == (first_entry.id,)
-    assert result.rescheduled_expire_queue_entry_ids == (first_entry.id, second_entry.id)
-    assert [task.queue_entry_id for task in scheduler.presence_reminder_tasks] == [first_entry.id]
-    assert sorted(task.queue_entry_id for task in scheduler.expire_tasks) == [
-        first_entry.id,
-        second_entry.id,
-    ]
-
-
-# reconcile による cleanup が発生した場合に warning log を出すこと
-def test_run_reconcile_cycle_logs_warning_when_cleanup_occurs(
-    session: Session,
-    session_factory: sessionmaker[Session],
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    player = create_player(session, 40_401)
-    now = get_database_now(session)
-    entry = create_queue_entry(
-        session,
-        player_id=player.id,
-        expire_at=now - timedelta(seconds=1),
-    )
-    service = create_matching_queue_service(session_factory)
-
-    with caplog.at_level(logging.WARNING, logger="bot.services.matching_queue"):
-        result = service.run_reconcile_cycle()
-
-    assert result.cleaned_up_queue_entry_ids == (entry.id,)
-    assert "Cleanup expired queue entries" in caplog.text
 
 
 # `presence_reminder`、`queue_expired`、`match_created` の

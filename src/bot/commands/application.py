@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+from typing import Any, Protocol
 
 import discord
 from discord import app_commands
@@ -12,11 +12,13 @@ from bot.config import Settings
 from bot.constants import is_dummy_discord_user_id
 from bot.db.session import session_scope
 from bot.services import (
+    JoinQueueResult,
+    LeaveQueueResult,
     MatchingQueueNotificationContext,
-    MatchingQueueService,
     PlayerAlreadyRegisteredError,
     PlayerLookupService,
     PlayerNotRegisteredError,
+    PresentQueueResult,
     QueueAlreadyJoinedError,
     QueueNotJoinedError,
     register_player,
@@ -63,13 +65,31 @@ def is_super_admin(user_id: int, settings: Settings) -> bool:
     return user_id in settings.super_admin_user_ids
 
 
+class MatchingQueueCommandService(Protocol):
+    async def join_queue(
+        self,
+        player_id: int,
+        *,
+        notification_context: MatchingQueueNotificationContext | None = None,
+    ) -> JoinQueueResult: ...
+
+    async def present(
+        self,
+        player_id: int,
+        *,
+        notification_context: MatchingQueueNotificationContext | None = None,
+    ) -> PresentQueueResult: ...
+
+    async def leave(self, player_id: int) -> LeaveQueueResult: ...
+
+
 class BotCommandHandlers:
     def __init__(
         self,
         settings: Settings,
         session_factory: sessionmaker[Session],
         *,
-        matching_queue_service: MatchingQueueService | None = None,
+        matching_queue_service: MatchingQueueCommandService | None = None,
         player_lookup_service: PlayerLookupService | None = None,
         logger: logging.Logger | None = None,
     ) -> None:
@@ -80,11 +100,11 @@ class BotCommandHandlers:
         self.logger = logger or logging.getLogger(__name__)
 
     @property
-    def matching_queue_service(self) -> MatchingQueueService | None:
+    def matching_queue_service(self) -> MatchingQueueCommandService | None:
         return self._matching_queue_service
 
     @matching_queue_service.setter
-    def matching_queue_service(self, service: MatchingQueueService | None) -> None:
+    def matching_queue_service(self, service: MatchingQueueCommandService | None) -> None:
         self._matching_queue_service = service
 
     async def register(self, interaction: discord.Interaction[Any]) -> None:
@@ -108,8 +128,7 @@ class BotCommandHandlers:
             notification_context = self._build_notification_context(interaction)
             player_id = await asyncio.to_thread(self._lookup_player_id, interaction.user.id)
             service = self._require_matching_queue_service()
-            result = await asyncio.to_thread(
-                service.join_queue,
+            result = await service.join_queue(
                 player_id,
                 notification_context=notification_context,
             )
@@ -136,8 +155,7 @@ class BotCommandHandlers:
             notification_context = self._build_notification_context(interaction)
             player_id = await asyncio.to_thread(self._lookup_player_id, interaction.user.id)
             service = self._require_matching_queue_service()
-            result = await asyncio.to_thread(
-                service.present,
+            result = await service.present(
                 player_id,
                 notification_context=notification_context,
             )
@@ -163,7 +181,7 @@ class BotCommandHandlers:
         try:
             player_id = await asyncio.to_thread(self._lookup_player_id, interaction.user.id)
             service = self._require_matching_queue_service()
-            result = await asyncio.to_thread(service.leave, player_id)
+            result = await service.leave(player_id)
         except PlayerNotRegisteredError:
             await self._send_message(interaction, PLAYER_REGISTRATION_REQUIRED_MESSAGE)
             return
@@ -222,8 +240,7 @@ class BotCommandHandlers:
             )
             player_id = await asyncio.to_thread(self._lookup_player_id, target_discord_user_id)
             service = self._require_matching_queue_service()
-            await asyncio.to_thread(
-                service.join_queue,
+            await service.join_queue(
                 player_id,
                 notification_context=notification_context,
             )
@@ -267,8 +284,7 @@ class BotCommandHandlers:
             )
             player_id = await asyncio.to_thread(self._lookup_player_id, target_discord_user_id)
             service = self._require_matching_queue_service()
-            result = await asyncio.to_thread(
-                service.present,
+            result = await service.present(
                 player_id,
                 notification_context=notification_context,
             )
@@ -312,7 +328,7 @@ class BotCommandHandlers:
             target_discord_user_id = self._parse_discord_user_id(discord_user_id)
             player_id = await asyncio.to_thread(self._lookup_player_id, target_discord_user_id)
             service = self._require_matching_queue_service()
-            result = await asyncio.to_thread(service.leave, player_id)
+            result = await service.leave(player_id)
         except ValueError:
             await self._send_message(interaction, INVALID_DISCORD_USER_ID_MESSAGE)
             return
@@ -355,7 +371,7 @@ class BotCommandHandlers:
     def _lookup_player_id(self, discord_user_id: int) -> int:
         return self.player_lookup_service.get_player_id_by_discord_user_id(discord_user_id)
 
-    def _require_matching_queue_service(self) -> MatchingQueueService:
+    def _require_matching_queue_service(self) -> MatchingQueueCommandService:
         if self._matching_queue_service is None:
             raise RuntimeError("MatchingQueueService is not configured")
         return self._matching_queue_service

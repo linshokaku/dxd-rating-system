@@ -8,7 +8,8 @@ from sqlalchemy.orm import Session, sessionmaker
 from bot.commands import BotCommandHandlers, register_app_commands
 from bot.config import Settings
 from bot.db.session import create_db_engine, create_session_factory
-from bot.runtime import DiscordOutboxEventPublisher, MatchingQueueRuntime
+from bot.notifications import DiscordOutboxEventPublisher
+from bot.runtime import MatchingQueueRuntime
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +111,6 @@ def main() -> None:
     client = create_client(settings, session_factory)
     outbox_publisher = DiscordOutboxEventPublisher(
         client=client,
-        session_factory=session_factory,
     )
     matching_queue_runtime = MatchingQueueRuntime.create(
         session_factory=session_factory,

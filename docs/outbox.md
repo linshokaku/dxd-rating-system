@@ -117,31 +117,33 @@
 
 ### `presence_reminder`
 
-- 対象 `queue_entry_id` に紐づく最新の通知先コンテキストを使う
-- 送信先はその `channel_id`
-- mention 対象はその `mention_discord_user_id`
+- service 層は、対象 `queue_entry_id` に紐づく最新の通知先コンテキストを使って event を作成する
+- outbox payload には、その時点の送信先スナップショットを含める
+- 送信先は payload 内の `destination.channel_id`
+- mention 対象は payload 内の `mention_discord_user_id`
 - メッセージ例:
   - `<@123456789012345678> 在席確認です。1分以内に在席更新がない場合はマッチングキューから外れます。`
 
 ### `queue_expired`
 
-- 対象 `queue_entry_id` に紐づく最新の通知先コンテキストを使う
-- 送信先はその `channel_id`
-- mention 対象はその `mention_discord_user_id`
+- service 層は、対象 `queue_entry_id` に紐づく最新の通知先コンテキストを使って event を作成する
+- outbox payload には、その時点の送信先スナップショットを含める
+- 送信先は payload 内の `destination.channel_id`
+- mention 対象は payload 内の `mention_discord_user_id`
 - メッセージ例:
   - `<@123456789012345678> 期限切れでマッチングキューから外れました。`
 
 ### `match_created`
 
 - `match_created` は 1 件のマッチに複数のプレイヤーが含まれる
-- 現時点では、参加した各 `queue_entry` ごとに通知先コンテキストを解決できるようにする
-- runtime 層は、各参加者の通知先コンテキストに対して通知を配送する
+- service 層は、参加した各 `queue_entry` の通知先コンテキストをもとに配送先を集約する
+- 実際の Discord 送信 1 件ごとに 1 outbox event を作成する
+- 各 event の payload には、送信先スナップショットと表示用チーム情報を含める
 
 現時点の配送方針:
 
 - 同じ match について、参加者ごとに「その人が最後にコマンドを打った channel」へ送ってよい
-- 各メッセージには、その通知先コンテキストに対応する `mention_discord_user_id` を付ける
-- 同じ `(channel_id, mention_discord_user_id)` に重複する配送先があれば 1 回にまとめてよい
+- 同じ `channel_id` に重複する配送先があれば 1 回にまとめてよい
 
 メッセージ例:
 
@@ -156,10 +158,7 @@
 
 ### 推奨
 
-配送先コンテキストは、publish 時に別テーブルや別エンティティを再参照して解決してもよいが、現時点では以下のどちらかを満たすことを推奨する。
-
-1. outbox payload に配送先スナップショットを直接入れる
-2. payload に `queue_entry_id` / `queue_entry_ids` を入れ、publish 時にそこから配送先を決定できる
+配送先コンテキストは、`queue_entry` 側にも保持するが、publish 時に別テーブルを再参照しなくても配送できるよう、outbox payload に配送先スナップショットを直接入れる。
 
 現時点の実装方針としては、次を想定する。
 
@@ -168,18 +167,27 @@
   - `player_id`
   - `revision`
   - `expire_at`
+  - `destination`
+  - `mention_discord_user_id`
 - `queue_expired`
   - `queue_entry_id`
   - `player_id`
   - `revision`
   - `expire_at`
+  - `destination`
+  - `mention_discord_user_id`
 - `match_created`
   - `match_id`
   - `queue_entry_ids`
   - `player_ids`
-  - `teams`
+  - `destination`
+  - `team_a_discord_user_ids`
+  - `team_b_discord_user_ids`
 
-ただし、runtime 層で配送先を確実に解決できるよう、別途 `queue_entry` 側に通知先コンテキストが保持されていることを前提とする。
+補足:
+
+- `queue_entry` 側の通知先コンテキストは、`present` 後の最新状態管理と startup sync のために引き続き保持する
+- publish 時の Discord 送信先解決は、基本的に outbox payload のスナップショットだけで完結させる
 
 ## `LISTEN/NOTIFY` と保険用 polling
 

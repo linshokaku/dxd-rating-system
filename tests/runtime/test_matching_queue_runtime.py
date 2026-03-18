@@ -15,9 +15,9 @@ from sqlalchemy.orm import Session, sessionmaker
 import bot.runtime.matching_queue as matching_queue_runtime
 import bot.runtime.outbox as outbox_runtime
 from bot.models import Match, MatchQueueEntry, MatchQueueEntryStatus, OutboxEvent, OutboxEventType
+from bot.notifications import DiscordOutboxEventPublisher
 from bot.runtime import (
     AsyncioMatchingQueueTaskScheduler,
-    DiscordOutboxEventPublisher,
     MatchingQueueRuntime,
     OutboxDispatcher,
     PendingOutboxEvent,
@@ -29,6 +29,7 @@ from bot.services import (
     QUEUE_EXPIRED_NOTIFICATION_MESSAGE,
     ExpireQueueEntryResult,
     ExpireTask,
+    MatchingQueueNotificationContext,
     MatchingQueueService,
     NoopMatchingQueueTaskScheduler,
     PresenceReminderResult,
@@ -200,6 +201,21 @@ def create_players(
     start_discord_user_id: int,
 ) -> list[int]:
     return [create_player(session, start_discord_user_id + index) for index in range(count)]
+
+
+def build_notification_context(
+    discord_user_id: int,
+    *,
+    channel_id: int | None = None,
+    guild_id: int | None = None,
+) -> MatchingQueueNotificationContext:
+    resolved_channel_id = channel_id if channel_id is not None else 800_000 + discord_user_id
+    resolved_guild_id = guild_id if guild_id is not None else 810_000 + discord_user_id
+    return MatchingQueueNotificationContext(
+        channel_id=resolved_channel_id,
+        guild_id=resolved_guild_id,
+        mention_discord_user_id=discord_user_id,
+    )
 
 
 async def publish_with_bound_loop(
@@ -539,7 +555,10 @@ def test_runtime_startup_sync_recovers_missing_tasks_after_join_commit(
         session_factory=session_factory,
         task_scheduler=NoopMatchingQueueTaskScheduler(),
     )
-    join_result = crash_service.join_queue(player_id)
+    join_result = crash_service.join_queue(
+        player_id,
+        notification_context=build_notification_context(70_001),
+    )
 
     async def scenario() -> StartupSyncResult:
         runtime = MatchingQueueRuntime.create(
@@ -574,8 +593,15 @@ def test_runtime_startup_sync_recovers_missing_match_attempt_after_join_commit(
         session_factory=session_factory,
         task_scheduler=NoopMatchingQueueTaskScheduler(),
     )
-    for player_id in player_ids:
-        crash_service.join_queue(player_id)
+    for index, player_id in enumerate(player_ids):
+        crash_service.join_queue(
+            player_id,
+            notification_context=build_notification_context(
+                70_100 + index,
+                channel_id=900_100,
+                guild_id=910_100,
+            ),
+        )
 
     publisher = RecordingOutboxPublisher()
 
@@ -651,6 +677,10 @@ def test_outbox_dispatcher_receives_listen_notify_events(
         last_present_at=datetime.now(timezone.utc),
         expire_at=datetime.now(timezone.utc) + timedelta(seconds=30),
         revision=1,
+        notification_channel_id=900_500,
+        notification_guild_id=910_500,
+        notification_mention_discord_user_id=75_001,
+        notification_recorded_at=datetime.now(timezone.utc),
     )
     session.add(queue_entry)
     session.commit()
@@ -814,37 +844,13 @@ def test_outbox_dispatcher_rebuilds_retry_timers_on_start(
     assert [event.event_type for event in publisher.events] == [OutboxEventType.MATCH_CREATED]
 
 
-def test_discord_outbox_publisher_sends_presence_reminder_to_stored_channel(
-    session: Session,
-    session_factory: sessionmaker[Session],
-) -> None:
-    # 直接対応する `matching_queue.md` のテスト項目はありません。
-    # `presence_reminder`
-    # - 対象 `queue_entry_id` に紐づく最新の通知先コンテキストを使う
-    # - 送信先はその `channel_id`
-    # - mention 対象はその `mention_discord_user_id`
-    player_id = create_player(session, 80_001)
+def test_discord_outbox_publisher_sends_presence_reminder_to_payload_destination() -> None:
     channel_id = 900_001
     guild_id = 910_001
     mention_discord_user_id = 920_001
-    queue_entry = MatchQueueEntry(
-        player_id=player_id,
-        status=MatchQueueEntryStatus.WAITING,
-        joined_at=datetime.now(timezone.utc),
-        last_present_at=datetime.now(timezone.utc),
-        expire_at=datetime.now(timezone.utc) + timedelta(minutes=5),
-        revision=1,
-        notification_channel_id=channel_id,
-        notification_guild_id=guild_id,
-        notification_mention_discord_user_id=mention_discord_user_id,
-        notification_recorded_at=datetime.now(timezone.utc),
-    )
-    session.add(queue_entry)
-    session.commit()
-
     channel = FakeDiscordChannel(id=channel_id, guild=FakeDiscordGuild(id=guild_id))
     client = FakeDiscordClient(channels={channel.id: channel})
-    publisher = DiscordOutboxEventPublisher(client=client, session_factory=session_factory)
+    publisher = DiscordOutboxEventPublisher(client=client)
 
     asyncio.run(
         publish_with_bound_loop(
@@ -853,7 +859,17 @@ def test_discord_outbox_publisher_sends_presence_reminder_to_stored_channel(
                 id=1,
                 event_type=OutboxEventType.PRESENCE_REMINDER,
                 dedupe_key="presence_reminder:1:1",
-                payload={"queue_entry_id": queue_entry.id},
+                payload={
+                    "queue_entry_id": 101,
+                    "player_id": 80_001,
+                    "revision": 1,
+                    "expire_at": datetime.now(timezone.utc).isoformat(),
+                    "destination": {
+                        "channel_id": channel_id,
+                        "guild_id": guild_id,
+                    },
+                    "mention_discord_user_id": mention_discord_user_id,
+                },
                 created_at=datetime.now(timezone.utc),
             ),
         )
@@ -865,40 +881,16 @@ def test_discord_outbox_publisher_sends_presence_reminder_to_stored_channel(
     assert channel.allowed_mentions_history[0].users is True
 
 
-def test_discord_outbox_publisher_fetches_uncached_channel_for_queue_expired(
-    session: Session,
-    session_factory: sessionmaker[Session],
-) -> None:
-    # 直接対応する `matching_queue.md` のテスト項目はありません。
-    # `queue_expired`
-    # - 対象 `queue_entry_id` に紐づく最新の通知先コンテキストを使う
-    # - 送信先はその `channel_id`
-    # - mention 対象はその `mention_discord_user_id`
-    player_id = create_player(session, 80_002)
+def test_discord_outbox_publisher_fetches_uncached_channel_for_queue_expired() -> None:
     channel_id = 900_002
     guild_id = 910_002
     mention_discord_user_id = 920_002
-    queue_entry = MatchQueueEntry(
-        player_id=player_id,
-        status=MatchQueueEntryStatus.EXPIRED,
-        joined_at=datetime.now(timezone.utc),
-        last_present_at=datetime.now(timezone.utc),
-        expire_at=datetime.now(timezone.utc) - timedelta(minutes=1),
-        revision=2,
-        notification_channel_id=channel_id,
-        notification_guild_id=guild_id,
-        notification_mention_discord_user_id=mention_discord_user_id,
-        notification_recorded_at=datetime.now(timezone.utc),
-    )
-    session.add(queue_entry)
-    session.commit()
-
     channel = FakeDiscordChannel(id=channel_id, guild=FakeDiscordGuild(id=guild_id))
     client = FakeDiscordClient(
         channels={channel.id: channel},
         uncached_channel_ids={channel.id},
     )
-    publisher = DiscordOutboxEventPublisher(client=client, session_factory=session_factory)
+    publisher = DiscordOutboxEventPublisher(client=client)
 
     asyncio.run(
         publish_with_bound_loop(
@@ -907,7 +899,17 @@ def test_discord_outbox_publisher_fetches_uncached_channel_for_queue_expired(
                 id=2,
                 event_type=OutboxEventType.QUEUE_EXPIRED,
                 dedupe_key="queue_expired:1:2",
-                payload={"queue_entry_id": queue_entry.id},
+                payload={
+                    "queue_entry_id": 102,
+                    "player_id": 80_002,
+                    "revision": 2,
+                    "expire_at": datetime.now(timezone.utc).isoformat(),
+                    "destination": {
+                        "channel_id": channel_id,
+                        "guild_id": guild_id,
+                    },
+                    "mention_discord_user_id": mention_discord_user_id,
+                },
                 created_at=datetime.now(timezone.utc),
             ),
         )
@@ -919,32 +921,13 @@ def test_discord_outbox_publisher_fetches_uncached_channel_for_queue_expired(
     ]
 
 
-def test_discord_outbox_publisher_renders_dummy_prefix_for_dummy_user_id(
-    session: Session,
-    session_factory: sessionmaker[Session],
-) -> None:
-    player_id = create_player(session, 80_020)
+def test_discord_outbox_publisher_renders_dummy_prefix_for_dummy_user_id() -> None:
     channel_id = 900_020
     guild_id = 910_020
     dummy_discord_user_id = 777
-    queue_entry = MatchQueueEntry(
-        player_id=player_id,
-        status=MatchQueueEntryStatus.WAITING,
-        joined_at=datetime.now(timezone.utc),
-        last_present_at=datetime.now(timezone.utc),
-        expire_at=datetime.now(timezone.utc) + timedelta(minutes=5),
-        revision=1,
-        notification_channel_id=channel_id,
-        notification_guild_id=guild_id,
-        notification_mention_discord_user_id=dummy_discord_user_id,
-        notification_recorded_at=datetime.now(timezone.utc),
-    )
-    session.add(queue_entry)
-    session.commit()
-
     channel = FakeDiscordChannel(id=channel_id, guild=FakeDiscordGuild(id=guild_id))
     client = FakeDiscordClient(channels={channel.id: channel})
-    publisher = DiscordOutboxEventPublisher(client=client, session_factory=session_factory)
+    publisher = DiscordOutboxEventPublisher(client=client)
 
     asyncio.run(
         publish_with_bound_loop(
@@ -953,7 +936,17 @@ def test_discord_outbox_publisher_renders_dummy_prefix_for_dummy_user_id(
                 id=20,
                 event_type=OutboxEventType.PRESENCE_REMINDER,
                 dedupe_key="presence_reminder:20:1",
-                payload={"queue_entry_id": queue_entry.id},
+                payload={
+                    "queue_entry_id": 120,
+                    "player_id": 80_020,
+                    "revision": 1,
+                    "expire_at": datetime.now(timezone.utc).isoformat(),
+                    "destination": {
+                        "channel_id": channel_id,
+                        "guild_id": guild_id,
+                    },
+                    "mention_discord_user_id": dummy_discord_user_id,
+                },
                 created_at=datetime.now(timezone.utc),
             ),
         )
@@ -964,106 +957,13 @@ def test_discord_outbox_publisher_renders_dummy_prefix_for_dummy_user_id(
     ]
 
 
-def test_discord_outbox_publisher_deduplicates_match_created_destinations(
-    session: Session,
-    session_factory: sessionmaker[Session],
-) -> None:
-    # 直接対応する `matching_queue.md` のテスト項目はありません。
-    # `match_created`
-    # - 現時点では、参加した各 `queue_entry` ごとに通知先コンテキストを解決できるようにする
-    # - runtime 層は、各参加者の通知先コンテキストに対して通知を配送する
-    # - 同じ `(channel_id, mention_discord_user_id)` に重複する配送先があれば 1 回にまとめてよい
+def test_discord_outbox_publisher_sends_split_match_created_events() -> None:
     team_a_discord_user_ids = [80_100, 777, 80_102]
     team_b_discord_user_ids = [888, 80_104, 80_105]
-    player_ids = [
-        create_player(session, team_a_discord_user_ids[0]),
-        create_player(session, team_a_discord_user_ids[1]),
-        create_player(session, team_a_discord_user_ids[2]),
-        create_player(session, team_b_discord_user_ids[0]),
-        create_player(session, team_b_discord_user_ids[1]),
-        create_player(session, team_b_discord_user_ids[2]),
-    ]
     first_channel_id = 900_010
     first_guild_id = 910_010
     second_channel_id = 900_011
     second_guild_id = 910_011
-    queue_entries = [
-        MatchQueueEntry(
-            player_id=player_ids[0],
-            status=MatchQueueEntryStatus.MATCHED,
-            joined_at=datetime.now(timezone.utc),
-            last_present_at=datetime.now(timezone.utc),
-            expire_at=datetime.now(timezone.utc) + timedelta(minutes=5),
-            revision=1,
-            notification_channel_id=first_channel_id,
-            notification_guild_id=first_guild_id,
-            notification_mention_discord_user_id=team_a_discord_user_ids[0],
-            notification_recorded_at=datetime.now(timezone.utc),
-        ),
-        MatchQueueEntry(
-            player_id=player_ids[1],
-            status=MatchQueueEntryStatus.MATCHED,
-            joined_at=datetime.now(timezone.utc),
-            last_present_at=datetime.now(timezone.utc),
-            expire_at=datetime.now(timezone.utc) + timedelta(minutes=5),
-            revision=1,
-            notification_channel_id=first_channel_id,
-            notification_guild_id=first_guild_id,
-            notification_mention_discord_user_id=team_a_discord_user_ids[1],
-            notification_recorded_at=datetime.now(timezone.utc),
-        ),
-        MatchQueueEntry(
-            player_id=player_ids[2],
-            status=MatchQueueEntryStatus.MATCHED,
-            joined_at=datetime.now(timezone.utc),
-            last_present_at=datetime.now(timezone.utc),
-            expire_at=datetime.now(timezone.utc) + timedelta(minutes=5),
-            revision=1,
-            notification_channel_id=second_channel_id,
-            notification_guild_id=second_guild_id,
-            notification_mention_discord_user_id=team_a_discord_user_ids[2],
-            notification_recorded_at=datetime.now(timezone.utc),
-        ),
-        MatchQueueEntry(
-            player_id=player_ids[3],
-            status=MatchQueueEntryStatus.MATCHED,
-            joined_at=datetime.now(timezone.utc),
-            last_present_at=datetime.now(timezone.utc),
-            expire_at=datetime.now(timezone.utc) + timedelta(minutes=5),
-            revision=1,
-            notification_channel_id=first_channel_id,
-            notification_guild_id=first_guild_id,
-            notification_mention_discord_user_id=team_b_discord_user_ids[0],
-            notification_recorded_at=datetime.now(timezone.utc),
-        ),
-        MatchQueueEntry(
-            player_id=player_ids[4],
-            status=MatchQueueEntryStatus.MATCHED,
-            joined_at=datetime.now(timezone.utc),
-            last_present_at=datetime.now(timezone.utc),
-            expire_at=datetime.now(timezone.utc) + timedelta(minutes=5),
-            revision=1,
-            notification_channel_id=second_channel_id,
-            notification_guild_id=second_guild_id,
-            notification_mention_discord_user_id=team_b_discord_user_ids[1],
-            notification_recorded_at=datetime.now(timezone.utc),
-        ),
-        MatchQueueEntry(
-            player_id=player_ids[5],
-            status=MatchQueueEntryStatus.MATCHED,
-            joined_at=datetime.now(timezone.utc),
-            last_present_at=datetime.now(timezone.utc),
-            expire_at=datetime.now(timezone.utc) + timedelta(minutes=5),
-            revision=1,
-            notification_channel_id=second_channel_id,
-            notification_guild_id=second_guild_id,
-            notification_mention_discord_user_id=team_b_discord_user_ids[2],
-            notification_recorded_at=datetime.now(timezone.utc),
-        ),
-    ]
-    session.add_all(queue_entries)
-    session.commit()
-
     first_channel = FakeDiscordChannel(
         id=first_channel_id,
         guild=FakeDiscordGuild(id=first_guild_id),
@@ -1078,26 +978,7 @@ def test_discord_outbox_publisher_deduplicates_match_created_destinations(
             second_channel.id: second_channel,
         }
     )
-    publisher = DiscordOutboxEventPublisher(client=client, session_factory=session_factory)
-
-    asyncio.run(
-        publish_with_bound_loop(
-            publisher,
-            PendingOutboxEvent(
-                id=3,
-                event_type=OutboxEventType.MATCH_CREATED,
-                dedupe_key="match_created:1",
-                payload={
-                    "queue_entry_ids": [entry.id for entry in queue_entries],
-                    "teams": {
-                        "team_a": [player_ids[0], player_ids[1], player_ids[2]],
-                        "team_b": [player_ids[3], player_ids[4], player_ids[5]],
-                    },
-                },
-                created_at=datetime.now(timezone.utc),
-            ),
-        )
-    )
+    publisher = DiscordOutboxEventPublisher(client=client)
 
     expected_message = "\n".join(
         [
@@ -1113,6 +994,46 @@ def test_discord_outbox_publisher_deduplicates_match_created_destinations(
         ]
     )
 
+    async def scenario() -> None:
+        await publish_with_bound_loop(
+            publisher,
+            PendingOutboxEvent(
+                id=3,
+                event_type=OutboxEventType.MATCH_CREATED,
+                dedupe_key="match_created:1:900010",
+                payload={
+                    "match_id": 1,
+                    "destination": {
+                        "channel_id": first_channel_id,
+                        "guild_id": first_guild_id,
+                    },
+                    "team_a_discord_user_ids": team_a_discord_user_ids,
+                    "team_b_discord_user_ids": team_b_discord_user_ids,
+                },
+                created_at=datetime.now(timezone.utc),
+            ),
+        )
+        await publish_with_bound_loop(
+            publisher,
+            PendingOutboxEvent(
+                id=4,
+                event_type=OutboxEventType.MATCH_CREATED,
+                dedupe_key="match_created:1:900011",
+                payload={
+                    "match_id": 1,
+                    "destination": {
+                        "channel_id": second_channel_id,
+                        "guild_id": second_guild_id,
+                    },
+                    "team_a_discord_user_ids": team_a_discord_user_ids,
+                    "team_b_discord_user_ids": team_b_discord_user_ids,
+                },
+                created_at=datetime.now(timezone.utc),
+            ),
+        )
+
+    asyncio.run(scenario())
+
     assert first_channel.sent_messages == [
         expected_message,
     ]
@@ -1121,30 +1042,10 @@ def test_discord_outbox_publisher_deduplicates_match_created_destinations(
     ]
 
 
-def test_discord_outbox_publisher_raises_when_notification_context_is_missing(
-    session: Session,
-    session_factory: sessionmaker[Session],
-) -> None:
-    # 直接対応する `matching_queue.md` のテスト項目はありません。
-    # - 配送先コンテキストが欠落している場合は内部エラーとして扱い、warning または error log を出す
-    player_id = create_player(session, 80_003)
-    queue_entry = MatchQueueEntry(
-        player_id=player_id,
-        status=MatchQueueEntryStatus.WAITING,
-        joined_at=datetime.now(timezone.utc),
-        last_present_at=datetime.now(timezone.utc),
-        expire_at=datetime.now(timezone.utc) + timedelta(minutes=5),
-        revision=1,
-    )
-    session.add(queue_entry)
-    session.commit()
+def test_discord_outbox_publisher_raises_when_destination_is_missing() -> None:
+    publisher = DiscordOutboxEventPublisher(client=FakeDiscordClient())
 
-    publisher = DiscordOutboxEventPublisher(
-        client=FakeDiscordClient(),
-        session_factory=session_factory,
-    )
-
-    with pytest.raises(ValueError, match="notification_channel_id"):
+    with pytest.raises(ValueError, match="destination"):
         asyncio.run(
             publish_with_bound_loop(
                 publisher,
@@ -1152,7 +1053,7 @@ def test_discord_outbox_publisher_raises_when_notification_context_is_missing(
                     id=4,
                     event_type=OutboxEventType.PRESENCE_REMINDER,
                     dedupe_key="presence_reminder:2:1",
-                    payload={"queue_entry_id": queue_entry.id},
+                    payload={"mention_discord_user_id": 80_003},
                     created_at=datetime.now(timezone.utc),
                 ),
             )

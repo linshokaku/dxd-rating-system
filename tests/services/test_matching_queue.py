@@ -110,6 +110,24 @@ def create_queue_entry(
     resolved_joined_at = joined_at or current_time
     resolved_last_present_at = last_present_at or resolved_joined_at
     resolved_expire_at = expire_at or (current_time + MATCH_QUEUE_TTL)
+    player = session.get(Player, player_id)
+    if player is None:
+        raise ValueError(f"Player is not registered: {player_id}")
+
+    resolved_notification_channel_id = notification_channel_id
+    resolved_notification_guild_id = notification_guild_id
+    resolved_notification_mention_discord_user_id = notification_mention_discord_user_id
+    resolved_notification_recorded_at = notification_recorded_at
+    if (
+        resolved_notification_channel_id is None
+        and resolved_notification_guild_id is None
+        and resolved_notification_mention_discord_user_id is None
+        and resolved_notification_recorded_at is None
+    ):
+        resolved_notification_channel_id = 600_000 + player_id
+        resolved_notification_guild_id = 700_000 + player_id
+        resolved_notification_mention_discord_user_id = player.discord_user_id
+        resolved_notification_recorded_at = resolved_last_present_at
 
     queue_entry = MatchQueueEntry(
         player_id=player_id,
@@ -119,10 +137,10 @@ def create_queue_entry(
         expire_at=resolved_expire_at,
         revision=revision,
         last_reminded_revision=last_reminded_revision,
-        notification_channel_id=notification_channel_id,
-        notification_guild_id=notification_guild_id,
-        notification_mention_discord_user_id=notification_mention_discord_user_id,
-        notification_recorded_at=notification_recorded_at,
+        notification_channel_id=resolved_notification_channel_id,
+        notification_guild_id=resolved_notification_guild_id,
+        notification_mention_discord_user_id=resolved_notification_mention_discord_user_id,
+        notification_recorded_at=resolved_notification_recorded_at,
         removed_at=removed_at,
         removal_reason=removal_reason,
     )
@@ -781,8 +799,9 @@ def test_try_create_matches_creates_single_match_and_marks_entries_matched(
     assert created_matches[0].queue_entry_ids == tuple(entry.id for entry in queue_entries)
     assert len(participants) == 6
     assert all(entry.status == MatchQueueEntryStatus.MATCHED for entry in entries)
-    assert len(outbox_events) == 1
-    assert outbox_events[0].event_type == OutboxEventType.MATCH_CREATED
+    assert len(outbox_events) == len({entry.notification_channel_id for entry in entries})
+    assert all(event.event_type == OutboxEventType.MATCH_CREATED for event in outbox_events)
+    assert all("destination" in event.payload for event in outbox_events)
 
 
 # 12 人以上の待機で 1 回の `try_create_matches()` が複数マッチを連続生成できること
@@ -844,7 +863,8 @@ def test_matched_entries_make_reminder_and_expire_tasks_noop(
 
     assert reminder_result.reminded is False
     assert expire_result.expired is False
-    assert [event.event_type for event in outbox_events] == [OutboxEventType.MATCH_CREATED]
+    assert len(outbox_events) == len({entry.notification_channel_id for entry in entries})
+    assert all(event.event_type == OutboxEventType.MATCH_CREATED for event in outbox_events)
 
 
 # 起動時に期限切れ行の cleanup が行われること
@@ -991,7 +1011,11 @@ def test_matching_queue_outbox_event_types_are_generated_for_supported_flows(
         player_id=expired_player.id,
         expire_at=now - timedelta(seconds=1),
     )
-    create_waiting_entries(session, match_players, base_joined_at=now + timedelta(seconds=1))
+    match_entries = create_waiting_entries(
+        session,
+        match_players,
+        base_joined_at=now + timedelta(seconds=1),
+    )
     service = create_matching_queue_service(session_factory)
 
     service.process_presence_reminder(reminder_entry.id, expected_revision=1)
@@ -1000,8 +1024,11 @@ def test_matching_queue_outbox_event_types_are_generated_for_supported_flows(
 
     event_types = [event.event_type for event in get_outbox_events(session)]
 
-    assert event_types == [
+    expected_match_created_event_count = len(
+        {entry.notification_channel_id for entry in match_entries}
+    )
+    assert event_types[:2] == [
         OutboxEventType.PRESENCE_REMINDER,
         OutboxEventType.QUEUE_EXPIRED,
-        OutboxEventType.MATCH_CREATED,
     ]
+    assert event_types[2:] == [OutboxEventType.MATCH_CREATED] * expected_match_created_event_count

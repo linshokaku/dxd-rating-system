@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from typing import cast
 
 import discord
@@ -11,8 +11,24 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from bot.commands import BotCommandHandlers
 from bot.config import Settings
-from bot.models import MatchQueueEntry, Player
-from bot.services import MatchingQueueNotificationContext, MatchingQueueService, register_player
+from bot.models import (
+    FinalizedMatchResult,
+    Match,
+    MatchParticipant,
+    MatchParticipantTeam,
+    MatchQueueEntry,
+    MatchQueueEntryStatus,
+    MatchResultType,
+    MatchState,
+    Player,
+)
+from bot.services import (
+    MATCH_QUEUE_TTL,
+    MatchingQueueNotificationContext,
+    MatchingQueueService,
+    MatchService,
+    register_player,
+)
 
 
 @dataclass(frozen=True)
@@ -54,11 +70,13 @@ def create_handlers(
     *,
     super_admin_user_ids: frozenset[int] = frozenset(),
     matching_queue_service: MatchingQueueService | None = None,
+    match_service: MatchService | None = None,
 ) -> BotCommandHandlers:
     return BotCommandHandlers(
         settings=create_settings(super_admin_user_ids=super_admin_user_ids),
         session_factory=session_factory,
         matching_queue_service=matching_queue_service,
+        match_service=match_service,
     )
 
 
@@ -75,6 +93,47 @@ def get_queue_entry(session: Session, player_id: int) -> MatchQueueEntry:
     )
     assert queue_entry is not None
     return queue_entry
+
+
+def create_match(session: Session, players: list[Player]) -> Match:
+    created_at = datetime.now(timezone.utc)
+    match = Match(
+        created_at=created_at,
+        state=MatchState.WAITING_FOR_PARENT,
+        admin_review_required=False,
+    )
+    session.add(match)
+    session.flush()
+
+    for index, player in enumerate(players):
+        queue_entry = MatchQueueEntry(
+            player_id=player.id,
+            status=MatchQueueEntryStatus.MATCHED,
+            joined_at=created_at,
+            last_present_at=created_at,
+            expire_at=created_at + MATCH_QUEUE_TTL,
+            revision=1,
+            notification_channel_id=1_000 + index,
+            notification_guild_id=2_000 + index,
+            notification_mention_discord_user_id=player.discord_user_id,
+            notification_recorded_at=created_at,
+        )
+        session.add(queue_entry)
+        session.flush()
+
+        session.add(
+            MatchParticipant(
+                match_id=match.id,
+                player_id=player.id,
+                queue_entry_id=queue_entry.id,
+                team=MatchParticipantTeam.TEAM_A if index < 3 else MatchParticipantTeam.TEAM_B,
+                slot=(index % 3) + 1,
+                created_at=created_at,
+            )
+        )
+
+    session.commit()
+    return match
 
 
 def test_register_command_registers_requesting_user(
@@ -334,3 +393,79 @@ def test_dev_is_admin_returns_yes_or_no(session_factory: sessionmaker[Session]) 
 
     assert admin_interaction.response.messages == ["はい"]
     assert non_admin_interaction.response.messages == ["いいえ"]
+
+
+def test_match_parent_command_sets_parent_for_requesting_player(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    players = [create_player(session, 90_100 + index) for index in range(6)]
+    match = create_match(session, players)
+    handlers = create_handlers(
+        session_factory,
+        match_service=MatchService(session_factory),
+    )
+    interaction = FakeInteraction(user=FakeUser(id=players[0].discord_user_id))
+
+    asyncio.run(handlers.match_parent(as_interaction(interaction), match.id))
+
+    session.expire_all()
+    refreshed_match = session.get(Match, match.id)
+
+    assert interaction.response.messages == ["親に決定しました。"]
+    assert refreshed_match is not None
+    assert refreshed_match.parent_player_id == players[0].id
+    assert refreshed_match.state == MatchState.WAITING_FOR_RESULT_REPORTS
+
+
+def test_match_win_command_returns_not_open_message_before_report_window(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    players = [create_player(session, 90_200 + index) for index in range(6)]
+    match = create_match(session, players)
+    match_service = MatchService(session_factory)
+    match_service.volunteer_parent(match.id, players[0].id)
+    handlers = create_handlers(
+        session_factory,
+        match_service=match_service,
+    )
+    interaction = FakeInteraction(user=FakeUser(id=players[1].discord_user_id))
+
+    asyncio.run(handlers.match_win(as_interaction(interaction), match.id))
+
+    assert interaction.response.messages == ["この試合ではまだその報告を受け付けていません。"]
+
+
+def test_admin_match_result_command_overrides_match_result(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    players = [create_player(session, 90_300 + index) for index in range(6)]
+    match = create_match(session, players)
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({10}),
+        match_service=MatchService(session_factory),
+    )
+    interaction = FakeInteraction(user=FakeUser(id=10))
+
+    asyncio.run(handlers.admin_match_result(as_interaction(interaction), match.id, "void"))
+
+    session.expire_all()
+    finalized_result = session.get(FinalizedMatchResult, match.id)
+
+    assert interaction.response.messages == ["試合結果を上書きしました。"]
+    assert finalized_result is not None
+    assert finalized_result.final_result == MatchResultType.VOID
+
+
+def test_dev_match_parent_validates_dummy_user_id(
+    session_factory: sessionmaker[Session],
+) -> None:
+    handlers = create_handlers(session_factory, super_admin_user_ids=frozenset({10}))
+    interaction = FakeInteraction(user=FakeUser(id=10))
+
+    asyncio.run(handlers.dev_match_parent(as_interaction(interaction), "1001", 1))
+
+    assert interaction.response.messages == ["discord_user_id が不正です。"]

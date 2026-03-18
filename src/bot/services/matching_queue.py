@@ -21,6 +21,7 @@ from bot.models import (
     MatchQueueEntry,
     MatchQueueEntryStatus,
     MatchQueueRemovalReason,
+    MatchState,
     OutboxEvent,
     OutboxEventType,
     Player,
@@ -557,7 +558,11 @@ class MatchingQueueService:
                 return None
 
             current_time = self._get_database_now(session)
-            match = Match(created_at=current_time)
+            match = Match(
+                created_at=current_time,
+                state=MatchState.WAITING_FOR_PARENT,
+                admin_review_required=False,
+            )
             session.add(match)
             session.flush()
 

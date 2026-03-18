@@ -20,13 +20,15 @@ from bot.services import (
     ExpireTask,
     MatchingQueueService,
     MatchingQueueTaskScheduler,
+    MatchReconcileResult,
+    MatchService,
     PresenceReminderResult,
     PresenceReminderTask,
     RetryableTaskError,
     StartupSyncResult,
 )
 
-DEFAULT_RECONCILE_INTERVAL = timedelta(minutes=5)
+DEFAULT_RECONCILE_INTERVAL = timedelta(seconds=30)
 
 PresenceReminderHandler = Callable[[int, int], PresenceReminderResult]
 ExpireHandler = Callable[[int, int], ExpireQueueEntryResult]
@@ -292,12 +294,14 @@ class MatchingQueueRuntime:
         service: MatchingQueueService,
         scheduler: AsyncioMatchingQueueTaskScheduler,
         *,
+        match_service: MatchService | None = None,
         outbox_dispatcher: OutboxDispatcher | None = None,
         reconcile_interval: timedelta = DEFAULT_RECONCILE_INTERVAL,
         logger: logging.Logger | None = None,
     ) -> None:
         self.service = service
         self.scheduler = scheduler
+        self.match_service = match_service
         self.outbox_dispatcher = outbox_dispatcher
         self.reconcile_interval = reconcile_interval
         self.logger = logger or logging.getLogger(__name__)
@@ -321,6 +325,10 @@ class MatchingQueueRuntime:
             task_scheduler=scheduler,
             logger=logger,
         )
+        match_service = MatchService(
+            session_factory=session_factory,
+            logger=logger,
+        )
         scheduler.bind_handlers(
             presence_reminder_handler=service.process_presence_reminder,
             expire_handler=service.process_expire,
@@ -338,6 +346,7 @@ class MatchingQueueRuntime:
         return cls(
             service=service,
             scheduler=scheduler,
+            match_service=match_service,
             outbox_dispatcher=outbox_dispatcher,
             reconcile_interval=reconcile_interval,
             logger=logger,
@@ -353,6 +362,10 @@ class MatchingQueueRuntime:
             loop = asyncio.get_running_loop()
             self.scheduler.bind_loop(loop)
             startup_result = await self.run_startup_sync()
+            if self.match_service is not None:
+                match_startup_result = await asyncio.to_thread(self.match_service.run_startup_sync)
+                if self._has_match_sync_activity(match_startup_result):
+                    self._log_match_sync_result("Match startup sync", match_startup_result)
             if self.outbox_dispatcher is not None:
                 self.outbox_dispatcher.bind_loop(loop)
                 await self.outbox_dispatcher.start()
@@ -389,6 +402,10 @@ class MatchingQueueRuntime:
         result = await asyncio.to_thread(self.service.run_reconcile_cycle)
         if self._has_sync_activity(result):
             self._log_sync_result("Reconcile cycle", result)
+        if self.match_service is not None:
+            match_result = await asyncio.to_thread(self.match_service.run_reconcile_cycle)
+            if self._has_match_sync_activity(match_result):
+                self._log_match_sync_result("Match reconcile cycle", match_result)
         return result
 
     async def _run_reconcile_loop(self) -> None:
@@ -416,6 +433,15 @@ class MatchingQueueRuntime:
             )
         )
 
+    def _has_match_sync_activity(self, result: MatchReconcileResult) -> bool:
+        return any(
+            (
+                result.auto_parent_match_ids,
+                result.approval_started_match_ids,
+                result.finalized_match_ids,
+            )
+        )
+
     def _log_sync_result(self, context: str, result: StartupSyncResult) -> None:
         self.logger.info(
             "%s finished cleaned_up=%s reminded=%s rescheduled_reminders=%s "
@@ -426,4 +452,13 @@ class MatchingQueueRuntime:
             len(result.rescheduled_reminder_queue_entry_ids),
             len(result.rescheduled_expire_queue_entry_ids),
             len(result.created_match_ids),
+        )
+
+    def _log_match_sync_result(self, context: str, result: MatchReconcileResult) -> None:
+        self.logger.info(
+            "%s finished auto_parent=%s approval_started=%s finalized=%s",
+            context,
+            len(result.auto_parent_match_ids),
+            len(result.approval_started_match_ids),
+            len(result.finalized_match_ids),
         )

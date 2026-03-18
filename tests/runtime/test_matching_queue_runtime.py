@@ -1088,6 +1088,7 @@ def test_discord_outbox_publisher_deduplicates_match_created_destinations(
                 event_type=OutboxEventType.MATCH_CREATED,
                 dedupe_key="match_created:1",
                 payload={
+                    "match_id": 1,
                     "queue_entry_ids": [entry.id for entry in queue_entries],
                     "teams": {
                         "team_a": [player_ids[0], player_ids[1], player_ids[2]],
@@ -1102,6 +1103,8 @@ def test_discord_outbox_publisher_deduplicates_match_created_destinations(
     expected_message = "\n".join(
         [
             MATCH_CREATED_NOTIFICATION_MESSAGE,
+            "Match ID: 1",
+            "5分以内に /match_parent で親に立候補してください。",
             "Team A",
             f"    <@{team_a_discord_user_ids[0]}>",
             f"    <dummy_{team_a_discord_user_ids[1]}>",

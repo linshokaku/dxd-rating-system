@@ -12,7 +12,13 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from bot.constants import is_dummy_discord_user_id
 from bot.db.session import session_scope
-from bot.models import MatchParticipantTeam, MatchQueueEntry, OutboxEventType
+from bot.models import (
+    MatchParticipant,
+    MatchParticipantTeam,
+    MatchQueueEntry,
+    MatchResultType,
+    OutboxEventType,
+)
 from bot.runtime.outbox import PendingOutboxEvent
 from bot.services import (
     MATCH_CREATED_NOTIFICATION_MESSAGE,
@@ -56,10 +62,12 @@ class DiscordOutboxEventPublisher:
         client: DiscordChannelClient,
         session_factory: sessionmaker[Session],
         *,
+        super_admin_user_ids: frozenset[int] = frozenset(),
         logger: logging.Logger | None = None,
     ) -> None:
         self.client = client
         self.session_factory = session_factory
+        self.super_admin_user_ids = super_admin_user_ids
         self.logger = logger or logging.getLogger(__name__)
         self._loop: asyncio.AbstractEventLoop | None = None
         self._allowed_mentions = discord.AllowedMentions(
@@ -126,62 +134,10 @@ class DiscordOutboxEventPublisher:
                 )
 
         if event.event_type == OutboxEventType.MATCH_CREATED:
-            queue_entry_ids = self._require_payload_int_list(event.payload, "queue_entry_ids")
-            if not queue_entry_ids:
-                self._raise_publish_error(
-                    f"queue_entry_ids is empty for match_created outbox event id={event.id}"
-                )
-
-            with session_scope(self.session_factory) as session:
-                entries = session.scalars(
-                    select(MatchQueueEntry)
-                    .where(MatchQueueEntry.id.in_(queue_entry_ids))
-                    .order_by(MatchQueueEntry.id)
-                ).all()
-
-            entries_by_id = {entry.id: entry for entry in entries}
-            missing_queue_entry_ids = [
-                queue_entry_id
-                for queue_entry_id in queue_entry_ids
-                if queue_entry_id not in entries_by_id
-            ]
-            if missing_queue_entry_ids:
-                self._raise_publish_error(
-                    "Queue entries not found for match_created outbox "
-                    f"event id={event.id}: {missing_queue_entry_ids}"
-                )
-
-            teams = self._require_payload_teams(event.payload)
-            display_user_ids_by_player_id = self._build_display_user_ids_by_player_id(
-                entries=entries,
-                event=event,
-            )
-            message_body = self._render_match_created_message(
-                team_a_display_labels=self._build_team_display_labels(
-                    player_ids=teams[MatchParticipantTeam.TEAM_A.value],
-                    display_user_ids_by_player_id=display_user_ids_by_player_id,
-                    event=event,
-                ),
-                team_b_display_labels=self._build_team_display_labels(
-                    player_ids=teams[MatchParticipantTeam.TEAM_B.value],
-                    display_user_ids_by_player_id=display_user_ids_by_player_id,
-                    event=event,
-                ),
-            )
-
-            unique_notifications: dict[int, ResolvedNotification] = {}
-            for queue_entry_id in queue_entry_ids:
-                entry = entries_by_id[queue_entry_id]
-                destination, _mention_discord_user_id = self._build_destination(
-                    entry=entry,
-                    event=event,
-                )
-                unique_notifications.setdefault(
-                    destination.channel_id,
-                    ResolvedNotification(destination=destination, content=message_body),
-                )
-
-            return tuple(unique_notifications.values())
+            notification_kind = event.payload.get("notification_kind")
+            if isinstance(notification_kind, str):
+                return self._resolve_match_progress_notifications(event)
+            return self._resolve_match_created_notifications(event)
 
         self._raise_publish_error(f"Unsupported outbox event type: {event.event_type}")
 
@@ -237,6 +193,7 @@ class DiscordOutboxEventPublisher:
     def _render_match_created_message(
         self,
         *,
+        match_id: int,
         team_a_display_labels: list[str],
         team_b_display_labels: list[str],
     ) -> str:
@@ -245,6 +202,8 @@ class DiscordOutboxEventPublisher:
         return "\n".join(
             [
                 MATCH_CREATED_NOTIFICATION_MESSAGE,
+                f"Match ID: {match_id}",
+                "5分以内に /match_parent で親に立候補してください。",
                 "Team A",
                 *indented_team_a_display_labels,
                 "Team B",
@@ -286,6 +245,229 @@ class DiscordOutboxEventPublisher:
                 )
             display_labels.append(self._format_participant_label(display_user_id))
         return display_labels
+
+    def _resolve_match_created_notifications(
+        self,
+        event: PendingOutboxEvent,
+    ) -> tuple[ResolvedNotification, ...]:
+        queue_entry_ids = self._require_payload_int_list(event.payload, "queue_entry_ids")
+        if not queue_entry_ids:
+            self._raise_publish_error(
+                f"queue_entry_ids is empty for match_created outbox event id={event.id}"
+            )
+
+        with session_scope(self.session_factory) as session:
+            entries = session.scalars(
+                select(MatchQueueEntry)
+                .where(MatchQueueEntry.id.in_(queue_entry_ids))
+                .order_by(MatchQueueEntry.id)
+            ).all()
+
+        entries_by_id = {entry.id: entry for entry in entries}
+        missing_queue_entry_ids = [
+            queue_entry_id
+            for queue_entry_id in queue_entry_ids
+            if queue_entry_id not in entries_by_id
+        ]
+        if missing_queue_entry_ids:
+            self._raise_publish_error(
+                "Queue entries not found for match_created outbox "
+                f"event id={event.id}: {missing_queue_entry_ids}"
+            )
+
+        match_id = self._require_payload_int(event.payload, "match_id")
+        teams = self._require_payload_teams(event.payload)
+        display_user_ids_by_player_id = self._build_display_user_ids_by_player_id(
+            entries=entries,
+            event=event,
+        )
+        message_body = self._render_match_created_message(
+            match_id=match_id,
+            team_a_display_labels=self._build_team_display_labels(
+                player_ids=teams[MatchParticipantTeam.TEAM_A.value],
+                display_user_ids_by_player_id=display_user_ids_by_player_id,
+                event=event,
+            ),
+            team_b_display_labels=self._build_team_display_labels(
+                player_ids=teams[MatchParticipantTeam.TEAM_B.value],
+                display_user_ids_by_player_id=display_user_ids_by_player_id,
+                event=event,
+            ),
+        )
+
+        unique_notifications: dict[int, ResolvedNotification] = {}
+        for queue_entry_id in queue_entry_ids:
+            entry = entries_by_id[queue_entry_id]
+            destination, _mention_discord_user_id = self._build_destination(
+                entry=entry,
+                event=event,
+            )
+            unique_notifications.setdefault(
+                destination.channel_id,
+                ResolvedNotification(destination=destination, content=message_body),
+            )
+
+        return tuple(unique_notifications.values())
+
+    def _resolve_match_progress_notifications(
+        self,
+        event: PendingOutboxEvent,
+    ) -> tuple[ResolvedNotification, ...]:
+        match_id = self._require_payload_int(event.payload, "match_id")
+        with session_scope(self.session_factory) as session:
+            participants = session.scalars(
+                select(MatchParticipant)
+                .where(MatchParticipant.match_id == match_id)
+                .order_by(MatchParticipant.team, MatchParticipant.slot, MatchParticipant.id)
+            ).all()
+
+            if not participants:
+                self._raise_publish_error(
+                    f"Match participants not found for outbox event id={event.id}: {match_id}"
+                )
+
+            destinations_by_channel_id: dict[int, NotificationDestination] = {}
+            display_user_ids_by_player_id: dict[int, int] = {}
+
+            for participant in participants:
+                entry = participant.queue_entry
+                if entry is None:
+                    self._raise_publish_error(
+                        "queue_entry is missing for match notification "
+                        f"event id={event.id} participant_id={participant.id}"
+                    )
+                destination, mention_discord_user_id = self._build_destination(
+                    entry=entry,
+                    event=event,
+                )
+                destinations_by_channel_id.setdefault(destination.channel_id, destination)
+                display_user_ids_by_player_id[participant.player_id] = mention_discord_user_id
+
+        message_body = self._render_match_progress_message(
+            event=event,
+            display_user_ids_by_player_id=display_user_ids_by_player_id,
+        )
+        return tuple(
+            ResolvedNotification(destination=destination, content=message_body)
+            for destination in destinations_by_channel_id.values()
+        )
+
+    def _render_match_progress_message(
+        self,
+        *,
+        event: PendingOutboxEvent,
+        display_user_ids_by_player_id: dict[int, int],
+    ) -> str:
+        match_id = self._require_payload_int(event.payload, "match_id")
+        notification_kind = self._require_payload_str(event.payload, "notification_kind")
+
+        if notification_kind == "match_parent_decided":
+            parent_player_id = self._require_payload_int(event.payload, "parent_player_id")
+            report_open_at = self._require_payload_str(event.payload, "report_open_at")
+            report_deadline_at = self._require_payload_str(event.payload, "report_deadline_at")
+            parent_label = self._label_for_player_id(
+                player_id=parent_player_id,
+                display_user_ids_by_player_id=display_user_ids_by_player_id,
+                event=event,
+            )
+            return "\n".join(
+                [
+                    f"試合 {match_id} の親が決定しました。",
+                    f"親: {parent_label}",
+                    f"勝敗報告開始: {report_open_at}",
+                    f"勝敗報告締切: {report_deadline_at}",
+                ]
+            )
+
+        if notification_kind == "match_approval_started":
+            approval_deadline_at = self._require_payload_str(event.payload, "approval_deadline_at")
+            provisional_result = self._require_match_result_type(
+                event.payload,
+                "provisional_result",
+            )
+            approval_target_player_ids = self._require_payload_int_list(
+                event.payload,
+                "approval_target_player_ids",
+            )
+            result_line = self._render_match_result_label(provisional_result)
+            target_labels = [
+                self._label_for_player_id(
+                    player_id=player_id,
+                    display_user_ids_by_player_id=display_user_ids_by_player_id,
+                    event=event,
+                )
+                for player_id in approval_target_player_ids
+            ]
+            lines = [
+                f"試合 {match_id} の仮決定結果: {result_line}",
+                f"承認期限: {approval_deadline_at}",
+            ]
+            if target_labels:
+                lines.append(f"承認対象: {', '.join(target_labels)}")
+                lines.append("承認できない場合は証拠を提示して admin へ連絡してください。")
+            else:
+                lines.append("承認対象はいません。")
+            return "\n".join(lines)
+
+        if notification_kind == "match_finalized":
+            final_result = self._require_match_result_type(event.payload, "final_result")
+            finalized_at = self._require_payload_str(event.payload, "finalized_at")
+            return "\n".join(
+                [
+                    f"試合 {match_id} の結果が確定しました。",
+                    f"結果: {self._render_match_result_label(final_result)}",
+                    f"確定時刻: {finalized_at}",
+                ]
+            )
+
+        if notification_kind == "match_admin_review_required":
+            final_result = self._require_match_result_type(event.payload, "final_result")
+            reasons = self._require_payload_str_list(event.payload, "reasons")
+            admin_prefix = self._render_admin_mentions()
+            lines = []
+            if admin_prefix:
+                lines.append(admin_prefix)
+            lines.extend(
+                [
+                    f"試合 {match_id} は admin 確認が必要です。",
+                    f"現在結果: {self._render_match_result_label(final_result)}",
+                    f"理由: {', '.join(reasons) if reasons else 'manual_check_required'}",
+                ]
+            )
+            return "\n".join(lines)
+
+        self._raise_publish_error(f"Unsupported outbox event type: {event.event_type}")
+
+    def _label_for_player_id(
+        self,
+        *,
+        player_id: int,
+        display_user_ids_by_player_id: dict[int, int],
+        event: PendingOutboxEvent,
+    ) -> str:
+        display_user_id = display_user_ids_by_player_id.get(player_id)
+        if display_user_id is None:
+            self._raise_publish_error(
+                "Player is missing from match payload resolution "
+                f"event id={event.id} player_id={player_id}"
+            )
+        return self._format_participant_label(display_user_id)
+
+    def _render_match_result_label(self, match_result: MatchResultType) -> str:
+        if match_result == MatchResultType.TEAM_A_WIN:
+            return "Team A の勝ち"
+        if match_result == MatchResultType.TEAM_B_WIN:
+            return "Team B の勝ち"
+        if match_result == MatchResultType.DRAW:
+            return "引き分け"
+        return "無効試合"
+
+    def _render_admin_mentions(self) -> str:
+        if not self.super_admin_user_ids:
+            return ""
+        return " ".join(
+            self._format_participant_label(user_id) for user_id in self.super_admin_user_ids
+        )
 
     def _format_participant_label(self, discord_user_id: int) -> str:
         if is_dummy_discord_user_id(discord_user_id):
@@ -358,6 +540,28 @@ class DiscordOutboxEventPublisher:
         if not isinstance(value, list) or any(not isinstance(item, int) for item in value):
             self._raise_publish_error(f"Outbox payload '{key}' must be a list[int]: {value!r}")
         return cast(list[int], value)
+
+    def _require_payload_str(self, payload: dict[str, object], key: str) -> str:
+        value = payload.get(key)
+        if not isinstance(value, str):
+            self._raise_publish_error(f"Outbox payload '{key}' must be a str: {value!r}")
+        return value
+
+    def _require_payload_str_list(self, payload: dict[str, object], key: str) -> list[str]:
+        value = payload.get(key)
+        if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+            self._raise_publish_error(f"Outbox payload '{key}' must be a list[str]: {value!r}")
+        return cast(list[str], value)
+
+    def _require_match_result_type(self, payload: dict[str, object], key: str) -> MatchResultType:
+        value = self._require_payload_str(payload, key)
+        try:
+            return MatchResultType(value)
+        except ValueError as exc:
+            self._raise_publish_error(
+                f"Outbox payload '{key}' must be a valid match result type: {value!r}"
+            )
+            raise RuntimeError("unreachable") from exc
 
     def _require_loop(self) -> asyncio.AbstractEventLoop:
         if self._loop is None:

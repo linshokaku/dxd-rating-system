@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, ForeignKey, Integer, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, UniqueConstraint
 from sqlalchemy import Enum as SQLAlchemyEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
@@ -21,6 +21,19 @@ if TYPE_CHECKING:
 class MatchParticipantTeam(StrEnum):
     TEAM_A = "team_a"
     TEAM_B = "team_b"
+
+
+class MatchParticipantReportStatus(StrEnum):
+    CORRECT = "correct"
+    INCORRECT = "incorrect"
+    NOT_REPORTED = "not_reported"
+
+
+class MatchParticipantApprovalStatus(StrEnum):
+    NOT_REQUIRED = "not_required"
+    PENDING = "pending"
+    APPROVED = "approved"
+    NOT_APPROVED = "not_approved"
 
 
 class MatchParticipant(Base):
@@ -49,6 +62,42 @@ class MatchParticipant(Base):
         nullable=False,
     )
     slot: Mapped[int] = mapped_column(Integer, nullable=False)
+    report_status: Mapped[MatchParticipantReportStatus | None] = mapped_column(
+        SQLAlchemyEnum(
+            MatchParticipantReportStatus,
+            name="match_participant_report_status",
+            native_enum=False,
+            create_constraint=True,
+            validate_strings=True,
+            values_callable=enum_values,
+        ),
+        nullable=True,
+    )
+    report_status_locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    approval_status: Mapped[MatchParticipantApprovalStatus | None] = mapped_column(
+        SQLAlchemyEnum(
+            MatchParticipantApprovalStatus,
+            name="match_participant_approval_status",
+            native_enum=False,
+            create_constraint=True,
+            validate_strings=True,
+            values_callable=enum_values,
+        ),
+        nullable=True,
+    )
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    auto_incorrect_penalty_applied: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default="false",
+    )
+    auto_not_reported_penalty_applied: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default="false",
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

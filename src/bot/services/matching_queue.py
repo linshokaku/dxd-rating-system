@@ -581,12 +581,15 @@ class MatchingQueueService:
                 matched_queue_entry_ids.append(queue_entry.id)
 
             session.flush()
-            self._enqueue_outbox_event(
-                session,
-                event_type=OutboxEventType.MATCH_CREATED,
-                dedupe_key=f"match_created:{match.id}",
-                payload=self._build_match_created_payload(match.id, queue_entries),
-            )
+            for payload in self._build_match_created_payloads(match.id, queue_entries):
+                destination = payload["destination"]
+                channel_id = destination["channel_id"]
+                self._enqueue_outbox_event(
+                    session,
+                    event_type=OutboxEventType.MATCH_CREATED,
+                    dedupe_key=f"match_created:{match.id}:{channel_id}",
+                    payload=payload,
+                )
 
             created_match = CreatedMatchResult(
                 match_id=match.id,
@@ -605,24 +608,43 @@ class MatchingQueueService:
             )
         return created_match
 
-    def _build_match_created_payload(
+    def _build_match_created_payloads(
         self, match_id: int, queue_entries: Sequence[MatchQueueEntry]
-    ) -> dict[str, Any]:
-        team_a_player_ids = [
-            queue_entry.player_id for queue_entry in queue_entries[:TEAM_PLAYER_COUNT]
+    ) -> tuple[dict[str, Any], ...]:
+        destinations_by_channel_id: dict[int, dict[str, int | None]] = {}
+        for queue_entry in queue_entries:
+            destination = self._build_notification_destination_payload(
+                queue_entry,
+                event_context="match_created",
+            )
+            destinations_by_channel_id.setdefault(destination["channel_id"], destination)
+
+        team_a_discord_user_ids = [
+            self._require_notification_mention_discord_user_id(
+                queue_entry,
+                event_context="match_created",
+            )
+            for queue_entry in queue_entries[:TEAM_PLAYER_COUNT]
         ]
-        team_b_player_ids = [
-            queue_entry.player_id for queue_entry in queue_entries[TEAM_PLAYER_COUNT:]
+        team_b_discord_user_ids = [
+            self._require_notification_mention_discord_user_id(
+                queue_entry,
+                event_context="match_created",
+            )
+            for queue_entry in queue_entries[TEAM_PLAYER_COUNT:]
         ]
-        return {
-            "match_id": match_id,
-            "queue_entry_ids": [queue_entry.id for queue_entry in queue_entries],
-            "player_ids": [queue_entry.player_id for queue_entry in queue_entries],
-            "teams": {
-                MatchParticipantTeam.TEAM_A.value: team_a_player_ids,
-                MatchParticipantTeam.TEAM_B.value: team_b_player_ids,
-            },
-        }
+
+        return tuple(
+            {
+                "match_id": match_id,
+                "queue_entry_ids": [queue_entry.id for queue_entry in queue_entries],
+                "player_ids": [queue_entry.player_id for queue_entry in queue_entries],
+                "destination": destination,
+                "team_a_discord_user_ids": team_a_discord_user_ids,
+                "team_b_discord_user_ids": team_b_discord_user_ids,
+            }
+            for destination in destinations_by_channel_id.values()
+        )
 
     def _load_waiting_entry_timer_states(
         self,
@@ -828,6 +850,14 @@ class MatchingQueueService:
             "player_id": entry.player_id,
             "revision": entry.revision,
             "expire_at": entry.expire_at.isoformat(),
+            "destination": self._build_notification_destination_payload(
+                entry,
+                event_context="presence_reminder",
+            ),
+            "mention_discord_user_id": self._require_notification_mention_discord_user_id(
+                entry,
+                event_context="presence_reminder",
+            ),
         }
 
     def _build_queue_expired_payload(self, entry: MatchQueueEntry) -> dict[str, Any]:
@@ -836,4 +866,40 @@ class MatchingQueueService:
             "player_id": entry.player_id,
             "revision": entry.revision,
             "expire_at": entry.expire_at.isoformat(),
+            "destination": self._build_notification_destination_payload(
+                entry,
+                event_context="queue_expired",
+            ),
+            "mention_discord_user_id": self._require_notification_mention_discord_user_id(
+                entry,
+                event_context="queue_expired",
+            ),
         }
+
+    def _build_notification_destination_payload(
+        self,
+        entry: MatchQueueEntry,
+        *,
+        event_context: str,
+    ) -> dict[str, int | None]:
+        if entry.notification_channel_id is None:
+            raise ValueError(
+                f"notification_channel_id is missing for {event_context} queue_entry_id={entry.id}"
+            )
+        return {
+            "channel_id": entry.notification_channel_id,
+            "guild_id": entry.notification_guild_id,
+        }
+
+    def _require_notification_mention_discord_user_id(
+        self,
+        entry: MatchQueueEntry,
+        *,
+        event_context: str,
+    ) -> int:
+        if entry.notification_mention_discord_user_id is None:
+            raise ValueError(
+                "notification_mention_discord_user_id is missing for "
+                f"{event_context} queue_entry_id={entry.id}"
+            )
+        return entry.notification_mention_discord_user_id

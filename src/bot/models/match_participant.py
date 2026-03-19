@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, ForeignKey, Integer, UniqueConstraint
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, UniqueConstraint
 from sqlalchemy import Enum as SQLAlchemyEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
@@ -49,6 +49,13 @@ class MatchParticipant(Base):
         nullable=False,
     )
     slot: Mapped[int] = mapped_column(Integer, nullable=False)
+    notification_channel_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    notification_guild_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    notification_mention_discord_user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    notification_recorded_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

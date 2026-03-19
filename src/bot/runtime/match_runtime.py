@@ -10,15 +10,24 @@ from typing import Any, ParamSpec, Protocol, TypeVar
 
 from sqlalchemy.orm import Session, sessionmaker
 
+from bot.constants import MATCH_PARENT_SELECTION_WINDOW, PRESENCE_REMINDER_LEAD_TIME
+from bot.models import MatchReportInputResult, MatchResult, MatchState, PenaltyType
 from bot.runtime.outbox import retry_delay_for_failure_count
 from bot.services import (
-    PRESENCE_REMINDER_LEAD_TIME,
+    ActiveMatchTimerState,
     CreatedMatchResult,
     ExpireQueueEntryResult,
     JoinQueueResult,
     LeaveQueueResult,
+    MatchAdminOverrideResult,
+    MatchApprovalResult,
+    MatchFinalizationResult,
+    MatchFlowService,
     MatchingQueueNotificationContext,
     MatchingQueueService,
+    MatchParentAssignmentResult,
+    MatchReportSubmissionResult,
+    PlayerPenaltyAdjustmentResult,
     PresenceReminderResult,
     PresentQueueResult,
     RetryableTaskError,
@@ -69,6 +78,62 @@ class MatchRuntimeService(Protocol):
     ) -> tuple[datetime, tuple[WaitingEntryTimerState, ...]]: ...
 
 
+class MatchFlowRuntimeService(Protocol):
+    def volunteer_parent(
+        self,
+        match_id: int,
+        player_id: int,
+        *,
+        notification_context: MatchingQueueNotificationContext | None = None,
+    ) -> MatchParentAssignmentResult: ...
+
+    def submit_report(
+        self,
+        match_id: int,
+        player_id: int,
+        input_result: MatchReportInputResult,
+        *,
+        notification_context: MatchingQueueNotificationContext | None = None,
+    ) -> MatchReportSubmissionResult: ...
+
+    def approve_provisional_result(
+        self,
+        match_id: int,
+        player_id: int,
+        *,
+        notification_context: MatchingQueueNotificationContext | None = None,
+    ) -> MatchApprovalResult: ...
+
+    def process_parent_deadline(self, match_id: int) -> MatchParentAssignmentResult: ...
+
+    def process_report_open(self, match_id: int) -> bool: ...
+
+    def process_report_deadline(self, match_id: int) -> MatchFinalizationResult: ...
+
+    def process_approval_deadline(self, match_id: int) -> MatchFinalizationResult: ...
+
+    def override_match_result(
+        self,
+        match_id: int,
+        final_result: MatchResult,
+        *,
+        admin_discord_user_id: int,
+    ) -> MatchAdminOverrideResult: ...
+
+    def adjust_penalty(
+        self,
+        player_id: int,
+        penalty_type: PenaltyType,
+        delta: int,
+        *,
+        admin_discord_user_id: int,
+    ) -> PlayerPenaltyAdjustmentResult: ...
+
+    def load_active_match_timer_states(
+        self,
+    ) -> tuple[datetime, tuple[ActiveMatchTimerState, ...]]: ...
+
+
 @dataclass(frozen=True, slots=True)
 class MatchRuntimeSyncResult:
     cleaned_up_queue_entry_ids: tuple[int, ...]
@@ -76,6 +141,14 @@ class MatchRuntimeSyncResult:
     rescheduled_reminder_queue_entry_ids: tuple[int, ...]
     rescheduled_expire_queue_entry_ids: tuple[int, ...]
     created_match_ids: tuple[int, ...]
+    auto_assigned_parent_match_ids: tuple[int, ...] = tuple()
+    opened_report_match_ids: tuple[int, ...] = tuple()
+    started_approval_match_ids: tuple[int, ...] = tuple()
+    finalized_match_ids: tuple[int, ...] = tuple()
+    rescheduled_parent_deadline_match_ids: tuple[int, ...] = tuple()
+    rescheduled_report_open_match_ids: tuple[int, ...] = tuple()
+    rescheduled_report_deadline_match_ids: tuple[int, ...] = tuple()
+    rescheduled_approval_deadline_match_ids: tuple[int, ...] = tuple()
 
 
 class ScheduledTaskKind(StrEnum):
@@ -89,19 +162,35 @@ class ScheduledTaskKey:
     kind: ScheduledTaskKind
 
 
+class MatchScheduledTaskKind(StrEnum):
+    PARENT_DEADLINE = "parent-deadline"
+    REPORT_OPEN = "report-open"
+    REPORT_DEADLINE = "report-deadline"
+    APPROVAL_DEADLINE = "approval-deadline"
+
+
+@dataclass(frozen=True, slots=True)
+class MatchScheduledTaskKey:
+    match_id: int
+    kind: MatchScheduledTaskKind
+
+
 class MatchRuntime:
     def __init__(
         self,
         service: MatchRuntimeService,
         *,
+        match_service: MatchFlowRuntimeService | None = None,
         reconcile_interval: timedelta = DEFAULT_RECONCILE_INTERVAL,
         logger: logging.Logger | None = None,
     ) -> None:
         self.service = service
+        self.match_service = match_service
         self.reconcile_interval = reconcile_interval
         self.logger = logger or logging.getLogger(__name__)
         self._loop: asyncio.AbstractEventLoop | None = None
         self._scheduled_tasks: dict[ScheduledTaskKey, asyncio.Task[None]] = {}
+        self._scheduled_match_tasks: dict[MatchScheduledTaskKey, asyncio.Task[None]] = {}
         self._reconcile_task: asyncio.Task[None] | None = None
         self._closed = False
         self._state_lock = asyncio.Lock()
@@ -111,16 +200,22 @@ class MatchRuntime:
         cls,
         session_factory: sessionmaker[Session],
         *,
+        admin_discord_user_ids: frozenset[int] = frozenset(),
         reconcile_interval: timedelta = DEFAULT_RECONCILE_INTERVAL,
         logger: logging.Logger | None = None,
     ) -> MatchRuntime:
-        service = MatchingQueueService(
+        queue_service = MatchingQueueService(
             session_factory=session_factory,
             logger=logger,
         )
-
+        match_service = MatchFlowService(
+            session_factory=session_factory,
+            admin_discord_user_ids=admin_discord_user_ids,
+            logger=logger,
+        )
         return cls(
-            service=service,
+            service=queue_service,
+            match_service=match_service,
             reconcile_interval=reconcile_interval,
             logger=logger,
         )
@@ -221,6 +316,111 @@ class MatchRuntime:
             self._cancel_scheduled_task(self._expire_task_key(result.queue_entry_id))
         return result
 
+    async def volunteer_parent(
+        self,
+        match_id: int,
+        player_id: int,
+        *,
+        notification_context: MatchingQueueNotificationContext | None = None,
+    ) -> MatchParentAssignmentResult:
+        match_service = self._require_match_service()
+        self._ensure_open()
+        self._bind_current_loop_if_needed()
+        result = await asyncio.to_thread(
+            match_service.volunteer_parent,
+            match_id,
+            player_id,
+            notification_context=notification_context,
+        )
+        if result.assigned:
+            self._cancel_match_task(self._parent_deadline_task_key(match_id))
+            self._schedule_match_reporting_tasks(
+                match_id=match_id,
+                report_open_at=result.report_open_at,
+                report_deadline_at=result.report_deadline_at,
+            )
+        return result
+
+    async def submit_match_report(
+        self,
+        match_id: int,
+        player_id: int,
+        input_result: MatchReportInputResult,
+        *,
+        notification_context: MatchingQueueNotificationContext | None = None,
+    ) -> MatchReportSubmissionResult:
+        match_service = self._require_match_service()
+        self._ensure_open()
+        self._bind_current_loop_if_needed()
+        result = await asyncio.to_thread(
+            match_service.submit_report,
+            match_id,
+            player_id,
+            input_result,
+            notification_context=notification_context,
+        )
+        if result.finalized:
+            self._cancel_all_match_tasks(match_id)
+        elif result.approval_started:
+            self._cancel_match_task(self._report_deadline_task_key(match_id))
+            self._schedule_match_approval_task(match_id, result.approval_deadline_at)
+        return result
+
+    async def approve_match_result(
+        self,
+        match_id: int,
+        player_id: int,
+        *,
+        notification_context: MatchingQueueNotificationContext | None = None,
+    ) -> MatchApprovalResult:
+        match_service = self._require_match_service()
+        self._ensure_open()
+        self._bind_current_loop_if_needed()
+        return await asyncio.to_thread(
+            match_service.approve_provisional_result,
+            match_id,
+            player_id,
+            notification_context=notification_context,
+        )
+
+    async def admin_override_match_result(
+        self,
+        match_id: int,
+        final_result: MatchResult,
+        *,
+        admin_discord_user_id: int,
+    ) -> MatchAdminOverrideResult:
+        match_service = self._require_match_service()
+        self._ensure_open()
+        self._bind_current_loop_if_needed()
+        result = await asyncio.to_thread(
+            match_service.override_match_result,
+            match_id,
+            final_result,
+            admin_discord_user_id=admin_discord_user_id,
+        )
+        self._cancel_all_match_tasks(match_id)
+        return result
+
+    async def adjust_penalty(
+        self,
+        player_id: int,
+        penalty_type: PenaltyType,
+        delta: int,
+        *,
+        admin_discord_user_id: int,
+    ) -> PlayerPenaltyAdjustmentResult:
+        match_service = self._require_match_service()
+        self._ensure_open()
+        self._bind_current_loop_if_needed()
+        return await asyncio.to_thread(
+            match_service.adjust_penalty,
+            player_id,
+            penalty_type,
+            delta,
+            admin_discord_user_id=admin_discord_user_id,
+        )
+
     async def process_presence_reminder(
         self, queue_entry_id: int, expected_revision: int
     ) -> PresenceReminderResult:
@@ -241,6 +441,39 @@ class MatchRuntime:
         if result.expired:
             self._cancel_scheduled_task(self._presence_reminder_task_key(queue_entry_id))
             self._cancel_scheduled_task(self._expire_task_key(queue_entry_id))
+        return result
+
+    async def process_parent_deadline(self, match_id: int) -> MatchParentAssignmentResult:
+        match_service = self._require_match_service()
+        result = await asyncio.to_thread(match_service.process_parent_deadline, match_id)
+        if result.assigned:
+            self._cancel_match_task(self._parent_deadline_task_key(match_id))
+            self._schedule_match_reporting_tasks(
+                match_id=match_id,
+                report_open_at=result.report_open_at,
+                report_deadline_at=result.report_deadline_at,
+            )
+        return result
+
+    async def process_report_open(self, match_id: int) -> bool:
+        match_service = self._require_match_service()
+        return await asyncio.to_thread(match_service.process_report_open, match_id)
+
+    async def process_report_deadline(self, match_id: int) -> MatchFinalizationResult:
+        match_service = self._require_match_service()
+        result = await asyncio.to_thread(match_service.process_report_deadline, match_id)
+        if result.finalized:
+            self._cancel_all_match_tasks(match_id)
+        elif result.approval_deadline_at is not None:
+            self._cancel_match_task(self._report_deadline_task_key(match_id))
+            self._schedule_match_approval_task(match_id, result.approval_deadline_at)
+        return result
+
+    async def process_approval_deadline(self, match_id: int) -> MatchFinalizationResult:
+        match_service = self._require_match_service()
+        result = await asyncio.to_thread(match_service.process_approval_deadline, match_id)
+        if result.finalized:
+            self._cancel_all_match_tasks(match_id)
         return result
 
     async def start(self) -> MatchRuntimeSyncResult:
@@ -360,12 +593,154 @@ class MatchRuntime:
             ):
                 rescheduled_expire_queue_entry_ids.append(waiting_entry.queue_entry_id)
 
+        match_sync_result = await self._sync_active_matches()
         return MatchRuntimeSyncResult(
             cleaned_up_queue_entry_ids=cleaned_up_queue_entry_ids,
             reminded_queue_entry_ids=tuple(reminded_queue_entry_ids),
             rescheduled_reminder_queue_entry_ids=tuple(rescheduled_reminder_queue_entry_ids),
             rescheduled_expire_queue_entry_ids=tuple(rescheduled_expire_queue_entry_ids),
             created_match_ids=tuple(match.match_id for match in created_matches),
+            auto_assigned_parent_match_ids=match_sync_result.auto_assigned_parent_match_ids,
+            opened_report_match_ids=match_sync_result.opened_report_match_ids,
+            started_approval_match_ids=match_sync_result.started_approval_match_ids,
+            finalized_match_ids=match_sync_result.finalized_match_ids,
+            rescheduled_parent_deadline_match_ids=match_sync_result.rescheduled_parent_deadline_match_ids,
+            rescheduled_report_open_match_ids=match_sync_result.rescheduled_report_open_match_ids,
+            rescheduled_report_deadline_match_ids=match_sync_result.rescheduled_report_deadline_match_ids,
+            rescheduled_approval_deadline_match_ids=match_sync_result.rescheduled_approval_deadline_match_ids,
+        )
+
+    async def _sync_active_matches(self) -> MatchRuntimeSyncResult:
+        if self.match_service is None:
+            return MatchRuntimeSyncResult(
+                cleaned_up_queue_entry_ids=tuple(),
+                reminded_queue_entry_ids=tuple(),
+                rescheduled_reminder_queue_entry_ids=tuple(),
+                rescheduled_expire_queue_entry_ids=tuple(),
+                created_match_ids=tuple(),
+            )
+
+        snapshot_time, active_matches = await asyncio.to_thread(
+            self.match_service.load_active_match_timer_states
+        )
+        auto_assigned_parent_match_ids: list[int] = []
+        opened_report_match_ids: list[int] = []
+        started_approval_match_ids: list[int] = []
+        finalized_match_ids: list[int] = []
+        rescheduled_parent_deadline_match_ids: list[int] = []
+        rescheduled_report_open_match_ids: list[int] = []
+        rescheduled_report_deadline_match_ids: list[int] = []
+        rescheduled_approval_deadline_match_ids: list[int] = []
+
+        for active_match in active_matches:
+            if active_match.state == MatchState.WAITING_FOR_PARENT:
+                if active_match.parent_deadline_at <= snapshot_time:
+                    result = await self.process_parent_deadline(active_match.match_id)
+                    if result.assigned:
+                        auto_assigned_parent_match_ids.append(active_match.match_id)
+                else:
+                    self._cancel_match_task(self._parent_deadline_task_key(active_match.match_id))
+                    if self._schedule_match_task(
+                        key=self._parent_deadline_task_key(active_match.match_id),
+                        task_name="match parent deadline",
+                        scheduled_at=active_match.parent_deadline_at,
+                        deadline=None,
+                        handler_call=self._handler_call(
+                            self.process_parent_deadline,
+                            active_match.match_id,
+                        ),
+                    ):
+                        rescheduled_parent_deadline_match_ids.append(active_match.match_id)
+                continue
+
+            if active_match.state == MatchState.WAITING_FOR_RESULT_REPORTS:
+                if (
+                    active_match.report_open_at is not None
+                    and active_match.reporting_opened_at is None
+                    and active_match.report_open_at <= snapshot_time
+                ):
+                    if await self.process_report_open(active_match.match_id):
+                        opened_report_match_ids.append(active_match.match_id)
+                elif (
+                    active_match.report_open_at is not None
+                    and active_match.reporting_opened_at is None
+                ):
+                    self._cancel_match_task(self._report_open_task_key(active_match.match_id))
+                    if self._schedule_match_task(
+                        key=self._report_open_task_key(active_match.match_id),
+                        task_name="match report open",
+                        scheduled_at=active_match.report_open_at,
+                        deadline=active_match.report_deadline_at,
+                        handler_call=self._handler_call(
+                            self.process_report_open,
+                            active_match.match_id,
+                        ),
+                    ):
+                        rescheduled_report_open_match_ids.append(active_match.match_id)
+
+                if active_match.report_deadline_at is not None and (
+                    active_match.report_deadline_at <= snapshot_time
+                ):
+                    report_deadline_result = await self.process_report_deadline(
+                        active_match.match_id
+                    )
+                    if report_deadline_result.finalized:
+                        finalized_match_ids.append(active_match.match_id)
+                    elif report_deadline_result.approval_deadline_at is not None:
+                        started_approval_match_ids.append(active_match.match_id)
+                elif active_match.report_deadline_at is not None:
+                    self._cancel_match_task(self._report_deadline_task_key(active_match.match_id))
+                    if self._schedule_match_task(
+                        key=self._report_deadline_task_key(active_match.match_id),
+                        task_name="match report deadline",
+                        scheduled_at=active_match.report_deadline_at,
+                        deadline=None,
+                        handler_call=self._handler_call(
+                            self.process_report_deadline,
+                            active_match.match_id,
+                        ),
+                    ):
+                        rescheduled_report_deadline_match_ids.append(active_match.match_id)
+                continue
+
+            if active_match.state == MatchState.AWAITING_RESULT_APPROVALS:
+                if (
+                    active_match.approval_deadline_at is not None
+                    and active_match.approval_deadline_at <= snapshot_time
+                ):
+                    approval_deadline_result = await self.process_approval_deadline(
+                        active_match.match_id
+                    )
+                    if approval_deadline_result.finalized:
+                        finalized_match_ids.append(active_match.match_id)
+                elif active_match.approval_deadline_at is not None:
+                    self._cancel_match_task(self._approval_deadline_task_key(active_match.match_id))
+                    if self._schedule_match_task(
+                        key=self._approval_deadline_task_key(active_match.match_id),
+                        task_name="match approval deadline",
+                        scheduled_at=active_match.approval_deadline_at,
+                        deadline=None,
+                        handler_call=self._handler_call(
+                            self.process_approval_deadline,
+                            active_match.match_id,
+                        ),
+                    ):
+                        rescheduled_approval_deadline_match_ids.append(active_match.match_id)
+
+        return MatchRuntimeSyncResult(
+            cleaned_up_queue_entry_ids=tuple(),
+            reminded_queue_entry_ids=tuple(),
+            rescheduled_reminder_queue_entry_ids=tuple(),
+            rescheduled_expire_queue_entry_ids=tuple(),
+            created_match_ids=tuple(),
+            auto_assigned_parent_match_ids=tuple(auto_assigned_parent_match_ids),
+            opened_report_match_ids=tuple(opened_report_match_ids),
+            started_approval_match_ids=tuple(started_approval_match_ids),
+            finalized_match_ids=tuple(finalized_match_ids),
+            rescheduled_parent_deadline_match_ids=tuple(rescheduled_parent_deadline_match_ids),
+            rescheduled_report_open_match_ids=tuple(rescheduled_report_open_match_ids),
+            rescheduled_report_deadline_match_ids=tuple(rescheduled_report_deadline_match_ids),
+            rescheduled_approval_deadline_match_ids=tuple(rescheduled_approval_deadline_match_ids),
         )
 
     async def _try_create_matches(self) -> tuple[CreatedMatchResult, ...]:
@@ -374,6 +749,18 @@ class MatchRuntime:
             for queue_entry_id in created_match.queue_entry_ids:
                 self._cancel_scheduled_task(self._presence_reminder_task_key(queue_entry_id))
                 self._cancel_scheduled_task(self._expire_task_key(queue_entry_id))
+            if created_match.created_at is not None:
+                self._cancel_match_task(self._parent_deadline_task_key(created_match.match_id))
+                self._schedule_match_task(
+                    key=self._parent_deadline_task_key(created_match.match_id),
+                    task_name="match parent deadline",
+                    scheduled_at=created_match.created_at + MATCH_PARENT_SELECTION_WINDOW,
+                    deadline=None,
+                    handler_call=self._handler_call(
+                        self.process_parent_deadline,
+                        created_match.match_id,
+                    ),
+                )
         return created_matches
 
     async def _try_create_matches_safely(self, *, context: str) -> tuple[CreatedMatchResult, ...]:
@@ -416,6 +803,39 @@ class MatchRuntime:
             return False
         return True
 
+    def _schedule_match_task(
+        self,
+        *,
+        key: MatchScheduledTaskKey,
+        task_name: str,
+        scheduled_at: datetime,
+        deadline: datetime | None,
+        handler_call: Callable[[], Awaitable[Any]],
+    ) -> bool:
+        try:
+            self._require_running_on_bound_loop()
+            current_task = self._scheduled_match_tasks.pop(key, None)
+            self._cancel_task(current_task)
+            self._scheduled_match_tasks[key] = asyncio.create_task(
+                self._run_match_scheduled_task(
+                    key=key,
+                    task_name=task_name,
+                    scheduled_at=scheduled_at,
+                    deadline=deadline,
+                    handler_call=handler_call,
+                ),
+                name=f"{key.kind.value}-{key.match_id}",
+            )
+        except Exception:
+            self.logger.exception(
+                "Failed to schedule %s match_id=%s scheduled_at=%s",
+                task_name,
+                key.match_id,
+                scheduled_at.isoformat(),
+            )
+            return False
+        return True
+
     def _handler_call(
         self,
         handler: Callable[P, Awaitable[R]],
@@ -431,6 +851,16 @@ class MatchRuntime:
         self._require_running_on_bound_loop()
         self._cancel_task(self._scheduled_tasks.pop(key, None))
 
+    def _cancel_match_task(self, key: MatchScheduledTaskKey) -> None:
+        self._require_running_on_bound_loop()
+        self._cancel_task(self._scheduled_match_tasks.pop(key, None))
+
+    def _cancel_all_match_tasks(self, match_id: int) -> None:
+        self._cancel_match_task(self._parent_deadline_task_key(match_id))
+        self._cancel_match_task(self._report_open_task_key(match_id))
+        self._cancel_match_task(self._report_deadline_task_key(match_id))
+        self._cancel_match_task(self._approval_deadline_task_key(match_id))
+
     def _presence_reminder_task_key(self, queue_entry_id: int) -> ScheduledTaskKey:
         return ScheduledTaskKey(
             queue_entry_id=queue_entry_id,
@@ -441,6 +871,30 @@ class MatchRuntime:
         return ScheduledTaskKey(
             queue_entry_id=queue_entry_id,
             kind=ScheduledTaskKind.EXPIRE,
+        )
+
+    def _parent_deadline_task_key(self, match_id: int) -> MatchScheduledTaskKey:
+        return MatchScheduledTaskKey(
+            match_id=match_id,
+            kind=MatchScheduledTaskKind.PARENT_DEADLINE,
+        )
+
+    def _report_open_task_key(self, match_id: int) -> MatchScheduledTaskKey:
+        return MatchScheduledTaskKey(
+            match_id=match_id,
+            kind=MatchScheduledTaskKind.REPORT_OPEN,
+        )
+
+    def _report_deadline_task_key(self, match_id: int) -> MatchScheduledTaskKey:
+        return MatchScheduledTaskKey(
+            match_id=match_id,
+            kind=MatchScheduledTaskKind.REPORT_DEADLINE,
+        )
+
+    def _approval_deadline_task_key(self, match_id: int) -> MatchScheduledTaskKey:
+        return MatchScheduledTaskKey(
+            match_id=match_id,
+            kind=MatchScheduledTaskKind.APPROVAL_DEADLINE,
         )
 
     def bind_loop(self, loop: asyncio.AbstractEventLoop) -> None:
@@ -463,8 +917,9 @@ class MatchRuntime:
         try:
             await self._run_handler_with_retry(
                 task_name=task_name,
-                queue_entry_id=key.queue_entry_id,
-                task_kind=key.kind,
+                entity_label="queue_entry_id",
+                entity_id=key.queue_entry_id,
+                task_kind=key.kind.value,
                 scheduled_at=scheduled_at,
                 deadline=deadline,
                 handler_call=handler_call,
@@ -482,12 +937,45 @@ class MatchRuntime:
             if self._scheduled_tasks.get(key) is current_task:
                 self._scheduled_tasks.pop(key, None)
 
+    async def _run_match_scheduled_task(
+        self,
+        *,
+        key: MatchScheduledTaskKey,
+        task_name: str,
+        scheduled_at: datetime,
+        deadline: datetime | None,
+        handler_call: Callable[[], Awaitable[Any]],
+    ) -> None:
+        try:
+            await self._run_handler_with_retry(
+                task_name=task_name,
+                entity_label="match_id",
+                entity_id=key.match_id,
+                task_kind=key.kind.value,
+                scheduled_at=scheduled_at,
+                deadline=deadline,
+                handler_call=handler_call,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            self.logger.exception(
+                "Failed to execute %s match_id=%s",
+                task_name,
+                key.match_id,
+            )
+        finally:
+            current_task = asyncio.current_task()
+            if self._scheduled_match_tasks.get(key) is current_task:
+                self._scheduled_match_tasks.pop(key, None)
+
     async def _run_handler_with_retry(
         self,
         *,
         task_name: str,
-        queue_entry_id: int,
-        task_kind: ScheduledTaskKind,
+        entity_label: str,
+        entity_id: int,
+        task_kind: str,
         scheduled_at: datetime,
         deadline: datetime | None,
         handler_call: Callable[[], Awaitable[Any]],
@@ -505,10 +993,10 @@ class MatchRuntime:
 
                 if deadline is not None and next_retry_at >= deadline:
                     self.logger.info(
-                        "Stopped retrying %s queue_entry_id=%s failure_count=%s "
-                        "next_retry_at=%s deadline=%s",
+                        "Stopped retrying %s %s=%s failure_count=%s next_retry_at=%s deadline=%s",
                         task_name,
-                        queue_entry_id,
+                        entity_label,
+                        entity_id,
                         failure_count,
                         next_retry_at.isoformat(),
                         deadline.isoformat(),
@@ -516,14 +1004,14 @@ class MatchRuntime:
                     return
 
                 self.logger.warning(
-                    "Retrying %s queue_entry_id=%s failure_count=%s next_retry_at=%s "
-                    "error_type=%s kind=%s",
+                    "Retrying %s %s=%s failure_count=%s next_retry_at=%s error_type=%s kind=%s",
                     task_name,
-                    queue_entry_id,
+                    entity_label,
+                    entity_id,
                     failure_count,
                     next_retry_at.isoformat(),
                     type(exc).__name__,
-                    task_kind.value,
+                    task_kind,
                     exc_info=exc,
                 )
                 await asyncio.sleep(retry_delay.total_seconds())
@@ -531,9 +1019,10 @@ class MatchRuntime:
 
             if failure_count > 0:
                 self.logger.info(
-                    "Recovered %s queue_entry_id=%s failure_count=%s",
+                    "Recovered %s %s=%s failure_count=%s",
                     task_name,
-                    queue_entry_id,
+                    entity_label,
+                    entity_id,
                     failure_count,
                 )
             return
@@ -548,17 +1037,16 @@ class MatchRuntime:
             return
 
         self._require_running_on_bound_loop()
-        await self._aclose_scheduled_tasks_on_loop()
-
-    async def _aclose_scheduled_tasks_on_loop(self) -> None:
         scheduled_tasks = list(self._scheduled_tasks.values())
+        match_tasks = list(self._scheduled_match_tasks.values())
         self._scheduled_tasks.clear()
+        self._scheduled_match_tasks.clear()
 
-        for task in scheduled_tasks:
+        for task in [*scheduled_tasks, *match_tasks]:
             task.cancel()
 
-        if scheduled_tasks:
-            await asyncio.gather(*scheduled_tasks, return_exceptions=True)
+        if scheduled_tasks or match_tasks:
+            await asyncio.gather(*scheduled_tasks, *match_tasks, return_exceptions=True)
 
     def _cancel_task(self, task: asyncio.Task[Any] | None) -> None:
         if task is None:
@@ -577,12 +1065,58 @@ class MatchRuntime:
         if asyncio.get_running_loop() is not self._loop:
             raise RuntimeError("MatchRuntime must be called on the bound loop")
 
+    def _require_match_service(self) -> MatchFlowRuntimeService:
+        if self.match_service is None:
+            raise RuntimeError("Match flow service is not configured")
+        return self.match_service
+
+    def _schedule_match_reporting_tasks(
+        self,
+        *,
+        match_id: int,
+        report_open_at: datetime | None,
+        report_deadline_at: datetime | None,
+    ) -> None:
+        if report_open_at is not None:
+            self._cancel_match_task(self._report_open_task_key(match_id))
+            self._schedule_match_task(
+                key=self._report_open_task_key(match_id),
+                task_name="match report open",
+                scheduled_at=report_open_at,
+                deadline=report_deadline_at,
+                handler_call=self._handler_call(self.process_report_open, match_id),
+            )
+        if report_deadline_at is not None:
+            self._cancel_match_task(self._report_deadline_task_key(match_id))
+            self._schedule_match_task(
+                key=self._report_deadline_task_key(match_id),
+                task_name="match report deadline",
+                scheduled_at=report_deadline_at,
+                deadline=None,
+                handler_call=self._handler_call(self.process_report_deadline, match_id),
+            )
+
+    def _schedule_match_approval_task(
+        self,
+        match_id: int,
+        approval_deadline_at: datetime | None,
+    ) -> None:
+        if approval_deadline_at is None:
+            return
+        self._cancel_match_task(self._approval_deadline_task_key(match_id))
+        self._schedule_match_task(
+            key=self._approval_deadline_task_key(match_id),
+            task_name="match approval deadline",
+            scheduled_at=approval_deadline_at,
+            deadline=None,
+            handler_call=self._handler_call(self.process_approval_deadline, match_id),
+        )
+
     def _seconds_until(self, scheduled_at: datetime) -> float:
         if scheduled_at.tzinfo is None:
             current_time = datetime.now()
         else:
             current_time = datetime.now(tz=scheduled_at.tzinfo)
-
         return max((scheduled_at - current_time).total_seconds(), 0.0)
 
     def _current_time_for(self, reference: datetime) -> datetime:
@@ -598,17 +1132,36 @@ class MatchRuntime:
                 result.rescheduled_reminder_queue_entry_ids,
                 result.rescheduled_expire_queue_entry_ids,
                 result.created_match_ids,
+                result.auto_assigned_parent_match_ids,
+                result.opened_report_match_ids,
+                result.started_approval_match_ids,
+                result.finalized_match_ids,
+                result.rescheduled_parent_deadline_match_ids,
+                result.rescheduled_report_open_match_ids,
+                result.rescheduled_report_deadline_match_ids,
+                result.rescheduled_approval_deadline_match_ids,
             )
         )
 
     def _log_sync_result(self, context: str, result: MatchRuntimeSyncResult) -> None:
         self.logger.info(
             "%s finished cleaned_up=%s reminded=%s rescheduled_reminders=%s "
-            "rescheduled_expires=%s created_matches=%s",
+            "rescheduled_expires=%s created_matches=%s auto_assigned_parents=%s "
+            "opened_reports=%s started_approvals=%s finalized_matches=%s "
+            "rescheduled_parent_deadlines=%s rescheduled_report_open=%s "
+            "rescheduled_report_deadlines=%s rescheduled_approval_deadlines=%s",
             context,
             len(result.cleaned_up_queue_entry_ids),
             len(result.reminded_queue_entry_ids),
             len(result.rescheduled_reminder_queue_entry_ids),
             len(result.rescheduled_expire_queue_entry_ids),
             len(result.created_match_ids),
+            len(result.auto_assigned_parent_match_ids),
+            len(result.opened_report_match_ids),
+            len(result.started_approval_match_ids),
+            len(result.finalized_match_ids),
+            len(result.rescheduled_parent_deadline_match_ids),
+            len(result.rescheduled_report_open_match_ids),
+            len(result.rescheduled_report_deadline_match_ids),
+            len(result.rescheduled_approval_deadline_match_ids),
         )

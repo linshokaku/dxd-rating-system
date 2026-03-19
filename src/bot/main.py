@@ -34,6 +34,7 @@ class BotClient(discord.Client):
             settings=settings,
             session_factory=session_factory,
             matching_queue_service=_match_runtime_for(bot_runtime),
+            match_service=_match_runtime_for(bot_runtime),
             logger=logger,
         )
         register_app_commands(self.tree, self.command_handlers)
@@ -47,6 +48,7 @@ class BotClient(discord.Client):
     def bot_runtime(self, runtime: BotRuntime | None) -> None:
         self._bot_runtime = runtime
         self.command_handlers.matching_queue_service = _match_runtime_for(runtime)
+        self.command_handlers.match_service = _match_runtime_for(runtime)
 
     async def setup_hook(self) -> None:
         synced_commands = await self.tree.sync()
@@ -116,6 +118,7 @@ def main() -> None:
     )
     match_runtime = MatchRuntime.create(
         session_factory=session_factory,
+        admin_discord_user_ids=settings.super_admin_user_ids,
     )
     outbox_dispatcher = OutboxDispatcher(
         session_factory=session_factory,

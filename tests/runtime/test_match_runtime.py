@@ -15,7 +15,17 @@ from sqlalchemy.orm import Session, sessionmaker
 
 import bot.runtime.match_runtime as match_runtime_module
 import bot.runtime.outbox as outbox_runtime
-from bot.models import Match, MatchQueueEntry, MatchQueueEntryStatus, OutboxEvent, OutboxEventType
+from bot.constants import PRESENCE_REMINDER_LEAD_TIME
+from bot.models import (
+    Match,
+    MatchQueueEntry,
+    MatchQueueEntryStatus,
+    MatchReportInputResult,
+    MatchResult,
+    MatchState,
+    OutboxEvent,
+    OutboxEventType,
+)
 from bot.notifications import DiscordOutboxEventPublisher
 from bot.runtime import (
     BotRuntime,
@@ -28,16 +38,21 @@ from bot.runtime import (
     PendingOutboxEvent,
 )
 from bot.services import (
+    MATCH_APPROVAL_REQUESTED_NOTIFICATION_MESSAGE,
+    MATCH_APPROVAL_STARTED_NOTIFICATION_MESSAGE,
+    MATCH_AUTO_PENALTY_APPLIED_NOTIFICATION_MESSAGE,
     MATCH_CREATED_NOTIFICATION_MESSAGE,
-    PRESENCE_REMINDER_LEAD_TIME,
     PRESENCE_REMINDER_NOTIFICATION_MESSAGE,
     QUEUE_EXPIRED_NOTIFICATION_MESSAGE,
+    ActiveMatchTimerState,
     CreatedMatchResult,
     ExpireQueueEntryResult,
     JoinQueueResult,
     LeaveQueueResult,
+    MatchFinalizationResult,
     MatchingQueueNotificationContext,
     MatchingQueueService,
+    MatchReportSubmissionResult,
     PresenceReminderResult,
     PresentQueueResult,
     RetryableTaskError,
@@ -517,6 +532,66 @@ def test_match_runtime_process_expire_calls_service_and_cancels_timers(
     ]
 
 
+def test_match_runtime_submit_match_report_cancels_match_tasks_when_finalized(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = Mock()
+    match_service = Mock()
+    report_result = MatchReportSubmissionResult(
+        match_id=701,
+        report_id=801,
+        finalized=True,
+        approval_started=False,
+        approval_deadline_at=None,
+    )
+    match_service.submit_report.return_value = report_result
+    runtime = MatchRuntime(service=service, match_service=match_service)
+    cancel_all_match_tasks = Mock()
+    schedule_match_approval_task = Mock()
+    monkeypatch.setattr(runtime, "_cancel_all_match_tasks", cancel_all_match_tasks)
+    monkeypatch.setattr(runtime, "_schedule_match_approval_task", schedule_match_approval_task)
+
+    result = asyncio.run(runtime.submit_match_report(701, 901, MatchReportInputResult.WIN))
+
+    assert result == report_result
+    match_service.submit_report.assert_called_once_with(
+        701,
+        901,
+        MatchReportInputResult.WIN,
+        notification_context=None,
+    )
+    cancel_all_match_tasks.assert_called_once_with(701)
+    schedule_match_approval_task.assert_not_called()
+
+
+def test_match_runtime_process_report_deadline_cancels_match_tasks_when_finalized(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = Mock()
+    match_service = Mock()
+    report_deadline_result = MatchFinalizationResult(
+        match_id=702,
+        final_result=MatchResult.TEAM_A_WIN,
+        finalized=True,
+        finalized_at=datetime.now(timezone.utc),
+        approval_deadline_at=None,
+        admin_review_required=False,
+    )
+    match_service.process_report_deadline.return_value = report_deadline_result
+    runtime = MatchRuntime(service=service, match_service=match_service)
+    cancel_all_match_tasks = Mock()
+    schedule_match_approval_task = Mock()
+    monkeypatch.setattr(runtime, "_cancel_all_match_tasks", cancel_all_match_tasks)
+    monkeypatch.setattr(runtime, "_schedule_match_approval_task", schedule_match_approval_task)
+
+    result = asyncio.run(runtime.process_report_deadline(702))
+
+    assert result == report_deadline_result
+    match_service.process_report_deadline.assert_called_once_with(702)
+    cancel_all_match_tasks.assert_called_once_with(702)
+    schedule_match_approval_task.assert_not_called()
+
+
 def test_match_runtime_run_startup_sync_calls_service_and_reschedules(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -711,6 +786,57 @@ def test_match_runtime_run_reconcile_cycle_passes_warn_on_cleanup() -> None:
         rescheduled_expire_queue_entry_ids=tuple(),
         created_match_ids=tuple(),
     )
+
+
+def test_match_runtime_run_reconcile_cycle_records_finalized_match_on_report_deadline() -> None:
+    service = Mock()
+    match_service = Mock()
+    snapshot_time = datetime.now(timezone.utc)
+    service.cleanup_expired_entries.return_value = tuple()
+    service.try_create_matches.return_value = tuple()
+    service.load_waiting_entry_timer_states.return_value = (snapshot_time, tuple())
+    match_service.load_active_match_timer_states.return_value = (
+        snapshot_time,
+        (
+            ActiveMatchTimerState(
+                match_id=801,
+                state=MatchState.WAITING_FOR_RESULT_REPORTS,
+                parent_deadline_at=snapshot_time - timedelta(minutes=10),
+                report_open_at=snapshot_time - timedelta(minutes=5),
+                reporting_opened_at=snapshot_time - timedelta(minutes=5),
+                report_deadline_at=snapshot_time - timedelta(seconds=1),
+                approval_deadline_at=None,
+            ),
+        ),
+    )
+    match_service.process_report_deadline.return_value = MatchFinalizationResult(
+        match_id=801,
+        final_result=MatchResult.TEAM_A_WIN,
+        finalized=True,
+        finalized_at=snapshot_time,
+        approval_deadline_at=None,
+        admin_review_required=False,
+    )
+    runtime = MatchRuntime(service=service, match_service=match_service)
+
+    result = asyncio.run(runtime.run_reconcile_cycle())
+
+    assert result == MatchRuntimeSyncResult(
+        cleaned_up_queue_entry_ids=tuple(),
+        reminded_queue_entry_ids=tuple(),
+        rescheduled_reminder_queue_entry_ids=tuple(),
+        rescheduled_expire_queue_entry_ids=tuple(),
+        created_match_ids=tuple(),
+        auto_assigned_parent_match_ids=tuple(),
+        opened_report_match_ids=tuple(),
+        started_approval_match_ids=tuple(),
+        finalized_match_ids=(801,),
+        rescheduled_parent_deadline_match_ids=tuple(),
+        rescheduled_report_open_match_ids=tuple(),
+        rescheduled_report_deadline_match_ids=tuple(),
+        rescheduled_approval_deadline_match_ids=tuple(),
+    )
+    match_service.process_report_deadline.assert_called_once_with(801)
 
 
 def test_match_runtime_runs_due_scheduled_tasks() -> None:
@@ -1528,7 +1654,7 @@ def test_discord_outbox_publisher_sends_split_match_created_events() -> None:
 
     expected_message = "\n".join(
         [
-            MATCH_CREATED_NOTIFICATION_MESSAGE,
+            f"{MATCH_CREATED_NOTIFICATION_MESSAGE} match_id=1",
             "Team A",
             f"    <@{team_a_discord_user_ids[0]}>",
             f"    <dummy_{team_a_discord_user_ids[1]}>",
@@ -1586,6 +1712,139 @@ def test_discord_outbox_publisher_sends_split_match_created_events() -> None:
     assert second_channel.sent_messages == [
         expected_message,
     ]
+
+
+def test_discord_outbox_publisher_renders_match_approval_phase_started_message() -> None:
+    channel = FakeDiscordChannel(
+        id=900_020,
+        guild=FakeDiscordGuild(id=910_020),
+    )
+    client = FakeDiscordClient(channels={channel.id: channel})
+    publisher = DiscordOutboxEventPublisher(client=client)
+
+    expected_message = "\n".join(
+        [
+            f"{MATCH_APPROVAL_STARTED_NOTIFICATION_MESSAGE} match_id=11",
+            "仮決定結果: チーム A の勝ち",
+            "承認締切: 2026-03-20T12:34:56+00:00",
+        ]
+    )
+
+    async def scenario() -> None:
+        await publish_with_bound_loop(
+            publisher,
+            PendingOutboxEvent(
+                id=5,
+                event_type=OutboxEventType.MATCH_APPROVAL_REQUESTED,
+                dedupe_key="match_approval_requested:phase_started:11:900020",
+                payload={
+                    "match_id": 11,
+                    "provisional_result": "team_a_win",
+                    "approval_deadline_at": "2026-03-20T12:34:56+00:00",
+                    "phase_started": True,
+                    "destination": {
+                        "channel_id": channel.id,
+                        "guild_id": channel.guild.id,
+                    },
+                },
+                created_at=datetime.now(timezone.utc),
+            ),
+        )
+
+    asyncio.run(scenario())
+
+    assert channel.sent_messages == [expected_message]
+
+
+def test_discord_outbox_publisher_renders_match_approval_request_message() -> None:
+    channel = FakeDiscordChannel(
+        id=900_021,
+        guild=FakeDiscordGuild(id=910_021),
+    )
+    client = FakeDiscordClient(channels={channel.id: channel})
+    publisher = DiscordOutboxEventPublisher(client=client)
+
+    expected_message = "\n".join(
+        [
+            f"<@80021> {MATCH_APPROVAL_REQUESTED_NOTIFICATION_MESSAGE} match_id=12",
+            "仮決定結果: チーム B の勝ち",
+            "承認締切: 2026-03-20T12:44:56+00:00",
+            "承認できない場合は証拠を提示したうえで admin へ連絡してください。",
+        ]
+    )
+
+    async def scenario() -> None:
+        await publish_with_bound_loop(
+            publisher,
+            PendingOutboxEvent(
+                id=6,
+                event_type=OutboxEventType.MATCH_APPROVAL_REQUESTED,
+                dedupe_key="match_approval_requested:12:1001",
+                payload={
+                    "match_id": 12,
+                    "provisional_result": "team_b_win",
+                    "approval_deadline_at": "2026-03-20T12:44:56+00:00",
+                    "phase_started": False,
+                    "mention_discord_user_id": 80_021,
+                    "destination": {
+                        "channel_id": channel.id,
+                        "guild_id": channel.guild.id,
+                    },
+                },
+                created_at=datetime.now(timezone.utc),
+            ),
+        )
+
+    asyncio.run(scenario())
+
+    assert channel.sent_messages == [expected_message]
+
+
+def test_discord_outbox_publisher_renders_match_auto_penalty_message() -> None:
+    channel = FakeDiscordChannel(
+        id=900_022,
+        guild=FakeDiscordGuild(id=910_022),
+    )
+    client = FakeDiscordClient(channels={channel.id: channel})
+    publisher = DiscordOutboxEventPublisher(client=client)
+
+    expected_message = "\n".join(
+        [
+            f"<@80022> {MATCH_AUTO_PENALTY_APPLIED_NOTIFICATION_MESSAGE} match_id=13",
+            "結果: チーム A の勝ち",
+            "ペナルティ: 誤報告",
+            "現在の累積: 2",
+        ]
+    )
+
+    async def scenario() -> None:
+        await publish_with_bound_loop(
+            publisher,
+            PendingOutboxEvent(
+                id=7,
+                event_type=OutboxEventType.MATCH_FINALIZED,
+                dedupe_key="match_finalized:auto_penalty:13:1002:automatic",
+                payload={
+                    "match_id": 13,
+                    "final_result": "team_a_win",
+                    "finalized_at": "2026-03-20T13:44:56+00:00",
+                    "finalized_by_admin": False,
+                    "auto_penalty_applied": True,
+                    "mention_discord_user_id": 80_022,
+                    "penalty_type": "incorrect_report",
+                    "penalty_count": 2,
+                    "destination": {
+                        "channel_id": channel.id,
+                        "guild_id": channel.guild.id,
+                    },
+                },
+                created_at=datetime.now(timezone.utc),
+            ),
+        )
+
+    asyncio.run(scenario())
+
+    assert channel.sent_messages == [expected_message]
 
 
 def test_discord_outbox_publisher_raises_when_destination_is_missing() -> None:

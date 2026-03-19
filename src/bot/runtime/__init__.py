@@ -1,8 +1,8 @@
 from bot.runtime.application import BotRuntime, BotRuntimeStartResult
-from bot.runtime.matching_queue import (
+from bot.runtime.match_runtime import (
     DEFAULT_RECONCILE_INTERVAL,
-    MatchingQueueRuntime,
-    StartupSyncResult,
+    MatchRuntime,
+    MatchRuntimeSyncResult,
 )
 from bot.runtime.outbox import (
     DEFAULT_OUTBOX_BATCH_SIZE,
@@ -21,12 +21,12 @@ __all__ = [
     "DEFAULT_OUTBOX_BATCH_SIZE",
     "DEFAULT_OUTBOX_POLL_INTERVAL",
     "DEFAULT_RECONCILE_INTERVAL",
-    "MatchingQueueRuntime",
+    "MatchRuntime",
+    "MatchRuntimeSyncResult",
     "NoopOutboxDispatcher",
     "NoopOutboxEventPublisher",
     "OutboxDispatcher",
     "OutboxEventPublisher",
     "OutboxStartupResult",
     "PendingOutboxEvent",
-    "StartupSyncResult",
 ]

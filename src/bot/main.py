@@ -9,13 +9,13 @@ from bot.commands import BotCommandHandlers, register_app_commands
 from bot.config import Settings
 from bot.db.session import create_db_engine, create_session_factory
 from bot.notifications import DiscordOutboxEventPublisher
-from bot.runtime import BotRuntime, MatchingQueueRuntime, OutboxDispatcher
+from bot.runtime import BotRuntime, MatchRuntime, OutboxDispatcher
 
 logger = logging.getLogger(__name__)
 
 
-def _matching_queue_runtime_for(runtime: BotRuntime | None) -> MatchingQueueRuntime | None:
-    return None if runtime is None else runtime.matching_queue_runtime
+def _match_runtime_for(runtime: BotRuntime | None) -> MatchRuntime | None:
+    return None if runtime is None else runtime.match_runtime
 
 
 class BotClient(discord.Client):
@@ -33,7 +33,8 @@ class BotClient(discord.Client):
         self.command_handlers = BotCommandHandlers(
             settings=settings,
             session_factory=session_factory,
-            matching_queue_service=_matching_queue_runtime_for(bot_runtime),
+            matching_queue_service=_match_runtime_for(bot_runtime),
+            match_service=_match_runtime_for(bot_runtime),
             logger=logger,
         )
         register_app_commands(self.tree, self.command_handlers)
@@ -46,7 +47,8 @@ class BotClient(discord.Client):
     @bot_runtime.setter
     def bot_runtime(self, runtime: BotRuntime | None) -> None:
         self._bot_runtime = runtime
-        self.command_handlers.matching_queue_service = _matching_queue_runtime_for(runtime)
+        self.command_handlers.matching_queue_service = _match_runtime_for(runtime)
+        self.command_handlers.match_service = _match_runtime_for(runtime)
 
     async def setup_hook(self) -> None:
         synced_commands = await self.tree.sync()
@@ -114,15 +116,16 @@ def main() -> None:
     outbox_publisher = DiscordOutboxEventPublisher(
         client=client,
     )
-    matching_queue_runtime = MatchingQueueRuntime.create(
+    match_runtime = MatchRuntime.create(
         session_factory=session_factory,
+        admin_discord_user_ids=settings.super_admin_user_ids,
     )
     outbox_dispatcher = OutboxDispatcher(
         session_factory=session_factory,
         publisher=outbox_publisher,
     )
     bot_runtime = BotRuntime(
-        matching_queue_runtime=matching_queue_runtime,
+        match_runtime=match_runtime,
         outbox_dispatcher=outbox_dispatcher,
     )
     client.bot_runtime = bot_runtime

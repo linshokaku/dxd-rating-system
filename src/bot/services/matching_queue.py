@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any, TypedDict
 
 import psycopg
@@ -12,15 +12,22 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import DBAPIError, InterfaceError, OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
-from bot.constants import OUTBOX_NOTIFY_CHANNEL
+from bot.constants import (
+    MATCH_PARENT_SELECTION_WINDOW,
+    MATCH_QUEUE_TTL,
+    OUTBOX_NOTIFY_CHANNEL,
+    PRESENCE_REMINDER_LEAD_TIME,
+)
 from bot.db.session import session_scope
 from bot.models import (
+    ActiveMatchState,
     Match,
     MatchParticipant,
     MatchParticipantTeam,
     MatchQueueEntry,
     MatchQueueEntryStatus,
     MatchQueueRemovalReason,
+    MatchState,
     OutboxEvent,
     OutboxEventType,
     Player,
@@ -32,8 +39,6 @@ from bot.services.errors import (
     RetryableTaskError,
 )
 
-MATCH_QUEUE_TTL = timedelta(minutes=5)
-PRESENCE_REMINDER_LEAD_TIME = timedelta(minutes=1)
 MATCH_PLAYER_COUNT = 6
 TEAM_PLAYER_COUNT = 3
 DEFAULT_CLEANUP_BATCH_SIZE = 100
@@ -109,6 +114,7 @@ class CreatedMatchResult:
     match_id: int
     queue_entry_ids: tuple[int, ...]
     player_ids: tuple[int, ...]
+    created_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -451,6 +457,26 @@ class MatchingQueueService:
             match = Match(created_at=current_time)
             session.add(match)
             session.flush()
+            session.add(
+                ActiveMatchState(
+                    match_id=match.id,
+                    created_at=current_time,
+                    parent_deadline_at=current_time + MATCH_PARENT_SELECTION_WINDOW,
+                    parent_player_id=None,
+                    parent_decided_at=None,
+                    report_open_at=None,
+                    reporting_opened_at=None,
+                    report_deadline_at=None,
+                    approval_started_at=None,
+                    approval_deadline_at=None,
+                    provisional_result=None,
+                    admin_review_required=False,
+                    admin_review_reasons=[],
+                    state=MatchState.WAITING_FOR_PARENT,
+                    finalized_at=None,
+                    finalized_by_admin=False,
+                )
+            )
 
             for index, queue_entry in enumerate(queue_entries):
                 team = (
@@ -465,6 +491,12 @@ class MatchingQueueService:
                     queue_entry_id=queue_entry.id,
                     team=team,
                     slot=slot,
+                    notification_channel_id=queue_entry.notification_channel_id,
+                    notification_guild_id=queue_entry.notification_guild_id,
+                    notification_mention_discord_user_id=(
+                        queue_entry.notification_mention_discord_user_id
+                    ),
+                    notification_recorded_at=queue_entry.notification_recorded_at,
                     created_at=current_time,
                 )
                 session.add(participant)
@@ -485,6 +517,7 @@ class MatchingQueueService:
                 match_id=match.id,
                 queue_entry_ids=tuple(queue_entry.id for queue_entry in queue_entries),
                 player_ids=tuple(queue_entry.player_id for queue_entry in queue_entries),
+                created_at=current_time,
             )
 
         if created_match is not None:

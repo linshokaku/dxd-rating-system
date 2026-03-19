@@ -24,3 +24,39 @@ class QueueNotJoinedError(MatchingQueueError):
 
 class RetryableTaskError(Exception):
     pass
+
+
+class MatchFlowError(Exception):
+    pass
+
+
+class MatchNotFoundError(MatchFlowError):
+    pass
+
+
+class MatchParticipantError(MatchFlowError):
+    pass
+
+
+class MatchParentAlreadyAssignedError(MatchFlowError):
+    pass
+
+
+class MatchReportNotOpenError(MatchFlowError):
+    pass
+
+
+class MatchReportingClosedError(MatchFlowError):
+    pass
+
+
+class MatchApprovalNotAvailableError(MatchFlowError):
+    pass
+
+
+class MatchApprovalNotRequiredError(MatchFlowError):
+    pass
+
+
+class MatchAlreadyFinalizedError(MatchFlowError):
+    pass

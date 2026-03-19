@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 import discord
 from discord import app_commands
@@ -11,13 +11,17 @@ from sqlalchemy.orm import Session, sessionmaker
 from bot.config import Settings
 from bot.constants import is_dummy_discord_user_id
 from bot.db.session import session_scope
+from bot.models import MatchReportInputResult, MatchResult, PenaltyType
 from bot.services import (
     JoinQueueResult,
     LeaveQueueResult,
+    MatchFlowError,
     MatchingQueueNotificationContext,
+    MatchReportSubmissionResult,
     PlayerAlreadyRegisteredError,
     PlayerLookupService,
     PlayerNotRegisteredError,
+    PlayerPenaltyAdjustmentResult,
     PresentQueueResult,
     QueueAlreadyJoinedError,
     QueueNotJoinedError,
@@ -37,8 +41,19 @@ JOIN_FAILED_MESSAGE = "キュー参加に失敗しました。管理者に確認
 PRESENT_FAILED_MESSAGE = "在席更新に失敗しました。管理者に確認してください。"
 LEAVE_FAILED_MESSAGE = "キュー退出に失敗しました。管理者に確認してください。"
 
+MATCH_PARENT_SUCCESS_MESSAGE = "親に立候補しました。"
+MATCH_REPORT_SUCCESS_MESSAGE = "勝敗報告を受け付けました。"
+MATCH_APPROVE_SUCCESS_MESSAGE = "仮決定結果を承認しました。"
+MATCH_ACTION_FAILED_MESSAGE = "試合操作に失敗しました。管理者に確認してください。"
+
 ADMIN_ONLY_MESSAGE = "このコマンドは管理者のみ実行できます。"
 INVALID_DISCORD_USER_ID_MESSAGE = "discord_user_id が不正です。"
+ADMIN_MATCH_RESULT_SUCCESS_MESSAGE = "試合結果を上書きしました。"
+ADMIN_MATCH_RESULT_FAILED_MESSAGE = "試合結果の上書きに失敗しました。管理者に確認してください。"
+ADMIN_TARGET_NOT_REGISTERED_MESSAGE = "指定したユーザーは未登録です。"
+ADMIN_PENALTY_ADD_SUCCESS_MESSAGE = "ペナルティを加算しました。"
+ADMIN_PENALTY_SUB_SUCCESS_MESSAGE = "ペナルティを減算しました。"
+ADMIN_PENALTY_FAILED_MESSAGE = "ペナルティ操作に失敗しました。管理者に確認してください。"
 
 DEV_REGISTER_SUCCESS_MESSAGE = "ダミーユーザーを登録しました。"
 DEV_REGISTER_ALREADY_REGISTERED_MESSAGE = "指定したユーザーはすでに登録済みです。"
@@ -57,6 +72,13 @@ DEV_PRESENT_FAILED_MESSAGE = "ダミーユーザーの在席更新に失敗し�
 DEV_LEAVE_SUCCESS_MESSAGE = "指定したユーザーをキューから退出させました。"
 DEV_LEAVE_EXPIRED_MESSAGE = "指定したユーザーはすでに期限切れでキューから外れています。"
 DEV_LEAVE_FAILED_MESSAGE = "ダミーユーザーのキュー退出に失敗しました。管理者に確認してください。"
+
+DEV_MATCH_PARENT_SUCCESS_MESSAGE = "指定したユーザーを親に立候補させました。"
+DEV_MATCH_REPORT_SUCCESS_MESSAGE = "指定したユーザーの勝敗報告を受け付けました。"
+DEV_MATCH_APPROVE_SUCCESS_MESSAGE = "指定したユーザーが仮決定結果を承認しました。"
+DEV_MATCH_ACTION_FAILED_MESSAGE = (
+    "ダミーユーザーの試合操作に失敗しました。管理者に確認してください。"
+)
 
 DEV_IS_ADMIN_ERROR_MESSAGE = "エラーが発生しました。管理者に確認してください。"
 
@@ -83,6 +105,50 @@ class MatchingQueueCommandService(Protocol):
     async def leave(self, player_id: int) -> LeaveQueueResult: ...
 
 
+class MatchCommandService(Protocol):
+    async def volunteer_parent(
+        self,
+        match_id: int,
+        player_id: int,
+        *,
+        notification_context: MatchingQueueNotificationContext | None = None,
+    ) -> object: ...
+
+    async def submit_match_report(
+        self,
+        match_id: int,
+        player_id: int,
+        input_result: MatchReportInputResult,
+        *,
+        notification_context: MatchingQueueNotificationContext | None = None,
+    ) -> MatchReportSubmissionResult: ...
+
+    async def approve_match_result(
+        self,
+        match_id: int,
+        player_id: int,
+        *,
+        notification_context: MatchingQueueNotificationContext | None = None,
+    ) -> object: ...
+
+    async def admin_override_match_result(
+        self,
+        match_id: int,
+        final_result: MatchResult,
+        *,
+        admin_discord_user_id: int,
+    ) -> object: ...
+
+    async def adjust_penalty(
+        self,
+        player_id: int,
+        penalty_type: PenaltyType,
+        delta: int,
+        *,
+        admin_discord_user_id: int,
+    ) -> PlayerPenaltyAdjustmentResult: ...
+
+
 class BotCommandHandlers:
     def __init__(
         self,
@@ -90,12 +156,23 @@ class BotCommandHandlers:
         session_factory: sessionmaker[Session],
         *,
         matching_queue_service: MatchingQueueCommandService | None = None,
+        match_service: MatchCommandService | None = None,
         player_lookup_service: PlayerLookupService | None = None,
         logger: logging.Logger | None = None,
     ) -> None:
         self.settings = settings
         self.session_factory = session_factory
         self._matching_queue_service = matching_queue_service
+        self._match_service = match_service
+        if (
+            self._match_service is None
+            and matching_queue_service is not None
+            and hasattr(
+                matching_queue_service,
+                "volunteer_parent",
+            )
+        ):
+            self._match_service = cast(MatchCommandService, matching_queue_service)
         self.player_lookup_service = player_lookup_service or PlayerLookupService(session_factory)
         self.logger = logger or logging.getLogger(__name__)
 
@@ -106,6 +183,16 @@ class BotCommandHandlers:
     @matching_queue_service.setter
     def matching_queue_service(self, service: MatchingQueueCommandService | None) -> None:
         self._matching_queue_service = service
+        if service is not None and hasattr(service, "volunteer_parent"):
+            self._match_service = cast(MatchCommandService, service)
+
+    @property
+    def match_service(self) -> MatchCommandService | None:
+        return self._match_service
+
+    @match_service.setter
+    def match_service(self, service: MatchCommandService | None) -> None:
+        self._match_service = service
 
     async def register(self, interaction: discord.Interaction[Any]) -> None:
         try:
@@ -194,6 +281,145 @@ class BotCommandHandlers:
             return
 
         await self._send_message(interaction, result.message)
+
+    async def match_parent(self, interaction: discord.Interaction[Any], match_id: int) -> None:
+        await self._run_match_parent(
+            interaction=interaction,
+            match_id=match_id,
+            executor_discord_user_id=interaction.user.id,
+            success_message=MATCH_PARENT_SUCCESS_MESSAGE,
+            failure_message=MATCH_ACTION_FAILED_MESSAGE,
+        )
+
+    async def match_win(self, interaction: discord.Interaction[Any], match_id: int) -> None:
+        await self._run_match_report(
+            interaction=interaction,
+            match_id=match_id,
+            executor_discord_user_id=interaction.user.id,
+            input_result=MatchReportInputResult.WIN,
+            success_message=MATCH_REPORT_SUCCESS_MESSAGE,
+            failure_message=MATCH_ACTION_FAILED_MESSAGE,
+        )
+
+    async def match_lose(self, interaction: discord.Interaction[Any], match_id: int) -> None:
+        await self._run_match_report(
+            interaction=interaction,
+            match_id=match_id,
+            executor_discord_user_id=interaction.user.id,
+            input_result=MatchReportInputResult.LOSE,
+            success_message=MATCH_REPORT_SUCCESS_MESSAGE,
+            failure_message=MATCH_ACTION_FAILED_MESSAGE,
+        )
+
+    async def match_draw(self, interaction: discord.Interaction[Any], match_id: int) -> None:
+        await self._run_match_report(
+            interaction=interaction,
+            match_id=match_id,
+            executor_discord_user_id=interaction.user.id,
+            input_result=MatchReportInputResult.DRAW,
+            success_message=MATCH_REPORT_SUCCESS_MESSAGE,
+            failure_message=MATCH_ACTION_FAILED_MESSAGE,
+        )
+
+    async def match_void(self, interaction: discord.Interaction[Any], match_id: int) -> None:
+        await self._run_match_report(
+            interaction=interaction,
+            match_id=match_id,
+            executor_discord_user_id=interaction.user.id,
+            input_result=MatchReportInputResult.VOID,
+            success_message=MATCH_REPORT_SUCCESS_MESSAGE,
+            failure_message=MATCH_ACTION_FAILED_MESSAGE,
+        )
+
+    async def match_approve(self, interaction: discord.Interaction[Any], match_id: int) -> None:
+        try:
+            notification_context = self._build_notification_context(interaction)
+            player_id = await asyncio.to_thread(self._lookup_player_id, interaction.user.id)
+            service = self._require_match_service()
+            await service.approve_match_result(
+                match_id,
+                player_id,
+                notification_context=notification_context,
+            )
+        except PlayerNotRegisteredError:
+            await self._send_message(interaction, PLAYER_REGISTRATION_REQUIRED_MESSAGE)
+            return
+        except MatchFlowError as exc:
+            await self._send_message(interaction, str(exc))
+            return
+        except Exception:
+            self.logger.exception(
+                "Failed to execute /match_approve command discord_user_id=%s match_id=%s",
+                interaction.user.id,
+                match_id,
+            )
+            await self._send_message(interaction, MATCH_ACTION_FAILED_MESSAGE)
+            return
+
+        await self._send_message(interaction, MATCH_APPROVE_SUCCESS_MESSAGE)
+
+    async def admin_match_result(
+        self,
+        interaction: discord.Interaction[Any],
+        match_id: int,
+        result: str,
+    ) -> None:
+        if not await self._ensure_admin(interaction):
+            return
+
+        try:
+            service = self._require_match_service()
+            await service.admin_override_match_result(
+                match_id,
+                self._parse_match_result(result),
+                admin_discord_user_id=interaction.user.id,
+            )
+        except ValueError:
+            await self._send_message(interaction, "result が不正です。")
+            return
+        except MatchFlowError as exc:
+            await self._send_message(interaction, str(exc))
+            return
+        except Exception:
+            self.logger.exception(
+                "Failed to execute /admin_match_result command "
+                "executor_discord_user_id=%s match_id=%s result=%s",
+                interaction.user.id,
+                match_id,
+                result,
+            )
+            await self._send_message(interaction, ADMIN_MATCH_RESULT_FAILED_MESSAGE)
+            return
+
+        await self._send_message(interaction, ADMIN_MATCH_RESULT_SUCCESS_MESSAGE)
+
+    async def admin_add_penalty(
+        self,
+        interaction: discord.Interaction[Any],
+        discord_user_id: str,
+        penalty_type: PenaltyType,
+    ) -> None:
+        await self._run_admin_penalty(
+            interaction=interaction,
+            discord_user_id=discord_user_id,
+            penalty_type=penalty_type,
+            delta=1,
+            success_message=ADMIN_PENALTY_ADD_SUCCESS_MESSAGE,
+        )
+
+    async def admin_sub_penalty(
+        self,
+        interaction: discord.Interaction[Any],
+        discord_user_id: str,
+        penalty_type: PenaltyType,
+    ) -> None:
+        await self._run_admin_penalty(
+            interaction=interaction,
+            discord_user_id=discord_user_id,
+            penalty_type=penalty_type,
+            delta=-1,
+            success_message=ADMIN_PENALTY_SUB_SUCCESS_MESSAGE,
+        )
 
     async def dev_register(
         self,
@@ -351,6 +577,123 @@ class BotCommandHandlers:
 
         await self._send_message(interaction, DEV_LEAVE_SUCCESS_MESSAGE)
 
+    async def dev_match_parent(
+        self,
+        interaction: discord.Interaction[Any],
+        discord_user_id: str,
+        match_id: int,
+    ) -> None:
+        if not await self._ensure_admin(interaction):
+            return
+        try:
+            target_discord_user_id = self._parse_dummy_discord_user_id(discord_user_id)
+        except ValueError:
+            await self._send_message(interaction, INVALID_DISCORD_USER_ID_MESSAGE)
+            return
+        await self._run_match_parent(
+            interaction=interaction,
+            match_id=match_id,
+            executor_discord_user_id=target_discord_user_id,
+            success_message=DEV_MATCH_PARENT_SUCCESS_MESSAGE,
+            failure_message=DEV_MATCH_ACTION_FAILED_MESSAGE,
+        )
+
+    async def dev_match_win(
+        self,
+        interaction: discord.Interaction[Any],
+        discord_user_id: str,
+        match_id: int,
+    ) -> None:
+        await self._run_dev_match_report(
+            interaction=interaction,
+            discord_user_id=discord_user_id,
+            match_id=match_id,
+            input_result=MatchReportInputResult.WIN,
+        )
+
+    async def dev_match_lose(
+        self,
+        interaction: discord.Interaction[Any],
+        discord_user_id: str,
+        match_id: int,
+    ) -> None:
+        await self._run_dev_match_report(
+            interaction=interaction,
+            discord_user_id=discord_user_id,
+            match_id=match_id,
+            input_result=MatchReportInputResult.LOSE,
+        )
+
+    async def dev_match_draw(
+        self,
+        interaction: discord.Interaction[Any],
+        discord_user_id: str,
+        match_id: int,
+    ) -> None:
+        await self._run_dev_match_report(
+            interaction=interaction,
+            discord_user_id=discord_user_id,
+            match_id=match_id,
+            input_result=MatchReportInputResult.DRAW,
+        )
+
+    async def dev_match_void(
+        self,
+        interaction: discord.Interaction[Any],
+        discord_user_id: str,
+        match_id: int,
+    ) -> None:
+        await self._run_dev_match_report(
+            interaction=interaction,
+            discord_user_id=discord_user_id,
+            match_id=match_id,
+            input_result=MatchReportInputResult.VOID,
+        )
+
+    async def dev_match_approve(
+        self,
+        interaction: discord.Interaction[Any],
+        discord_user_id: str,
+        match_id: int,
+    ) -> None:
+        if not await self._ensure_admin(interaction):
+            return
+
+        try:
+            target_discord_user_id = self._parse_dummy_discord_user_id(discord_user_id)
+            notification_context = self._build_notification_context(
+                interaction,
+                mention_discord_user_id=target_discord_user_id,
+            )
+            player_id = await asyncio.to_thread(self._lookup_player_id, target_discord_user_id)
+            service = self._require_match_service()
+            await service.approve_match_result(
+                match_id,
+                player_id,
+                notification_context=notification_context,
+            )
+        except ValueError:
+            await self._send_message(interaction, INVALID_DISCORD_USER_ID_MESSAGE)
+            return
+        except PlayerNotRegisteredError:
+            await self._send_message(interaction, DEV_TARGET_NOT_REGISTERED_MESSAGE)
+            return
+        except MatchFlowError as exc:
+            await self._send_message(interaction, str(exc))
+            return
+        except Exception:
+            self.logger.exception(
+                "Failed to execute /dev_match_approve command "
+                "executor_discord_user_id=%s target_discord_user_id=%s match_id=%s",
+                interaction.user.id,
+                discord_user_id,
+                match_id,
+            )
+            await self._send_message(interaction, DEV_MATCH_ACTION_FAILED_MESSAGE)
+            return
+
+        await self._send_message(interaction, DEV_MATCH_APPROVE_SUCCESS_MESSAGE)
+
     async def dev_is_admin(self, interaction: discord.Interaction[Any]) -> None:
         try:
             message = "はい" if is_super_admin(interaction.user.id, self.settings) else "いいえ"
@@ -364,6 +707,167 @@ class BotCommandHandlers:
 
         await self._send_message(interaction, message)
 
+    async def _run_match_parent(
+        self,
+        *,
+        interaction: discord.Interaction[Any],
+        match_id: int,
+        executor_discord_user_id: int | None,
+        success_message: str,
+        failure_message: str,
+    ) -> None:
+        if executor_discord_user_id is None:
+            return
+
+        try:
+            notification_context = self._build_notification_context(
+                interaction,
+                mention_discord_user_id=executor_discord_user_id,
+            )
+            player_id = await asyncio.to_thread(self._lookup_player_id, executor_discord_user_id)
+            service = self._require_match_service()
+            await service.volunteer_parent(
+                match_id,
+                player_id,
+                notification_context=notification_context,
+            )
+        except PlayerNotRegisteredError:
+            message = (
+                PLAYER_REGISTRATION_REQUIRED_MESSAGE
+                if executor_discord_user_id == interaction.user.id
+                else DEV_TARGET_NOT_REGISTERED_MESSAGE
+            )
+            await self._send_message(interaction, message)
+            return
+        except MatchFlowError as exc:
+            await self._send_message(interaction, str(exc))
+            return
+        except Exception:
+            self.logger.exception(
+                "Failed to execute match_parent command executor_discord_user_id=%s match_id=%s",
+                executor_discord_user_id,
+                match_id,
+            )
+            await self._send_message(interaction, failure_message)
+            return
+
+        await self._send_message(interaction, success_message)
+
+    async def _run_match_report(
+        self,
+        *,
+        interaction: discord.Interaction[Any],
+        match_id: int,
+        executor_discord_user_id: int,
+        input_result: MatchReportInputResult,
+        success_message: str,
+        failure_message: str,
+    ) -> None:
+        try:
+            notification_context = self._build_notification_context(
+                interaction,
+                mention_discord_user_id=executor_discord_user_id,
+            )
+            player_id = await asyncio.to_thread(self._lookup_player_id, executor_discord_user_id)
+            service = self._require_match_service()
+            await service.submit_match_report(
+                match_id,
+                player_id,
+                input_result,
+                notification_context=notification_context,
+            )
+        except PlayerNotRegisteredError:
+            message = (
+                PLAYER_REGISTRATION_REQUIRED_MESSAGE
+                if executor_discord_user_id == interaction.user.id
+                else DEV_TARGET_NOT_REGISTERED_MESSAGE
+            )
+            await self._send_message(interaction, message)
+            return
+        except MatchFlowError as exc:
+            await self._send_message(interaction, str(exc))
+            return
+        except Exception:
+            self.logger.exception(
+                "Failed to execute match_report command "
+                "executor_discord_user_id=%s match_id=%s input_result=%s",
+                executor_discord_user_id,
+                match_id,
+                input_result.value,
+            )
+            await self._send_message(interaction, failure_message)
+            return
+
+        await self._send_message(interaction, success_message)
+
+    async def _run_dev_match_report(
+        self,
+        *,
+        interaction: discord.Interaction[Any],
+        discord_user_id: str,
+        match_id: int,
+        input_result: MatchReportInputResult,
+    ) -> None:
+        if not await self._ensure_admin(interaction):
+            return
+
+        try:
+            target_discord_user_id = self._parse_dummy_discord_user_id(discord_user_id)
+        except ValueError:
+            await self._send_message(interaction, INVALID_DISCORD_USER_ID_MESSAGE)
+            return
+
+        await self._run_match_report(
+            interaction=interaction,
+            match_id=match_id,
+            executor_discord_user_id=target_discord_user_id,
+            input_result=input_result,
+            success_message=DEV_MATCH_REPORT_SUCCESS_MESSAGE,
+            failure_message=DEV_MATCH_ACTION_FAILED_MESSAGE,
+        )
+
+    async def _run_admin_penalty(
+        self,
+        *,
+        interaction: discord.Interaction[Any],
+        discord_user_id: str,
+        penalty_type: PenaltyType,
+        delta: int,
+        success_message: str,
+    ) -> None:
+        if not await self._ensure_admin(interaction):
+            return
+
+        try:
+            target_discord_user_id = self._parse_discord_user_id(discord_user_id)
+            player_id = await asyncio.to_thread(self._lookup_player_id, target_discord_user_id)
+            service = self._require_match_service()
+            await service.adjust_penalty(
+                player_id,
+                penalty_type,
+                delta,
+                admin_discord_user_id=interaction.user.id,
+            )
+        except ValueError:
+            await self._send_message(interaction, INVALID_DISCORD_USER_ID_MESSAGE)
+            return
+        except PlayerNotRegisteredError:
+            await self._send_message(interaction, ADMIN_TARGET_NOT_REGISTERED_MESSAGE)
+            return
+        except Exception:
+            self.logger.exception(
+                "Failed to execute admin penalty command executor_discord_user_id=%s "
+                "target_discord_user_id=%s penalty_type=%s delta=%s",
+                interaction.user.id,
+                discord_user_id,
+                penalty_type.value,
+                delta,
+            )
+            await self._send_message(interaction, ADMIN_PENALTY_FAILED_MESSAGE)
+            return
+
+        await self._send_message(interaction, success_message)
+
     def _register_player(self, discord_user_id: int) -> None:
         with session_scope(self.session_factory) as session:
             register_player(session=session, discord_user_id=discord_user_id)
@@ -375,6 +879,11 @@ class BotCommandHandlers:
         if self._matching_queue_service is None:
             raise RuntimeError("MatchingQueueService is not configured")
         return self._matching_queue_service
+
+    def _require_match_service(self) -> MatchCommandService:
+        if self._match_service is None:
+            raise RuntimeError("MatchService is not configured")
+        return self._match_service
 
     def _build_notification_context(
         self,
@@ -417,6 +926,9 @@ class BotCommandHandlers:
             raise ValueError("dummy discord_user_id must be between 1 and 1000")
         return discord_user_id
 
+    def _parse_match_result(self, value: str) -> MatchResult:
+        return MatchResult(value)
+
     async def _send_message(
         self,
         interaction: discord.Interaction[Any],
@@ -444,6 +956,121 @@ def register_app_commands(
     @tree.command(name="leave", description="マッチングキューから退出します")
     async def leave_command(interaction: discord.Interaction[Any]) -> None:
         await handlers.leave(interaction)
+
+    @tree.command(name="match_parent", description="試合の親に立候補します")
+    @app_commands.describe(match_id="対象の match_id")
+    async def match_parent_command(
+        interaction: discord.Interaction[Any],
+        match_id: int,
+    ) -> None:
+        await handlers.match_parent(interaction, match_id)
+
+    @tree.command(name="match_win", description="自分視点で勝ちを報告します")
+    @app_commands.describe(match_id="対象の match_id")
+    async def match_win_command(interaction: discord.Interaction[Any], match_id: int) -> None:
+        await handlers.match_win(interaction, match_id)
+
+    @tree.command(name="match_lose", description="自分視点で負けを報告します")
+    @app_commands.describe(match_id="対象の match_id")
+    async def match_lose_command(interaction: discord.Interaction[Any], match_id: int) -> None:
+        await handlers.match_lose(interaction, match_id)
+
+    @tree.command(name="match_draw", description="引き分けを報告します")
+    @app_commands.describe(match_id="対象の match_id")
+    async def match_draw_command(interaction: discord.Interaction[Any], match_id: int) -> None:
+        await handlers.match_draw(interaction, match_id)
+
+    @tree.command(name="match_void", description="無効試合を報告します")
+    @app_commands.describe(match_id="対象の match_id")
+    async def match_void_command(interaction: discord.Interaction[Any], match_id: int) -> None:
+        await handlers.match_void(interaction, match_id)
+
+    @tree.command(name="match_approve", description="仮決定結果を承認します")
+    @app_commands.describe(match_id="対象の match_id")
+    async def match_approve_command(
+        interaction: discord.Interaction[Any],
+        match_id: int,
+    ) -> None:
+        await handlers.match_approve(interaction, match_id)
+
+    @tree.command(name="admin_match_result", description="試合結果を上書きします")
+    @app_commands.describe(match_id="対象の match_id", result="上書きする結果")
+    @app_commands.choices(
+        result=[
+            app_commands.Choice(name="チーム A の勝ち", value=MatchResult.TEAM_A_WIN.value),
+            app_commands.Choice(name="チーム B の勝ち", value=MatchResult.TEAM_B_WIN.value),
+            app_commands.Choice(name="引き分け", value=MatchResult.DRAW.value),
+            app_commands.Choice(name="無効試合", value=MatchResult.VOID.value),
+        ]
+    )
+    async def admin_match_result_command(
+        interaction: discord.Interaction[Any],
+        match_id: int,
+        result: str,
+    ) -> None:
+        await handlers.admin_match_result(interaction, match_id, result)
+
+    def register_penalty_commands(
+        *,
+        add_name: str,
+        sub_name: str,
+        description: str,
+        penalty_type: PenaltyType,
+    ) -> None:
+        @tree.command(name=add_name, description=f"{description} を +1 します")
+        @app_commands.describe(discord_user_id="対象の Discord user ID")
+        async def add_command(
+            interaction: discord.Interaction[Any],
+            discord_user_id: str,
+        ) -> None:
+            await handlers.admin_add_penalty(interaction, discord_user_id, penalty_type)
+
+        @tree.command(name=sub_name, description=f"{description} を -1 します")
+        @app_commands.describe(discord_user_id="対象の Discord user ID")
+        async def sub_command(
+            interaction: discord.Interaction[Any],
+            discord_user_id: str,
+        ) -> None:
+            await handlers.admin_sub_penalty(interaction, discord_user_id, penalty_type)
+
+        del add_command, sub_command
+
+    register_penalty_commands(
+        add_name="admin_add_incorrect_report",
+        sub_name="admin_sub_incorrect_report",
+        description="勝敗誤報告ペナルティ",
+        penalty_type=PenaltyType.INCORRECT_REPORT,
+    )
+    register_penalty_commands(
+        add_name="admin_add_no_report",
+        sub_name="admin_sub_no_report",
+        description="勝敗無報告ペナルティ",
+        penalty_type=PenaltyType.NO_REPORT,
+    )
+    register_penalty_commands(
+        add_name="admin_add_room_setup_delay",
+        sub_name="admin_sub_room_setup_delay",
+        description="部屋立て遅延ペナルティ",
+        penalty_type=PenaltyType.ROOM_SETUP_DELAY,
+    )
+    register_penalty_commands(
+        add_name="admin_add_match_mistake",
+        sub_name="admin_sub_match_mistake",
+        description="試合ミスペナルティ",
+        penalty_type=PenaltyType.MATCH_MISTAKE,
+    )
+    register_penalty_commands(
+        add_name="admin_add_late",
+        sub_name="admin_sub_late",
+        description="遅刻ペナルティ",
+        penalty_type=PenaltyType.LATE,
+    )
+    register_penalty_commands(
+        add_name="admin_add_disconnect",
+        sub_name="admin_sub_disconnect",
+        description="切断ペナルティ",
+        penalty_type=PenaltyType.DISCONNECT,
+    )
 
     @tree.command(name="dev_register", description="任意の Discord user ID を登録します")
     @app_commands.describe(discord_user_id="登録したい Discord user ID")
@@ -476,6 +1103,63 @@ def register_app_commands(
         discord_user_id: str,
     ) -> None:
         await handlers.dev_leave(interaction, discord_user_id)
+
+    @tree.command(name="dev_match_parent", description="ダミーユーザーを親に立候補させます")
+    @app_commands.describe(discord_user_id="対象の dummy_user_id", match_id="対象の match_id")
+    async def dev_match_parent_command(
+        interaction: discord.Interaction[Any],
+        discord_user_id: str,
+        match_id: int,
+    ) -> None:
+        await handlers.dev_match_parent(interaction, discord_user_id, match_id)
+
+    @tree.command(name="dev_match_win", description="ダミーユーザーに勝ちを報告させます")
+    @app_commands.describe(discord_user_id="対象の dummy_user_id", match_id="対象の match_id")
+    async def dev_match_win_command(
+        interaction: discord.Interaction[Any],
+        discord_user_id: str,
+        match_id: int,
+    ) -> None:
+        await handlers.dev_match_win(interaction, discord_user_id, match_id)
+
+    @tree.command(name="dev_match_lose", description="ダミーユーザーに負けを報告させます")
+    @app_commands.describe(discord_user_id="対象の dummy_user_id", match_id="対象の match_id")
+    async def dev_match_lose_command(
+        interaction: discord.Interaction[Any],
+        discord_user_id: str,
+        match_id: int,
+    ) -> None:
+        await handlers.dev_match_lose(interaction, discord_user_id, match_id)
+
+    @tree.command(name="dev_match_draw", description="ダミーユーザーに引き分けを報告させます")
+    @app_commands.describe(discord_user_id="対象の dummy_user_id", match_id="対象の match_id")
+    async def dev_match_draw_command(
+        interaction: discord.Interaction[Any],
+        discord_user_id: str,
+        match_id: int,
+    ) -> None:
+        await handlers.dev_match_draw(interaction, discord_user_id, match_id)
+
+    @tree.command(name="dev_match_void", description="ダミーユーザーに無効試合を報告させます")
+    @app_commands.describe(discord_user_id="対象の dummy_user_id", match_id="対象の match_id")
+    async def dev_match_void_command(
+        interaction: discord.Interaction[Any],
+        discord_user_id: str,
+        match_id: int,
+    ) -> None:
+        await handlers.dev_match_void(interaction, discord_user_id, match_id)
+
+    @tree.command(
+        name="dev_match_approve",
+        description="ダミーユーザーに仮決定結果を承認させます",
+    )
+    @app_commands.describe(discord_user_id="対象の dummy_user_id", match_id="対象の match_id")
+    async def dev_match_approve_command(
+        interaction: discord.Interaction[Any],
+        discord_user_id: str,
+        match_id: int,
+    ) -> None:
+        await handlers.dev_match_approve(interaction, discord_user_id, match_id)
 
     @tree.command(name="dev_is_admin", description="実行者が admin かどうかを確認します")
     async def dev_is_admin_command(interaction: discord.Interaction[Any]) -> None:

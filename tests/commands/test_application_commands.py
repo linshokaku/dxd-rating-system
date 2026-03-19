@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from bot.commands import BotCommandHandlers
 from bot.config import Settings
 from bot.models import MatchQueueEntry, Player
-from bot.runtime import MatchingQueueRuntime
+from bot.runtime import MatchRuntime
 from bot.services import MatchingQueueNotificationContext, MatchingQueueService, register_player
 
 
@@ -54,11 +54,11 @@ def create_handlers(
     session_factory: sessionmaker[Session],
     *,
     super_admin_user_ids: frozenset[int] = frozenset(),
-    matching_queue_service: MatchingQueueService | MatchingQueueRuntime | None = None,
+    matching_queue_service: MatchingQueueService | MatchRuntime | None = None,
 ) -> BotCommandHandlers:
     resolved_matching_queue_service = matching_queue_service
     if isinstance(matching_queue_service, MatchingQueueService):
-        resolved_matching_queue_service = MatchingQueueRuntime(service=matching_queue_service)
+        resolved_matching_queue_service = MatchRuntime(service=matching_queue_service)
 
     return BotCommandHandlers(
         settings=create_settings(super_admin_user_ids=super_admin_user_ids),

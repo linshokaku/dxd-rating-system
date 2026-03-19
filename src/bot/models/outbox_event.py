@@ -17,6 +17,10 @@ class OutboxEventType(StrEnum):
     PRESENCE_REMINDER = "presence_reminder"
     QUEUE_EXPIRED = "queue_expired"
     MATCH_CREATED = "match_created"
+    MATCH_PARENT_ASSIGNED = "match_parent_assigned"
+    MATCH_APPROVAL_REQUESTED = "match_approval_requested"
+    MATCH_FINALIZED = "match_finalized"
+    MATCH_ADMIN_REVIEW_REQUIRED = "match_admin_review_required"
 
 
 class OutboxEvent(Base):

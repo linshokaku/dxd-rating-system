@@ -30,7 +30,7 @@ P = ParamSpec("P")
 R = TypeVar("R")
 
 
-class MatchingQueueRuntimeService(Protocol):
+class MatchRuntimeService(Protocol):
     def join_queue(
         self,
         player_id: int,
@@ -70,7 +70,7 @@ class MatchingQueueRuntimeService(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
-class StartupSyncResult:
+class MatchRuntimeSyncResult:
     cleaned_up_queue_entry_ids: tuple[int, ...]
     reminded_queue_entry_ids: tuple[int, ...]
     rescheduled_reminder_queue_entry_ids: tuple[int, ...]
@@ -89,10 +89,10 @@ class ScheduledTaskKey:
     kind: ScheduledTaskKind
 
 
-class MatchingQueueRuntime:
+class MatchRuntime:
     def __init__(
         self,
-        service: MatchingQueueRuntimeService,
+        service: MatchRuntimeService,
         *,
         reconcile_interval: timedelta = DEFAULT_RECONCILE_INTERVAL,
         logger: logging.Logger | None = None,
@@ -113,7 +113,7 @@ class MatchingQueueRuntime:
         *,
         reconcile_interval: timedelta = DEFAULT_RECONCILE_INTERVAL,
         logger: logging.Logger | None = None,
-    ) -> MatchingQueueRuntime:
+    ) -> MatchRuntime:
         service = MatchingQueueService(
             session_factory=session_factory,
             logger=logger,
@@ -243,19 +243,19 @@ class MatchingQueueRuntime:
             self._cancel_scheduled_task(self._expire_task_key(queue_entry_id))
         return result
 
-    async def start(self) -> StartupSyncResult:
+    async def start(self) -> MatchRuntimeSyncResult:
         async with self._state_lock:
             if self._closed:
-                raise RuntimeError("MatchingQueueRuntime is already closed")
+                raise RuntimeError("MatchRuntime is already closed")
             if self._reconcile_task is not None:
-                raise RuntimeError("MatchingQueueRuntime is already started")
+                raise RuntimeError("MatchRuntime is already started")
 
             loop = asyncio.get_running_loop()
             self.bind_loop(loop)
             startup_result = await self.run_startup_sync()
             self._reconcile_task = asyncio.create_task(
                 self._run_reconcile_loop(),
-                name="matching-queue-reconcile",
+                name="match-runtime-reconcile",
             )
             return startup_result
 
@@ -271,14 +271,14 @@ class MatchingQueueRuntime:
 
         await self._aclose_scheduled_tasks()
 
-    async def run_startup_sync(self) -> StartupSyncResult:
+    async def run_startup_sync(self) -> MatchRuntimeSyncResult:
         self._ensure_open()
         self._bind_current_loop_if_needed()
         result = await self._run_sync_cycle(False)
         self._log_sync_result("Startup sync", result)
         return result
 
-    async def run_reconcile_cycle(self) -> StartupSyncResult:
+    async def run_reconcile_cycle(self) -> MatchRuntimeSyncResult:
         self._ensure_open()
         self._bind_current_loop_if_needed()
         result = await self._run_sync_cycle(True)
@@ -298,9 +298,9 @@ class MatchingQueueRuntime:
             except asyncio.CancelledError:
                 raise
             except Exception:
-                self.logger.exception("Matching queue reconcile cycle failed")
+                self.logger.exception("Match runtime reconcile cycle failed")
 
-    async def _run_sync_cycle(self, warn_on_cleanup: bool) -> StartupSyncResult:
+    async def _run_sync_cycle(self, warn_on_cleanup: bool) -> MatchRuntimeSyncResult:
         cleaned_up_queue_entry_ids = await asyncio.to_thread(
             self.service.cleanup_expired_entries,
             warn_on_cleanup=warn_on_cleanup,
@@ -360,7 +360,7 @@ class MatchingQueueRuntime:
             ):
                 rescheduled_expire_queue_entry_ids.append(waiting_entry.queue_entry_id)
 
-        return StartupSyncResult(
+        return MatchRuntimeSyncResult(
             cleaned_up_queue_entry_ids=cleaned_up_queue_entry_ids,
             reminded_queue_entry_ids=tuple(reminded_queue_entry_ids),
             rescheduled_reminder_queue_entry_ids=tuple(rescheduled_reminder_queue_entry_ids),
@@ -445,7 +445,7 @@ class MatchingQueueRuntime:
 
     def bind_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         if self._loop is not None and self._loop is not loop:
-            raise RuntimeError("MatchingQueueRuntime loop is already bound")
+            raise RuntimeError("MatchRuntime loop is already bound")
         self._loop = loop
 
     def _bind_current_loop_if_needed(self) -> None:
@@ -569,13 +569,13 @@ class MatchingQueueRuntime:
 
     def _ensure_open(self) -> None:
         if self._closed:
-            raise RuntimeError("MatchingQueueRuntime is closed")
+            raise RuntimeError("MatchRuntime is closed")
 
     def _require_running_on_bound_loop(self) -> None:
         if self._loop is None:
-            raise RuntimeError("MatchingQueueRuntime loop is not bound")
+            raise RuntimeError("MatchRuntime loop is not bound")
         if asyncio.get_running_loop() is not self._loop:
-            raise RuntimeError("MatchingQueueRuntime must be called on the bound loop")
+            raise RuntimeError("MatchRuntime must be called on the bound loop")
 
     def _seconds_until(self, scheduled_at: datetime) -> float:
         if scheduled_at.tzinfo is None:
@@ -590,7 +590,7 @@ class MatchingQueueRuntime:
             return datetime.now()
         return datetime.now(tz=reference.tzinfo)
 
-    def _has_sync_activity(self, result: StartupSyncResult) -> bool:
+    def _has_sync_activity(self, result: MatchRuntimeSyncResult) -> bool:
         return any(
             (
                 result.cleaned_up_queue_entry_ids,
@@ -601,7 +601,7 @@ class MatchingQueueRuntime:
             )
         )
 
-    def _log_sync_result(self, context: str, result: StartupSyncResult) -> None:
+    def _log_sync_result(self, context: str, result: MatchRuntimeSyncResult) -> None:
         self.logger.info(
             "%s finished cleaned_up=%s reminded=%s rescheduled_reminders=%s "
             "rescheduled_expires=%s created_matches=%s",

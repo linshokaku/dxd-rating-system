@@ -2,305 +2,106 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any
+from enum import StrEnum
+from typing import Any, ParamSpec, Protocol, TypeVar
 
 from sqlalchemy.orm import Session, sessionmaker
 
-from bot.runtime.outbox import (
-    DEFAULT_OUTBOX_POLL_INTERVAL,
-    OutboxDispatcher,
-    OutboxEventPublisher,
-    retry_delay_for_failure_count,
-)
+from bot.runtime.outbox import retry_delay_for_failure_count
 from bot.services import (
     PRESENCE_REMINDER_LEAD_TIME,
+    CreatedMatchResult,
     ExpireQueueEntryResult,
-    ExpireTask,
+    JoinQueueResult,
+    LeaveQueueResult,
+    MatchingQueueNotificationContext,
     MatchingQueueService,
-    MatchingQueueTaskScheduler,
     PresenceReminderResult,
-    PresenceReminderTask,
+    PresentQueueResult,
     RetryableTaskError,
-    StartupSyncResult,
+    WaitingEntryTimerState,
 )
 
 DEFAULT_RECONCILE_INTERVAL = timedelta(minutes=5)
+P = ParamSpec("P")
+R = TypeVar("R")
 
-PresenceReminderHandler = Callable[[int, int], PresenceReminderResult]
-ExpireHandler = Callable[[int, int], ExpireQueueEntryResult]
 
+class MatchingQueueRuntimeService(Protocol):
+    def join_queue(
+        self,
+        player_id: int,
+        *,
+        notification_context: MatchingQueueNotificationContext | None = None,
+    ) -> JoinQueueResult: ...
 
-class AsyncioMatchingQueueTaskScheduler(MatchingQueueTaskScheduler):
-    def __init__(
+    def present(
+        self,
+        player_id: int,
+        *,
+        notification_context: MatchingQueueNotificationContext | None = None,
+    ) -> PresentQueueResult: ...
+
+    def leave(self, player_id: int) -> LeaveQueueResult: ...
+
+    def process_presence_reminder(
+        self, queue_entry_id: int, expected_revision: int
+    ) -> PresenceReminderResult: ...
+
+    def process_expire(
+        self, queue_entry_id: int, expected_revision: int
+    ) -> ExpireQueueEntryResult: ...
+
+    def cleanup_expired_entries(
         self,
         *,
-        presence_reminder_handler: PresenceReminderHandler | None = None,
-        expire_handler: ExpireHandler | None = None,
-        logger: logging.Logger | None = None,
-    ) -> None:
-        self._presence_reminder_handler = presence_reminder_handler
-        self._expire_handler = expire_handler
-        self._logger = logger or logging.getLogger(__name__)
-        self._loop: asyncio.AbstractEventLoop | None = None
-        self._closed = False
-        self._presence_reminder_tasks: dict[int, asyncio.Task[None]] = {}
-        self._expire_tasks: dict[int, asyncio.Task[None]] = {}
+        batch_size: int = ...,
+        warn_on_cleanup: bool = ...,
+    ) -> tuple[int, ...]: ...
 
-    def bind_handlers(
+    def try_create_matches(self) -> tuple[CreatedMatchResult, ...]: ...
+
+    def load_waiting_entry_timer_states(
         self,
-        *,
-        presence_reminder_handler: PresenceReminderHandler,
-        expire_handler: ExpireHandler,
-    ) -> None:
-        self._presence_reminder_handler = presence_reminder_handler
-        self._expire_handler = expire_handler
+    ) -> tuple[datetime, tuple[WaitingEntryTimerState, ...]]: ...
 
-    def bind_loop(self, loop: asyncio.AbstractEventLoop) -> None:
-        if self._loop is not None and self._loop is not loop:
-            raise RuntimeError("AsyncioMatchingQueueTaskScheduler loop is already bound")
-        self._loop = loop
 
-    def schedule_presence_reminder(self, task: PresenceReminderTask) -> None:
-        self._submit_to_loop(self._schedule_presence_reminder_on_loop, task)
+@dataclass(frozen=True, slots=True)
+class StartupSyncResult:
+    cleaned_up_queue_entry_ids: tuple[int, ...]
+    reminded_queue_entry_ids: tuple[int, ...]
+    rescheduled_reminder_queue_entry_ids: tuple[int, ...]
+    rescheduled_expire_queue_entry_ids: tuple[int, ...]
+    created_match_ids: tuple[int, ...]
 
-    def schedule_expire(self, task: ExpireTask) -> None:
-        self._submit_to_loop(self._schedule_expire_on_loop, task)
 
-    def cancel_presence_reminder(self, queue_entry_id: int) -> None:
-        self._submit_to_loop(self._cancel_presence_reminder_on_loop, queue_entry_id)
+class ScheduledTaskKind(StrEnum):
+    PRESENCE_REMINDER = "presence-reminder"
+    EXPIRE = "expire"
 
-    def cancel_expire(self, queue_entry_id: int) -> None:
-        self._submit_to_loop(self._cancel_expire_on_loop, queue_entry_id)
 
-    async def aclose(self) -> None:
-        loop = self._require_loop()
-        if self._is_running_on_bound_loop():
-            await self._aclose_on_loop()
-            return
-
-        future = asyncio.run_coroutine_threadsafe(self._aclose_on_loop(), loop)
-        await asyncio.wrap_future(future)
-
-    def _submit_to_loop(self, callback: Callable[..., None], *args: object) -> None:
-        if self._closed:
-            raise RuntimeError("AsyncioMatchingQueueTaskScheduler is closed")
-
-        loop = self._require_loop()
-        if self._is_running_on_bound_loop():
-            callback(*args)
-            return
-
-        loop.call_soon_threadsafe(callback, *args)
-
-    def _schedule_presence_reminder_on_loop(self, task: PresenceReminderTask) -> None:
-        current_task = self._presence_reminder_tasks.pop(task.queue_entry_id, None)
-        self._cancel_task(current_task)
-        self._presence_reminder_tasks[task.queue_entry_id] = asyncio.create_task(
-            self._run_presence_reminder(task),
-            name=f"presence-reminder-{task.queue_entry_id}-{task.expected_revision}",
-        )
-
-    def _schedule_expire_on_loop(self, task: ExpireTask) -> None:
-        current_task = self._expire_tasks.pop(task.queue_entry_id, None)
-        self._cancel_task(current_task)
-        self._expire_tasks[task.queue_entry_id] = asyncio.create_task(
-            self._run_expire(task),
-            name=f"expire-{task.queue_entry_id}-{task.expected_revision}",
-        )
-
-    def _cancel_presence_reminder_on_loop(self, queue_entry_id: int) -> None:
-        self._cancel_task(self._presence_reminder_tasks.pop(queue_entry_id, None))
-
-    def _cancel_expire_on_loop(self, queue_entry_id: int) -> None:
-        self._cancel_task(self._expire_tasks.pop(queue_entry_id, None))
-
-    async def _run_presence_reminder(self, task: PresenceReminderTask) -> None:
-        try:
-            handler = self._require_presence_reminder_handler()
-            await self._run_handler_with_retry(
-                task_name="presence reminder",
-                queue_entry_id=task.queue_entry_id,
-                expected_revision=task.expected_revision,
-                scheduled_at=task.remind_at,
-                deadline=task.remind_at + PRESENCE_REMINDER_LEAD_TIME,
-                handler=handler,
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            self._logger.exception(
-                "Failed to execute presence reminder queue_entry_id=%s revision=%s",
-                task.queue_entry_id,
-                task.expected_revision,
-            )
-        finally:
-            current_task = asyncio.current_task()
-            if self._presence_reminder_tasks.get(task.queue_entry_id) is current_task:
-                self._presence_reminder_tasks.pop(task.queue_entry_id, None)
-
-    async def _run_expire(self, task: ExpireTask) -> None:
-        try:
-            handler = self._require_expire_handler()
-            await self._run_handler_with_retry(
-                task_name="expire",
-                queue_entry_id=task.queue_entry_id,
-                expected_revision=task.expected_revision,
-                scheduled_at=task.expire_at,
-                deadline=None,
-                handler=handler,
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            self._logger.exception(
-                "Failed to execute expire queue_entry_id=%s revision=%s",
-                task.queue_entry_id,
-                task.expected_revision,
-            )
-        finally:
-            current_task = asyncio.current_task()
-            if self._expire_tasks.get(task.queue_entry_id) is current_task:
-                self._expire_tasks.pop(task.queue_entry_id, None)
-
-    async def _sleep_until(self, scheduled_at: datetime) -> None:
-        delay_seconds = self._seconds_until(scheduled_at)
-        if delay_seconds > 0:
-            await asyncio.sleep(delay_seconds)
-
-    async def _run_handler_with_retry(
-        self,
-        *,
-        task_name: str,
-        queue_entry_id: int,
-        expected_revision: int,
-        scheduled_at: datetime,
-        deadline: datetime | None,
-        handler: Callable[[int, int], object],
-    ) -> None:
-        failure_count = 0
-        await self._sleep_until(scheduled_at)
-
-        while True:
-            try:
-                await asyncio.to_thread(handler, queue_entry_id, expected_revision)
-            except RetryableTaskError as exc:
-                failure_count += 1
-                retry_delay = retry_delay_for_failure_count(failure_count)
-                next_retry_at = self._current_time_for(scheduled_at) + retry_delay
-
-                if deadline is not None and next_retry_at >= deadline:
-                    self._logger.info(
-                        "Stopped retrying %s queue_entry_id=%s revision=%s "
-                        "failure_count=%s next_retry_at=%s deadline=%s",
-                        task_name,
-                        queue_entry_id,
-                        expected_revision,
-                        failure_count,
-                        next_retry_at.isoformat(),
-                        deadline.isoformat(),
-                    )
-                    return
-
-                self._logger.warning(
-                    "Retrying %s queue_entry_id=%s revision=%s failure_count=%s "
-                    "next_retry_at=%s error_type=%s",
-                    task_name,
-                    queue_entry_id,
-                    expected_revision,
-                    failure_count,
-                    next_retry_at.isoformat(),
-                    type(exc).__name__,
-                    exc_info=exc,
-                )
-                await asyncio.sleep(retry_delay.total_seconds())
-                continue
-
-            if failure_count > 0:
-                self._logger.info(
-                    "Recovered %s queue_entry_id=%s revision=%s failure_count=%s",
-                    task_name,
-                    queue_entry_id,
-                    expected_revision,
-                    failure_count,
-                )
-            return
-
-    def _seconds_until(self, scheduled_at: datetime) -> float:
-        if scheduled_at.tzinfo is None:
-            current_time = datetime.now()
-        else:
-            current_time = datetime.now(tz=scheduled_at.tzinfo)
-
-        return max((scheduled_at - current_time).total_seconds(), 0.0)
-
-    def _current_time_for(self, reference: datetime) -> datetime:
-        if reference.tzinfo is None:
-            return datetime.now()
-        return datetime.now(tz=reference.tzinfo)
-
-    async def _aclose_on_loop(self) -> None:
-        self._closed = True
-
-        presence_tasks = list(self._presence_reminder_tasks.values())
-        expire_tasks = list(self._expire_tasks.values())
-        self._presence_reminder_tasks.clear()
-        self._expire_tasks.clear()
-
-        for task in [*presence_tasks, *expire_tasks]:
-            task.cancel()
-
-        if presence_tasks or expire_tasks:
-            await asyncio.gather(*presence_tasks, *expire_tasks, return_exceptions=True)
-
-    def _cancel_task(self, task: asyncio.Task[Any] | None) -> None:
-        if task is None:
-            return
-        if task is asyncio.current_task():
-            return
-        task.cancel()
-
-    def _require_presence_reminder_handler(self) -> PresenceReminderHandler:
-        if self._presence_reminder_handler is None:
-            raise RuntimeError("Presence reminder handler is not bound")
-        return self._presence_reminder_handler
-
-    def _require_expire_handler(self) -> ExpireHandler:
-        if self._expire_handler is None:
-            raise RuntimeError("Expire handler is not bound")
-        return self._expire_handler
-
-    def _require_loop(self) -> asyncio.AbstractEventLoop:
-        if self._loop is None:
-            raise RuntimeError("AsyncioMatchingQueueTaskScheduler loop is not bound")
-        return self._loop
-
-    def _is_running_on_bound_loop(self) -> bool:
-        if self._loop is None:
-            return False
-
-        try:
-            return asyncio.get_running_loop() is self._loop
-        except RuntimeError:
-            return False
+@dataclass(frozen=True, slots=True)
+class ScheduledTaskKey:
+    queue_entry_id: int
+    kind: ScheduledTaskKind
 
 
 class MatchingQueueRuntime:
     def __init__(
         self,
-        service: MatchingQueueService,
-        scheduler: AsyncioMatchingQueueTaskScheduler,
+        service: MatchingQueueRuntimeService,
         *,
-        outbox_dispatcher: OutboxDispatcher | None = None,
         reconcile_interval: timedelta = DEFAULT_RECONCILE_INTERVAL,
         logger: logging.Logger | None = None,
     ) -> None:
         self.service = service
-        self.scheduler = scheduler
-        self.outbox_dispatcher = outbox_dispatcher
         self.reconcile_interval = reconcile_interval
         self.logger = logger or logging.getLogger(__name__)
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._scheduled_tasks: dict[ScheduledTaskKey, asyncio.Task[None]] = {}
         self._reconcile_task: asyncio.Task[None] | None = None
         self._closed = False
         self._state_lock = asyncio.Lock()
@@ -310,38 +111,137 @@ class MatchingQueueRuntime:
         cls,
         session_factory: sessionmaker[Session],
         *,
-        outbox_publisher: OutboxEventPublisher | None = None,
         reconcile_interval: timedelta = DEFAULT_RECONCILE_INTERVAL,
-        outbox_dispatcher_poll_interval: timedelta | None = None,
         logger: logging.Logger | None = None,
     ) -> MatchingQueueRuntime:
-        scheduler = AsyncioMatchingQueueTaskScheduler(logger=logger)
         service = MatchingQueueService(
             session_factory=session_factory,
-            task_scheduler=scheduler,
             logger=logger,
         )
-        scheduler.bind_handlers(
-            presence_reminder_handler=service.process_presence_reminder,
-            expire_handler=service.process_expire,
-        )
-
-        outbox_dispatcher = None
-        if outbox_publisher is not None:
-            outbox_dispatcher = OutboxDispatcher(
-                session_factory=session_factory,
-                publisher=outbox_publisher,
-                poll_interval=outbox_dispatcher_poll_interval or DEFAULT_OUTBOX_POLL_INTERVAL,
-                logger=logger,
-            )
 
         return cls(
             service=service,
-            scheduler=scheduler,
-            outbox_dispatcher=outbox_dispatcher,
             reconcile_interval=reconcile_interval,
             logger=logger,
         )
+
+    async def join_queue(
+        self,
+        player_id: int,
+        *,
+        notification_context: MatchingQueueNotificationContext | None = None,
+    ) -> JoinQueueResult:
+        self._ensure_open()
+        self._bind_current_loop_if_needed()
+        result = await asyncio.to_thread(
+            self.service.join_queue,
+            player_id,
+            notification_context=notification_context,
+        )
+        self._schedule_task(
+            key=self._presence_reminder_task_key(result.queue_entry_id),
+            task_name="presence reminder",
+            scheduled_at=result.expire_at - PRESENCE_REMINDER_LEAD_TIME,
+            deadline=result.expire_at,
+            handler_call=self._handler_call(
+                self.process_presence_reminder,
+                result.queue_entry_id,
+                result.revision,
+            ),
+        )
+        self._schedule_task(
+            key=self._expire_task_key(result.queue_entry_id),
+            task_name="expire",
+            scheduled_at=result.expire_at,
+            deadline=None,
+            handler_call=self._handler_call(
+                self.process_expire,
+                result.queue_entry_id,
+                result.revision,
+            ),
+        )
+        await self._try_create_matches_safely(context="join")
+        return result
+
+    async def present(
+        self,
+        player_id: int,
+        *,
+        notification_context: MatchingQueueNotificationContext | None = None,
+    ) -> PresentQueueResult:
+        self._ensure_open()
+        self._bind_current_loop_if_needed()
+        result = await asyncio.to_thread(
+            self.service.present,
+            player_id,
+            notification_context=notification_context,
+        )
+        if result.expired:
+            self._cancel_scheduled_task(self._presence_reminder_task_key(result.queue_entry_id))
+            self._cancel_scheduled_task(self._expire_task_key(result.queue_entry_id))
+            return result
+
+        if result.revision is None or result.expire_at is None:
+            raise RuntimeError(
+                "present result for waiting entry must include revision and expire_at"
+            )
+
+        self._cancel_scheduled_task(self._presence_reminder_task_key(result.queue_entry_id))
+        self._cancel_scheduled_task(self._expire_task_key(result.queue_entry_id))
+        self._schedule_task(
+            key=self._presence_reminder_task_key(result.queue_entry_id),
+            task_name="presence reminder",
+            scheduled_at=result.expire_at - PRESENCE_REMINDER_LEAD_TIME,
+            deadline=result.expire_at,
+            handler_call=self._handler_call(
+                self.process_presence_reminder,
+                result.queue_entry_id,
+                result.revision,
+            ),
+        )
+        self._schedule_task(
+            key=self._expire_task_key(result.queue_entry_id),
+            task_name="expire",
+            scheduled_at=result.expire_at,
+            deadline=None,
+            handler_call=self._handler_call(
+                self.process_expire,
+                result.queue_entry_id,
+                result.revision,
+            ),
+        )
+        return result
+
+    async def leave(self, player_id: int) -> LeaveQueueResult:
+        self._ensure_open()
+        self._bind_current_loop_if_needed()
+        result = await asyncio.to_thread(self.service.leave, player_id)
+        if result.queue_entry_id is not None:
+            self._cancel_scheduled_task(self._presence_reminder_task_key(result.queue_entry_id))
+            self._cancel_scheduled_task(self._expire_task_key(result.queue_entry_id))
+        return result
+
+    async def process_presence_reminder(
+        self, queue_entry_id: int, expected_revision: int
+    ) -> PresenceReminderResult:
+        return await asyncio.to_thread(
+            self.service.process_presence_reminder,
+            queue_entry_id,
+            expected_revision,
+        )
+
+    async def process_expire(
+        self, queue_entry_id: int, expected_revision: int
+    ) -> ExpireQueueEntryResult:
+        result = await asyncio.to_thread(
+            self.service.process_expire,
+            queue_entry_id,
+            expected_revision,
+        )
+        if result.expired:
+            self._cancel_scheduled_task(self._presence_reminder_task_key(queue_entry_id))
+            self._cancel_scheduled_task(self._expire_task_key(queue_entry_id))
+        return result
 
     async def start(self) -> StartupSyncResult:
         async with self._state_lock:
@@ -351,11 +251,8 @@ class MatchingQueueRuntime:
                 raise RuntimeError("MatchingQueueRuntime is already started")
 
             loop = asyncio.get_running_loop()
-            self.scheduler.bind_loop(loop)
+            self.bind_loop(loop)
             startup_result = await self.run_startup_sync()
-            if self.outbox_dispatcher is not None:
-                self.outbox_dispatcher.bind_loop(loop)
-                await self.outbox_dispatcher.start()
             self._reconcile_task = asyncio.create_task(
                 self._run_reconcile_loop(),
                 name="matching-queue-reconcile",
@@ -372,21 +269,19 @@ class MatchingQueueRuntime:
             reconcile_task.cancel()
             await asyncio.gather(reconcile_task, return_exceptions=True)
 
-        if self.outbox_dispatcher is not None:
-            await self.outbox_dispatcher.stop()
-
-        try:
-            await self.scheduler.aclose()
-        except RuntimeError:
-            pass
+        await self._aclose_scheduled_tasks()
 
     async def run_startup_sync(self) -> StartupSyncResult:
-        result = await asyncio.to_thread(self.service.run_startup_sync)
+        self._ensure_open()
+        self._bind_current_loop_if_needed()
+        result = await self._run_sync_cycle(False)
         self._log_sync_result("Startup sync", result)
         return result
 
     async def run_reconcile_cycle(self) -> StartupSyncResult:
-        result = await asyncio.to_thread(self.service.run_reconcile_cycle)
+        self._ensure_open()
+        self._bind_current_loop_if_needed()
+        result = await self._run_sync_cycle(True)
         if self._has_sync_activity(result):
             self._log_sync_result("Reconcile cycle", result)
         return result
@@ -404,6 +299,296 @@ class MatchingQueueRuntime:
                 raise
             except Exception:
                 self.logger.exception("Matching queue reconcile cycle failed")
+
+    async def _run_sync_cycle(self, warn_on_cleanup: bool) -> StartupSyncResult:
+        cleaned_up_queue_entry_ids = await asyncio.to_thread(
+            self.service.cleanup_expired_entries,
+            warn_on_cleanup=warn_on_cleanup,
+        )
+        for queue_entry_id in cleaned_up_queue_entry_ids:
+            self._cancel_scheduled_task(self._presence_reminder_task_key(queue_entry_id))
+            self._cancel_scheduled_task(self._expire_task_key(queue_entry_id))
+
+        created_matches = await self._try_create_matches()
+        snapshot_time, waiting_entries = await asyncio.to_thread(
+            self.service.load_waiting_entry_timer_states,
+        )
+
+        reminded_queue_entry_ids: list[int] = []
+        rescheduled_reminder_queue_entry_ids: list[int] = []
+        rescheduled_expire_queue_entry_ids: list[int] = []
+
+        for waiting_entry in waiting_entries:
+            remind_at = waiting_entry.expire_at - PRESENCE_REMINDER_LEAD_TIME
+            already_reminded = waiting_entry.last_reminded_revision == waiting_entry.revision
+
+            if not already_reminded and remind_at <= snapshot_time < waiting_entry.expire_at:
+                reminder_result = await self.process_presence_reminder(
+                    waiting_entry.queue_entry_id,
+                    waiting_entry.revision,
+                )
+                if reminder_result.reminded:
+                    reminded_queue_entry_ids.append(waiting_entry.queue_entry_id)
+            elif not already_reminded and snapshot_time < remind_at:
+                self._cancel_scheduled_task(
+                    self._presence_reminder_task_key(waiting_entry.queue_entry_id)
+                )
+                if self._schedule_task(
+                    key=self._presence_reminder_task_key(waiting_entry.queue_entry_id),
+                    task_name="presence reminder",
+                    scheduled_at=remind_at,
+                    deadline=waiting_entry.expire_at,
+                    handler_call=self._handler_call(
+                        self.process_presence_reminder,
+                        waiting_entry.queue_entry_id,
+                        waiting_entry.revision,
+                    ),
+                ):
+                    rescheduled_reminder_queue_entry_ids.append(waiting_entry.queue_entry_id)
+
+            self._cancel_scheduled_task(self._expire_task_key(waiting_entry.queue_entry_id))
+            if self._schedule_task(
+                key=self._expire_task_key(waiting_entry.queue_entry_id),
+                task_name="expire",
+                scheduled_at=waiting_entry.expire_at,
+                deadline=None,
+                handler_call=self._handler_call(
+                    self.process_expire,
+                    waiting_entry.queue_entry_id,
+                    waiting_entry.revision,
+                ),
+            ):
+                rescheduled_expire_queue_entry_ids.append(waiting_entry.queue_entry_id)
+
+        return StartupSyncResult(
+            cleaned_up_queue_entry_ids=cleaned_up_queue_entry_ids,
+            reminded_queue_entry_ids=tuple(reminded_queue_entry_ids),
+            rescheduled_reminder_queue_entry_ids=tuple(rescheduled_reminder_queue_entry_ids),
+            rescheduled_expire_queue_entry_ids=tuple(rescheduled_expire_queue_entry_ids),
+            created_match_ids=tuple(match.match_id for match in created_matches),
+        )
+
+    async def _try_create_matches(self) -> tuple[CreatedMatchResult, ...]:
+        created_matches = await asyncio.to_thread(self.service.try_create_matches)
+        for created_match in created_matches:
+            for queue_entry_id in created_match.queue_entry_ids:
+                self._cancel_scheduled_task(self._presence_reminder_task_key(queue_entry_id))
+                self._cancel_scheduled_task(self._expire_task_key(queue_entry_id))
+        return created_matches
+
+    async def _try_create_matches_safely(self, *, context: str) -> tuple[CreatedMatchResult, ...]:
+        try:
+            return await self._try_create_matches()
+        except Exception:
+            self.logger.exception("Failed to try_create_matches after %s", context)
+            return tuple()
+
+    def _schedule_task(
+        self,
+        *,
+        key: ScheduledTaskKey,
+        task_name: str,
+        scheduled_at: datetime,
+        deadline: datetime | None,
+        handler_call: Callable[[], Awaitable[Any]],
+    ) -> bool:
+        try:
+            self._require_running_on_bound_loop()
+            current_task = self._scheduled_tasks.pop(key, None)
+            self._cancel_task(current_task)
+            self._scheduled_tasks[key] = asyncio.create_task(
+                self._run_scheduled_task(
+                    key=key,
+                    task_name=task_name,
+                    scheduled_at=scheduled_at,
+                    deadline=deadline,
+                    handler_call=handler_call,
+                ),
+                name=f"{key.kind.value}-{key.queue_entry_id}",
+            )
+        except Exception:
+            self.logger.exception(
+                "Failed to schedule %s queue_entry_id=%s scheduled_at=%s",
+                task_name,
+                key.queue_entry_id,
+                scheduled_at.isoformat(),
+            )
+            return False
+        return True
+
+    def _handler_call(
+        self,
+        handler: Callable[P, Awaitable[R]],
+        *args: P.args,
+        **kwargs: P.kwargs,
+    ) -> Callable[[], Awaitable[R]]:
+        async def call_handler() -> R:
+            return await handler(*args, **kwargs)
+
+        return call_handler
+
+    def _cancel_scheduled_task(self, key: ScheduledTaskKey) -> None:
+        self._require_running_on_bound_loop()
+        self._cancel_task(self._scheduled_tasks.pop(key, None))
+
+    def _presence_reminder_task_key(self, queue_entry_id: int) -> ScheduledTaskKey:
+        return ScheduledTaskKey(
+            queue_entry_id=queue_entry_id,
+            kind=ScheduledTaskKind.PRESENCE_REMINDER,
+        )
+
+    def _expire_task_key(self, queue_entry_id: int) -> ScheduledTaskKey:
+        return ScheduledTaskKey(
+            queue_entry_id=queue_entry_id,
+            kind=ScheduledTaskKind.EXPIRE,
+        )
+
+    def bind_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        if self._loop is not None and self._loop is not loop:
+            raise RuntimeError("MatchingQueueRuntime loop is already bound")
+        self._loop = loop
+
+    def _bind_current_loop_if_needed(self) -> None:
+        self.bind_loop(asyncio.get_running_loop())
+
+    async def _run_scheduled_task(
+        self,
+        *,
+        key: ScheduledTaskKey,
+        task_name: str,
+        scheduled_at: datetime,
+        deadline: datetime | None,
+        handler_call: Callable[[], Awaitable[Any]],
+    ) -> None:
+        try:
+            await self._run_handler_with_retry(
+                task_name=task_name,
+                queue_entry_id=key.queue_entry_id,
+                task_kind=key.kind,
+                scheduled_at=scheduled_at,
+                deadline=deadline,
+                handler_call=handler_call,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            self.logger.exception(
+                "Failed to execute %s queue_entry_id=%s",
+                task_name,
+                key.queue_entry_id,
+            )
+        finally:
+            current_task = asyncio.current_task()
+            if self._scheduled_tasks.get(key) is current_task:
+                self._scheduled_tasks.pop(key, None)
+
+    async def _run_handler_with_retry(
+        self,
+        *,
+        task_name: str,
+        queue_entry_id: int,
+        task_kind: ScheduledTaskKind,
+        scheduled_at: datetime,
+        deadline: datetime | None,
+        handler_call: Callable[[], Awaitable[Any]],
+    ) -> None:
+        failure_count = 0
+        await self._sleep_until(scheduled_at)
+
+        while True:
+            try:
+                await handler_call()
+            except RetryableTaskError as exc:
+                failure_count += 1
+                retry_delay = retry_delay_for_failure_count(failure_count)
+                next_retry_at = self._current_time_for(scheduled_at) + retry_delay
+
+                if deadline is not None and next_retry_at >= deadline:
+                    self.logger.info(
+                        "Stopped retrying %s queue_entry_id=%s failure_count=%s "
+                        "next_retry_at=%s deadline=%s",
+                        task_name,
+                        queue_entry_id,
+                        failure_count,
+                        next_retry_at.isoformat(),
+                        deadline.isoformat(),
+                    )
+                    return
+
+                self.logger.warning(
+                    "Retrying %s queue_entry_id=%s failure_count=%s next_retry_at=%s "
+                    "error_type=%s kind=%s",
+                    task_name,
+                    queue_entry_id,
+                    failure_count,
+                    next_retry_at.isoformat(),
+                    type(exc).__name__,
+                    task_kind.value,
+                    exc_info=exc,
+                )
+                await asyncio.sleep(retry_delay.total_seconds())
+                continue
+
+            if failure_count > 0:
+                self.logger.info(
+                    "Recovered %s queue_entry_id=%s failure_count=%s",
+                    task_name,
+                    queue_entry_id,
+                    failure_count,
+                )
+            return
+
+    async def _sleep_until(self, scheduled_at: datetime) -> None:
+        delay_seconds = self._seconds_until(scheduled_at)
+        if delay_seconds > 0:
+            await asyncio.sleep(delay_seconds)
+
+    async def _aclose_scheduled_tasks(self) -> None:
+        if self._loop is None:
+            return
+
+        self._require_running_on_bound_loop()
+        await self._aclose_scheduled_tasks_on_loop()
+
+    async def _aclose_scheduled_tasks_on_loop(self) -> None:
+        scheduled_tasks = list(self._scheduled_tasks.values())
+        self._scheduled_tasks.clear()
+
+        for task in scheduled_tasks:
+            task.cancel()
+
+        if scheduled_tasks:
+            await asyncio.gather(*scheduled_tasks, return_exceptions=True)
+
+    def _cancel_task(self, task: asyncio.Task[Any] | None) -> None:
+        if task is None:
+            return
+        if task is asyncio.current_task():
+            return
+        task.cancel()
+
+    def _ensure_open(self) -> None:
+        if self._closed:
+            raise RuntimeError("MatchingQueueRuntime is closed")
+
+    def _require_running_on_bound_loop(self) -> None:
+        if self._loop is None:
+            raise RuntimeError("MatchingQueueRuntime loop is not bound")
+        if asyncio.get_running_loop() is not self._loop:
+            raise RuntimeError("MatchingQueueRuntime must be called on the bound loop")
+
+    def _seconds_until(self, scheduled_at: datetime) -> float:
+        if scheduled_at.tzinfo is None:
+            current_time = datetime.now()
+        else:
+            current_time = datetime.now(tz=scheduled_at.tzinfo)
+
+        return max((scheduled_at - current_time).total_seconds(), 0.0)
+
+    def _current_time_for(self, reference: datetime) -> datetime:
+        if reference.tzinfo is None:
+            return datetime.now()
+        return datetime.now(tz=reference.tzinfo)
 
     def _has_sync_activity(self, result: StartupSyncResult) -> bool:
         return any(

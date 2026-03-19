@@ -69,9 +69,9 @@ class MatchQueueEntry(Base):
     last_reminded_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
     notification_channel_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     notification_guild_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
-    notification_mention_discord_user_id: Mapped[int | None] = mapped_column(
+    notification_mention_discord_user_id: Mapped[int] = mapped_column(
         BigInteger,
-        nullable=True,
+        nullable=False,
     )
     notification_recorded_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),

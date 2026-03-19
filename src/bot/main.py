@@ -9,9 +9,13 @@ from bot.commands import BotCommandHandlers, register_app_commands
 from bot.config import Settings
 from bot.db.session import create_db_engine, create_session_factory
 from bot.notifications import DiscordOutboxEventPublisher
-from bot.runtime import MatchingQueueRuntime
+from bot.runtime import BotRuntime, MatchingQueueRuntime, OutboxDispatcher
 
 logger = logging.getLogger(__name__)
+
+
+def _matching_queue_runtime_for(runtime: BotRuntime | None) -> MatchingQueueRuntime | None:
+    return None if runtime is None else runtime.matching_queue_runtime
 
 
 class BotClient(discord.Client):
@@ -20,7 +24,7 @@ class BotClient(discord.Client):
         settings: Settings,
         session_factory: sessionmaker[Session],
         *,
-        matching_queue_runtime: MatchingQueueRuntime | None = None,
+        bot_runtime: BotRuntime | None = None,
     ) -> None:
         intents = discord.Intents.default()
         super().__init__(intents=intents)
@@ -29,22 +33,20 @@ class BotClient(discord.Client):
         self.command_handlers = BotCommandHandlers(
             settings=settings,
             session_factory=session_factory,
-            matching_queue_service=(
-                matching_queue_runtime.service if matching_queue_runtime else None
-            ),
+            matching_queue_service=_matching_queue_runtime_for(bot_runtime),
             logger=logger,
         )
         register_app_commands(self.tree, self.command_handlers)
-        self._matching_queue_runtime = matching_queue_runtime
+        self._bot_runtime = bot_runtime
 
     @property
-    def matching_queue_runtime(self) -> MatchingQueueRuntime | None:
-        return self._matching_queue_runtime
+    def bot_runtime(self) -> BotRuntime | None:
+        return self._bot_runtime
 
-    @matching_queue_runtime.setter
-    def matching_queue_runtime(self, runtime: MatchingQueueRuntime | None) -> None:
-        self._matching_queue_runtime = runtime
-        self.command_handlers.matching_queue_service = None if runtime is None else runtime.service
+    @bot_runtime.setter
+    def bot_runtime(self, runtime: BotRuntime | None) -> None:
+        self._bot_runtime = runtime
+        self.command_handlers.matching_queue_service = _matching_queue_runtime_for(runtime)
 
     async def setup_hook(self) -> None:
         synced_commands = await self.tree.sync()
@@ -53,12 +55,12 @@ class BotClient(discord.Client):
             [command.name for command in synced_commands],
         )
 
-        if self.matching_queue_runtime is not None:
-            await self.matching_queue_runtime.start()
+        if self.bot_runtime is not None:
+            await self.bot_runtime.start()
 
     async def close(self) -> None:
-        if self.matching_queue_runtime is not None:
-            await self.matching_queue_runtime.stop()
+        if self.bot_runtime is not None:
+            await self.bot_runtime.stop()
         await super().close()
 
     async def on_ready(self) -> None:
@@ -70,12 +72,12 @@ def create_client(
     settings: Settings,
     session_factory: sessionmaker[Session],
     *,
-    matching_queue_runtime: MatchingQueueRuntime | None = None,
+    bot_runtime: BotRuntime | None = None,
 ) -> BotClient:
     return BotClient(
         settings,
         session_factory,
-        matching_queue_runtime=matching_queue_runtime,
+        bot_runtime=bot_runtime,
     )
 
 
@@ -114,9 +116,16 @@ def main() -> None:
     )
     matching_queue_runtime = MatchingQueueRuntime.create(
         session_factory=session_factory,
-        outbox_publisher=outbox_publisher,
     )
-    client.matching_queue_runtime = matching_queue_runtime
+    outbox_dispatcher = OutboxDispatcher(
+        session_factory=session_factory,
+        publisher=outbox_publisher,
+    )
+    bot_runtime = BotRuntime(
+        matching_queue_runtime=matching_queue_runtime,
+        outbox_dispatcher=outbox_dispatcher,
+    )
+    client.bot_runtime = bot_runtime
 
     try:
         client.run(settings.discord_bot_token)

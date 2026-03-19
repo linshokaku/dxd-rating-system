@@ -43,6 +43,11 @@ class PendingOutboxEvent:
 
 
 @dataclass(frozen=True, slots=True)
+class OutboxStartupResult:
+    published_event_ids: tuple[int, ...] = tuple()
+
+
+@dataclass(frozen=True, slots=True)
 class ScheduledRetry:
     event_id: int
     next_attempt_at: datetime
@@ -73,6 +78,17 @@ class NoopOutboxEventPublisher:
 
     def publish(self, event: PendingOutboxEvent) -> None:
         del event
+
+
+class NoopOutboxDispatcher:
+    def bind_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        del loop
+
+    async def start(self) -> OutboxStartupResult:
+        return OutboxStartupResult()
+
+    async def stop(self) -> None:
+        return None
 
 
 class OutboxNotificationListener(Protocol):
@@ -228,10 +244,10 @@ class OutboxDispatcher:
         self._loop = loop
         self.publisher.bind_loop(loop)
 
-    async def start(self) -> tuple[int, ...]:
+    async def start(self) -> OutboxStartupResult:
         async with self._state_lock:
             if self._started:
-                return tuple()
+                return OutboxStartupResult()
 
             if self._loop is None:
                 self.bind_loop(asyncio.get_running_loop())
@@ -257,7 +273,7 @@ class OutboxDispatcher:
                 if notification_listener is not None:
                     notification_listener.stop()
                 raise
-            return published_event_ids
+            return OutboxStartupResult(published_event_ids=published_event_ids)
 
     async def stop(self) -> None:
         async with self._state_lock:

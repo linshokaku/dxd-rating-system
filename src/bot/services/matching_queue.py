@@ -4,7 +4,7 @@ import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any, Protocol
+from typing import Any, TypedDict
 
 import psycopg
 from sqlalchemy import func, select
@@ -69,22 +69,9 @@ def _is_transient_task_db_error(exc: Exception) -> bool:
 
 
 @dataclass(frozen=True, slots=True)
-class PresenceReminderTask:
-    queue_entry_id: int
-    expected_revision: int
-    remind_at: datetime
-
-
-@dataclass(frozen=True, slots=True)
-class ExpireTask:
-    queue_entry_id: int
-    expected_revision: int
-    expire_at: datetime
-
-
-@dataclass(frozen=True, slots=True)
 class JoinQueueResult:
     queue_entry_id: int
+    revision: int
     expire_at: datetime
     message: str = JOIN_QUEUE_MESSAGE
 
@@ -92,6 +79,7 @@ class JoinQueueResult:
 @dataclass(frozen=True, slots=True)
 class PresentQueueResult:
     queue_entry_id: int
+    revision: int | None
     expire_at: datetime | None
     expired: bool
     message: str
@@ -124,16 +112,7 @@ class CreatedMatchResult:
 
 
 @dataclass(frozen=True, slots=True)
-class StartupSyncResult:
-    cleaned_up_queue_entry_ids: tuple[int, ...]
-    reminded_queue_entry_ids: tuple[int, ...]
-    rescheduled_reminder_queue_entry_ids: tuple[int, ...]
-    rescheduled_expire_queue_entry_ids: tuple[int, ...]
-    created_match_ids: tuple[int, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class _WaitingEntryTimerState:
+class WaitingEntryTimerState:
     queue_entry_id: int
     revision: int
     expire_at: datetime
@@ -147,39 +126,18 @@ class MatchingQueueNotificationContext:
     mention_discord_user_id: int
 
 
-class MatchingQueueTaskScheduler(Protocol):
-    def schedule_presence_reminder(self, task: PresenceReminderTask) -> None: ...
-
-    def schedule_expire(self, task: ExpireTask) -> None: ...
-
-    def cancel_presence_reminder(self, queue_entry_id: int) -> None: ...
-
-    def cancel_expire(self, queue_entry_id: int) -> None: ...
-
-
-class NoopMatchingQueueTaskScheduler:
-    def schedule_presence_reminder(self, task: PresenceReminderTask) -> None:
-        del task
-
-    def schedule_expire(self, task: ExpireTask) -> None:
-        del task
-
-    def cancel_presence_reminder(self, queue_entry_id: int) -> None:
-        del queue_entry_id
-
-    def cancel_expire(self, queue_entry_id: int) -> None:
-        del queue_entry_id
+class NotificationDestinationPayload(TypedDict):
+    channel_id: int
+    guild_id: int | None
 
 
 class MatchingQueueService:
     def __init__(
         self,
         session_factory: sessionmaker[Session],
-        task_scheduler: MatchingQueueTaskScheduler | None = None,
         logger: logging.Logger | None = None,
     ) -> None:
         self.session_factory = session_factory
-        self.task_scheduler = task_scheduler or NoopMatchingQueueTaskScheduler()
         self.logger = logger or logging.getLogger(__name__)
 
     def join_queue(
@@ -189,10 +147,9 @@ class MatchingQueueService:
         notification_context: MatchingQueueNotificationContext | None = None,
     ) -> JoinQueueResult:
         result: JoinQueueResult | None = None
-        scheduled_entry: MatchQueueEntry | None = None
 
         with session_scope(self.session_factory) as session:
-            self._ensure_player_exists(session, player_id)
+            player = self._ensure_player_exists(session, player_id)
             self._acquire_player_lock(session, player_id)
             current_time = self._get_database_now(session)
             waiting_entry = self._get_waiting_entry_for_update(session, player_id)
@@ -202,10 +159,8 @@ class MatchingQueueService:
 
             if waiting_entry is not None and waiting_entry.expire_at <= current_time:
                 self._mark_entry_expired(
-                    session,
                     waiting_entry,
                     removed_at=current_time,
-                    emit_outbox_event=False,
                 )
                 session.flush()
 
@@ -221,18 +176,18 @@ class MatchingQueueService:
             self._apply_notification_context(
                 new_entry,
                 notification_context,
+                mention_discord_user_id=player.discord_user_id,
                 recorded_at=current_time,
             )
             session.add(new_entry)
             session.flush()
 
-            scheduled_entry = new_entry
-            result = JoinQueueResult(queue_entry_id=new_entry.id, expire_at=new_entry.expire_at)
+            result = JoinQueueResult(
+                queue_entry_id=new_entry.id,
+                revision=new_entry.revision,
+                expire_at=new_entry.expire_at,
+            )
 
-        if scheduled_entry is not None:
-            self._schedule_waiting_entry(scheduled_entry, replace_existing=False)
-
-        self._try_create_matches_safely(context="join")
         if result is None:
             raise RuntimeError("join_queue result was not created")
         return result
@@ -244,11 +199,9 @@ class MatchingQueueService:
         notification_context: MatchingQueueNotificationContext | None = None,
     ) -> PresentQueueResult:
         result: PresentQueueResult | None = None
-        scheduled_entry: MatchQueueEntry | None = None
-        cancel_queue_entry_id: int | None = None
 
         with session_scope(self.session_factory) as session:
-            self._ensure_player_exists(session, player_id)
+            player = self._ensure_player_exists(session, player_id)
             self._acquire_player_lock(session, player_id)
             current_time = self._get_database_now(session)
             waiting_entry = self._get_waiting_entry_for_update(session, player_id)
@@ -258,14 +211,12 @@ class MatchingQueueService:
 
             if waiting_entry.expire_at <= current_time:
                 self._mark_entry_expired(
-                    session,
                     waiting_entry,
                     removed_at=current_time,
-                    emit_outbox_event=False,
                 )
-                cancel_queue_entry_id = waiting_entry.id
                 result = PresentQueueResult(
                     queue_entry_id=waiting_entry.id,
+                    revision=None,
                     expire_at=None,
                     expired=True,
                     message=QUEUE_PRESENT_EXPIRED_MESSAGE,
@@ -278,21 +229,16 @@ class MatchingQueueService:
                 self._apply_notification_context(
                     waiting_entry,
                     notification_context,
+                    mention_discord_user_id=player.discord_user_id,
                     recorded_at=current_time,
                 )
-                scheduled_entry = waiting_entry
                 result = PresentQueueResult(
                     queue_entry_id=waiting_entry.id,
+                    revision=waiting_entry.revision,
                     expire_at=waiting_entry.expire_at,
                     expired=False,
                     message=QUEUE_PRESENT_UPDATED_MESSAGE,
                 )
-
-        if cancel_queue_entry_id is not None:
-            self._cancel_queue_entry_tasks(cancel_queue_entry_id)
-
-        if scheduled_entry is not None:
-            self._schedule_waiting_entry(scheduled_entry, replace_existing=True)
 
         if result is None:
             raise RuntimeError("present result was not created")
@@ -300,7 +246,6 @@ class MatchingQueueService:
 
     def leave(self, player_id: int) -> LeaveQueueResult:
         result: LeaveQueueResult | None = None
-        cancel_queue_entry_id: int | None = None
 
         with session_scope(self.session_factory) as session:
             self._ensure_player_exists(session, player_id)
@@ -316,12 +261,9 @@ class MatchingQueueService:
                 )
             elif waiting_entry.expire_at <= current_time:
                 self._mark_entry_expired(
-                    session,
                     waiting_entry,
                     removed_at=current_time,
-                    emit_outbox_event=False,
                 )
-                cancel_queue_entry_id = waiting_entry.id
                 result = LeaveQueueResult(
                     queue_entry_id=waiting_entry.id,
                     expired=True,
@@ -331,15 +273,11 @@ class MatchingQueueService:
                 waiting_entry.status = MatchQueueEntryStatus.LEFT
                 waiting_entry.removed_at = current_time
                 waiting_entry.removal_reason = MatchQueueRemovalReason.USER_LEAVE
-                cancel_queue_entry_id = waiting_entry.id
                 result = LeaveQueueResult(
                     queue_entry_id=waiting_entry.id,
                     expired=False,
                     message=QUEUE_LEFT_MESSAGE,
                 )
-
-        if cancel_queue_entry_id is not None:
-            self._cancel_queue_entry_tasks(cancel_queue_entry_id)
 
         if result is None:
             raise RuntimeError("leave result was not created")
@@ -403,10 +341,14 @@ class MatchingQueueService:
                     return ExpireQueueEntryResult(queue_entry_id=queue_entry_id, expired=False)
 
                 self._mark_entry_expired(
-                    session,
                     entry,
                     removed_at=current_time,
-                    emit_outbox_event=True,
+                )
+                self._enqueue_outbox_event(
+                    session,
+                    event_type=OutboxEventType.QUEUE_EXPIRED,
+                    dedupe_key=f"queue_expired:{entry.id}:{entry.revision}",
+                    payload=self._build_queue_expired_payload(entry),
                 )
                 expired = True
         except Exception as exc:
@@ -414,7 +356,6 @@ class MatchingQueueService:
             raise
 
         if expired:
-            self._cancel_queue_entry_tasks(queue_entry_id)
             self.logger.info("Expired queue entry queue_entry_id=%s", queue_entry_id)
         return ExpireQueueEntryResult(queue_entry_id=queue_entry_id, expired=expired)
 
@@ -447,15 +388,17 @@ class MatchingQueueService:
 
                 for entry in expired_entries:
                     self._mark_entry_expired(
-                        session,
                         entry,
                         removed_at=current_time,
-                        emit_outbox_event=True,
+                    )
+                    self._enqueue_outbox_event(
+                        session,
+                        event_type=OutboxEventType.QUEUE_EXPIRED,
+                        dedupe_key=f"queue_expired:{entry.id}:{entry.revision}",
+                        payload=self._build_queue_expired_payload(entry),
                     )
                     batch_ids.append(entry.id)
 
-            for queue_entry_id in batch_ids:
-                self._cancel_queue_entry_tasks(queue_entry_id)
             expired_queue_entry_ids.extend(batch_ids)
 
         if expired_queue_entry_ids:
@@ -486,60 +429,8 @@ class MatchingQueueService:
 
         return tuple(created_matches)
 
-    def run_startup_sync(self) -> StartupSyncResult:
-        return self._run_sync_cycle(warn_on_cleanup=False)
-
-    def run_reconcile_cycle(self) -> StartupSyncResult:
-        return self._run_sync_cycle(warn_on_cleanup=True)
-
-    def _run_sync_cycle(self, *, warn_on_cleanup: bool) -> StartupSyncResult:
-        cleaned_up_queue_entry_ids = self.cleanup_expired_entries(warn_on_cleanup=warn_on_cleanup)
-        created_matches = self.try_create_matches()
-        snapshot_time, waiting_entries = self._load_waiting_entry_timer_states()
-
-        reminded_queue_entry_ids: list[int] = []
-        rescheduled_reminder_queue_entry_ids: list[int] = []
-        rescheduled_expire_queue_entry_ids: list[int] = []
-
-        for waiting_entry in waiting_entries:
-            remind_at = waiting_entry.expire_at - PRESENCE_REMINDER_LEAD_TIME
-            already_reminded = waiting_entry.last_reminded_revision == waiting_entry.revision
-
-            if not already_reminded and remind_at <= snapshot_time < waiting_entry.expire_at:
-                reminder_result = self.process_presence_reminder(
-                    waiting_entry.queue_entry_id,
-                    waiting_entry.revision,
-                )
-                if reminder_result.reminded:
-                    reminded_queue_entry_ids.append(waiting_entry.queue_entry_id)
-            elif not already_reminded and snapshot_time < remind_at:
-                reminder_task = PresenceReminderTask(
-                    queue_entry_id=waiting_entry.queue_entry_id,
-                    expected_revision=waiting_entry.revision,
-                    remind_at=remind_at,
-                )
-                if self._schedule_presence_reminder_task(reminder_task):
-                    rescheduled_reminder_queue_entry_ids.append(waiting_entry.queue_entry_id)
-
-            expire_task = ExpireTask(
-                queue_entry_id=waiting_entry.queue_entry_id,
-                expected_revision=waiting_entry.revision,
-                expire_at=waiting_entry.expire_at,
-            )
-            if self._schedule_expire_task(expire_task):
-                rescheduled_expire_queue_entry_ids.append(waiting_entry.queue_entry_id)
-
-        return StartupSyncResult(
-            cleaned_up_queue_entry_ids=cleaned_up_queue_entry_ids,
-            reminded_queue_entry_ids=tuple(reminded_queue_entry_ids),
-            rescheduled_reminder_queue_entry_ids=tuple(rescheduled_reminder_queue_entry_ids),
-            rescheduled_expire_queue_entry_ids=tuple(rescheduled_expire_queue_entry_ids),
-            created_match_ids=tuple(match.match_id for match in created_matches),
-        )
-
     def _try_create_single_match(self) -> CreatedMatchResult | None:
         created_match: CreatedMatchResult | None = None
-        matched_queue_entry_ids: list[int] = []
 
         with session_scope(self.session_factory) as session:
             queue_entries = session.scalars(
@@ -578,7 +469,6 @@ class MatchingQueueService:
                 )
                 session.add(participant)
                 queue_entry.status = MatchQueueEntryStatus.MATCHED
-                matched_queue_entry_ids.append(queue_entry.id)
 
             session.flush()
             for payload in self._build_match_created_payloads(match.id, queue_entries):
@@ -597,9 +487,6 @@ class MatchingQueueService:
                 player_ids=tuple(queue_entry.player_id for queue_entry in queue_entries),
             )
 
-        for queue_entry_id in matched_queue_entry_ids:
-            self._cancel_queue_entry_tasks(queue_entry_id)
-
         if created_match is not None:
             self.logger.info(
                 "Created match match_id=%s queue_entry_ids=%s",
@@ -611,7 +498,7 @@ class MatchingQueueService:
     def _build_match_created_payloads(
         self, match_id: int, queue_entries: Sequence[MatchQueueEntry]
     ) -> tuple[dict[str, Any], ...]:
-        destinations_by_channel_id: dict[int, dict[str, int | None]] = {}
+        destinations_by_channel_id: dict[int, NotificationDestinationPayload] = {}
         for queue_entry in queue_entries:
             destination = self._build_notification_destination_payload(
                 queue_entry,
@@ -620,17 +507,11 @@ class MatchingQueueService:
             destinations_by_channel_id.setdefault(destination["channel_id"], destination)
 
         team_a_discord_user_ids = [
-            self._require_notification_mention_discord_user_id(
-                queue_entry,
-                event_context="match_created",
-            )
+            queue_entry.notification_mention_discord_user_id
             for queue_entry in queue_entries[:TEAM_PLAYER_COUNT]
         ]
         team_b_discord_user_ids = [
-            self._require_notification_mention_discord_user_id(
-                queue_entry,
-                event_context="match_created",
-            )
+            queue_entry.notification_mention_discord_user_id
             for queue_entry in queue_entries[TEAM_PLAYER_COUNT:]
         ]
 
@@ -646,9 +527,9 @@ class MatchingQueueService:
             for destination in destinations_by_channel_id.values()
         )
 
-    def _load_waiting_entry_timer_states(
+    def load_waiting_entry_timer_states(
         self,
-    ) -> tuple[datetime, tuple[_WaitingEntryTimerState, ...]]:
+    ) -> tuple[datetime, tuple[WaitingEntryTimerState, ...]]:
         with session_scope(self.session_factory) as session:
             current_time = self._get_database_now(session)
             rows = session.execute(
@@ -666,7 +547,7 @@ class MatchingQueueService:
             ).all()
 
         states = tuple(
-            _WaitingEntryTimerState(
+            WaitingEntryTimerState(
                 queue_entry_id=row.id,
                 revision=row.revision,
                 expire_at=row.expire_at,
@@ -676,10 +557,11 @@ class MatchingQueueService:
         )
         return current_time, states
 
-    def _ensure_player_exists(self, session: Session, player_id: int) -> None:
+    def _ensure_player_exists(self, session: Session, player_id: int) -> Player:
         player = session.get(Player, player_id)
         if player is None:
             raise PlayerNotRegisteredError(f"Player is not registered: {player_id}")
+        return player
 
     def _raise_retryable_task_error(self, exc: Exception, *, operation: str) -> None:
         if isinstance(exc, RetryableTaskError):
@@ -715,25 +597,13 @@ class MatchingQueueService:
 
     def _mark_entry_expired(
         self,
-        session: Session,
         entry: MatchQueueEntry,
         *,
         removed_at: datetime,
-        emit_outbox_event: bool,
     ) -> None:
         entry.status = MatchQueueEntryStatus.EXPIRED
         entry.removed_at = removed_at
         entry.removal_reason = MatchQueueRemovalReason.TIMEOUT
-
-        if not emit_outbox_event:
-            return
-
-        self._enqueue_outbox_event(
-            session,
-            event_type=OutboxEventType.QUEUE_EXPIRED,
-            dedupe_key=f"queue_expired:{entry.id}:{entry.revision}",
-            payload=self._build_queue_expired_payload(entry),
-        )
 
     def _enqueue_outbox_event(
         self,
@@ -766,76 +636,16 @@ class MatchingQueueService:
             )
         )
 
-    def _schedule_waiting_entry(self, entry: MatchQueueEntry, *, replace_existing: bool) -> None:
-        if replace_existing:
-            self._cancel_queue_entry_tasks(entry.id)
-
-        self._schedule_presence_reminder_task(
-            PresenceReminderTask(
-                queue_entry_id=entry.id,
-                expected_revision=entry.revision,
-                remind_at=entry.expire_at - PRESENCE_REMINDER_LEAD_TIME,
-            )
-        )
-        self._schedule_expire_task(
-            ExpireTask(
-                queue_entry_id=entry.id,
-                expected_revision=entry.revision,
-                expire_at=entry.expire_at,
-            )
-        )
-
-    def _schedule_presence_reminder_task(self, task: PresenceReminderTask) -> bool:
-        try:
-            self.task_scheduler.schedule_presence_reminder(task)
-        except Exception:
-            self.logger.exception(
-                "Failed to schedule presence reminder queue_entry_id=%s revision=%s",
-                task.queue_entry_id,
-                task.expected_revision,
-            )
-            return False
-        return True
-
-    def _schedule_expire_task(self, task: ExpireTask) -> bool:
-        try:
-            self.task_scheduler.schedule_expire(task)
-        except Exception:
-            self.logger.exception(
-                "Failed to schedule expire queue_entry_id=%s revision=%s",
-                task.queue_entry_id,
-                task.expected_revision,
-            )
-            return False
-        return True
-
-    def _cancel_queue_entry_tasks(self, queue_entry_id: int) -> None:
-        try:
-            self.task_scheduler.cancel_presence_reminder(queue_entry_id)
-        except Exception:
-            self.logger.exception(
-                "Failed to cancel presence reminder queue_entry_id=%s",
-                queue_entry_id,
-            )
-
-        try:
-            self.task_scheduler.cancel_expire(queue_entry_id)
-        except Exception:
-            self.logger.exception("Failed to cancel expire queue_entry_id=%s", queue_entry_id)
-
-    def _try_create_matches_safely(self, *, context: str) -> None:
-        try:
-            self.try_create_matches()
-        except Exception:
-            self.logger.exception("Failed to try_create_matches after %s", context)
-
     def _apply_notification_context(
         self,
         entry: MatchQueueEntry,
         notification_context: MatchingQueueNotificationContext | None,
         *,
+        mention_discord_user_id: int,
         recorded_at: datetime,
     ) -> None:
+        entry.notification_mention_discord_user_id = mention_discord_user_id
+
         if notification_context is None:
             return
 
@@ -854,10 +664,7 @@ class MatchingQueueService:
                 entry,
                 event_context="presence_reminder",
             ),
-            "mention_discord_user_id": self._require_notification_mention_discord_user_id(
-                entry,
-                event_context="presence_reminder",
-            ),
+            "mention_discord_user_id": entry.notification_mention_discord_user_id,
         }
 
     def _build_queue_expired_payload(self, entry: MatchQueueEntry) -> dict[str, Any]:
@@ -870,10 +677,7 @@ class MatchingQueueService:
                 entry,
                 event_context="queue_expired",
             ),
-            "mention_discord_user_id": self._require_notification_mention_discord_user_id(
-                entry,
-                event_context="queue_expired",
-            ),
+            "mention_discord_user_id": entry.notification_mention_discord_user_id,
         }
 
     def _build_notification_destination_payload(
@@ -881,7 +685,7 @@ class MatchingQueueService:
         entry: MatchQueueEntry,
         *,
         event_context: str,
-    ) -> dict[str, int | None]:
+    ) -> NotificationDestinationPayload:
         if entry.notification_channel_id is None:
             raise ValueError(
                 f"notification_channel_id is missing for {event_context} queue_entry_id={entry.id}"
@@ -890,16 +694,3 @@ class MatchingQueueService:
             "channel_id": entry.notification_channel_id,
             "guild_id": entry.notification_guild_id,
         }
-
-    def _require_notification_mention_discord_user_id(
-        self,
-        entry: MatchQueueEntry,
-        *,
-        event_context: str,
-    ) -> int:
-        if entry.notification_mention_discord_user_id is None:
-            raise ValueError(
-                "notification_mention_discord_user_id is missing for "
-                f"{event_context} queue_entry_id={entry.id}"
-            )
-        return entry.notification_mention_discord_user_id

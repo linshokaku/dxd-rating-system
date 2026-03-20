@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 import bot.runtime.match_runtime as match_runtime_module
 import bot.runtime.outbox as outbox_runtime
-from bot.constants import PRESENCE_REMINDER_LEAD_TIME
+from bot.constants import MATCH_QUEUE_CLASS_DEFINITIONS, PRESENCE_REMINDER_LEAD_TIME
 from bot.models import (
     Match,
     MatchQueueEntry,
@@ -60,6 +60,9 @@ from bot.services import (
     WaitingEntryTimerState,
     register_player,
 )
+
+DEFAULT_QUEUE_NAME = MATCH_QUEUE_CLASS_DEFINITIONS[0].queue_name
+DEFAULT_QUEUE_CLASS_ID = MATCH_QUEUE_CLASS_DEFINITIONS[0].queue_class_id
 
 
 @dataclass
@@ -202,12 +205,14 @@ def create_waiting_queue_entry(
     *,
     player_id: int,
     expire_at: datetime,
+    queue_class_id: str = DEFAULT_QUEUE_CLASS_ID,
     revision: int = 1,
     last_reminded_revision: int | None = None,
 ) -> MatchQueueEntry:
     current_time = datetime.now(timezone.utc)
     queue_entry = MatchQueueEntry(
         player_id=player_id,
+        queue_class_id=queue_class_id,
         status=MatchQueueEntryStatus.WAITING,
         joined_at=current_time,
         last_present_at=current_time,
@@ -252,12 +257,17 @@ def test_match_runtime_join_queue_calls_service_and_schedules_timers(
     service = Mock()
     notification_context = build_notification_context(60_001)
     expire_at = datetime.now(timezone.utc) + timedelta(minutes=5)
-    join_result = JoinQueueResult(queue_entry_id=101, revision=3, expire_at=expire_at)
+    join_result = JoinQueueResult(
+        queue_entry_id=101,
+        revision=3,
+        expire_at=expire_at,
+        queue_class_id=DEFAULT_QUEUE_CLASS_ID,
+    )
     service.join_queue.return_value = join_result
     runtime = MatchRuntime(service=service)
     handler_calls: list[dict[str, object]] = []
     scheduled: list[dict[str, object]] = []
-    try_create_matches_contexts: list[str] = []
+    try_create_matches_calls: list[tuple[str, str | None]] = []
 
     def fake_handler_call(
         handler: Callable[..., object],
@@ -299,8 +309,12 @@ def test_match_runtime_join_queue_calls_service_and_schedules_timers(
     monkeypatch.setattr(runtime, "_handler_call", fake_handler_call)
     monkeypatch.setattr(runtime, "_schedule_task", fake_schedule_task)
 
-    async def fake_try_create_matches_safely(*, context: str) -> tuple[CreatedMatchResult, ...]:
-        try_create_matches_contexts.append(context)
+    async def fake_try_create_matches_safely(
+        *,
+        context: str,
+        queue_class_id: str | None = None,
+    ) -> tuple[CreatedMatchResult, ...]:
+        try_create_matches_calls.append((context, queue_class_id))
         return tuple()
 
     monkeypatch.setattr(runtime, "_try_create_matches_safely", fake_try_create_matches_safely)
@@ -308,12 +322,17 @@ def test_match_runtime_join_queue_calls_service_and_schedules_timers(
     result = asyncio.run(
         runtime.join_queue(
             5001,
+            DEFAULT_QUEUE_NAME,
             notification_context=notification_context,
         )
     )
 
     assert result == join_result
-    service.join_queue.assert_called_once_with(5001, notification_context=notification_context)
+    service.join_queue.assert_called_once_with(
+        5001,
+        DEFAULT_QUEUE_NAME,
+        notification_context=notification_context,
+    )
     assert handler_calls == [
         {
             "handler_name": "process_presence_reminder",
@@ -342,7 +361,7 @@ def test_match_runtime_join_queue_calls_service_and_schedules_timers(
             "handler_call": None,
         },
     ]
-    assert try_create_matches_contexts == ["join"]
+    assert try_create_matches_calls == [("join", DEFAULT_QUEUE_CLASS_ID)]
 
 
 def test_match_runtime_present_calls_service_and_replaces_timers(
@@ -1221,6 +1240,7 @@ def test_runtime_startup_sync_recovers_missing_tasks_after_join_commit(
     crash_service = MatchingQueueService(session_factory=session_factory)
     join_result = crash_service.join_queue(
         player_id,
+        DEFAULT_QUEUE_NAME,
         notification_context=build_notification_context(70_001),
     )
 
@@ -1264,6 +1284,7 @@ def test_runtime_startup_sync_recovers_missing_match_attempt_after_join_commit(
     for index, player_id in enumerate(player_ids):
         crash_service.join_queue(
             player_id,
+            DEFAULT_QUEUE_NAME,
             notification_context=build_notification_context(
                 70_100 + index,
                 channel_id=900_100,
@@ -1345,6 +1366,7 @@ def test_outbox_dispatcher_receives_listen_notify_events(
     player_id = create_player(session, 75_001)
     queue_entry = MatchQueueEntry(
         player_id=player_id,
+        queue_class_id=DEFAULT_QUEUE_CLASS_ID,
         status=MatchQueueEntryStatus.WAITING,
         joined_at=datetime.now(timezone.utc),
         last_present_at=datetime.now(timezone.utc),

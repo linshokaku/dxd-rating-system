@@ -56,7 +56,7 @@ from bot.services.matching_queue import (
     PresentQueueResult,
     WaitingEntryTimerState,
 )
-from bot.services.registration import PlayerLookupService, register_player
+from bot.services.registration import PlayerInfo, PlayerLookupService, register_player
 
 __all__ = [
     "CreatedMatchResult",
@@ -97,6 +97,7 @@ __all__ = [
     "MatchingQueueNotificationContext",
     "MatchingQueueService",
     "PlayerAlreadyRegisteredError",
+    "PlayerInfo",
     "PlayerLookupService",
     "PlayerNotRegisteredError",
     "PRESENCE_REMINDER_LEAD_TIME",

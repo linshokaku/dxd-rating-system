@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import BigInteger, DateTime, Integer, func, text
+from sqlalchemy import BigInteger, DateTime, Float, Integer, func, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from bot.models.base import Base
@@ -25,9 +25,15 @@ class Player(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     discord_user_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True)
-    rating: Mapped[int] = mapped_column(
-        Integer, default=INITIAL_RATING, server_default=text(str(INITIAL_RATING))
+    rating: Mapped[float] = mapped_column(
+        Float,
+        default=INITIAL_RATING,
+        server_default=text(str(INITIAL_RATING)),
     )
+    games_played: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    wins: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    losses: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    draws: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

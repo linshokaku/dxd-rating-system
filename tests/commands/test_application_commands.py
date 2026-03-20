@@ -222,6 +222,41 @@ def test_leave_command_is_idempotent_for_registered_player_without_waiting_entry
     assert interaction.response.messages == ["キューから退出しました。"]
 
 
+def test_player_info_command_returns_requesting_player_stats(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    discord_user_id = 123_456_789_012_345_686
+    player = create_player(session, discord_user_id)
+    player.rating = 1512.5
+    player.games_played = 8
+    player.wins = 5
+    player.losses = 2
+    player.draws = 1
+    session.commit()
+    handlers = create_handlers(session_factory)
+    interaction = FakeInteraction(user=FakeUser(id=discord_user_id))
+
+    asyncio.run(handlers.player_info(as_interaction(interaction)))
+
+    assert interaction.response.messages == [
+        "プレイヤー情報\nrating: 1512.50\ngames_played: 8\nwins: 5\nlosses: 2\ndraws: 1"
+    ]
+
+
+def test_player_info_command_requires_registered_player(
+    session_factory: sessionmaker[Session],
+) -> None:
+    handlers = create_handlers(session_factory)
+    interaction = FakeInteraction(user=FakeUser(id=123_456_789_012_345_687))
+
+    asyncio.run(handlers.player_info(as_interaction(interaction)))
+
+    assert interaction.response.messages == [
+        "プレイヤー登録が必要です。先に /register を実行してください。"
+    ]
+
+
 def test_dev_register_requires_admin(
     session: Session,
     session_factory: sessionmaker[Session],
@@ -325,6 +360,65 @@ def test_dev_leave_returns_target_not_registered_message(
     interaction = FakeInteraction(user=FakeUser(id=10))
 
     asyncio.run(handlers.dev_leave(as_interaction(interaction), "123456789012345688"))
+
+    assert interaction.response.messages == ["指定したユーザーは未登録です。"]
+
+
+def test_dev_player_info_requires_admin(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    create_player(session, 123_456_789_012_345_689)
+    handlers = create_handlers(session_factory)
+    interaction = FakeInteraction(user=FakeUser(id=10))
+
+    asyncio.run(handlers.dev_player_info(as_interaction(interaction), "123456789012345689"))
+
+    assert interaction.response.messages == ["このコマンドは管理者のみ実行できます。"]
+
+
+def test_dev_player_info_validates_discord_user_id(session_factory: sessionmaker[Session]) -> None:
+    handlers = create_handlers(session_factory, super_admin_user_ids=frozenset({10}))
+    interaction = FakeInteraction(user=FakeUser(id=10))
+
+    asyncio.run(handlers.dev_player_info(as_interaction(interaction), "not-a-number"))
+
+    assert interaction.response.messages == ["discord_user_id が不正です。"]
+
+
+def test_dev_player_info_returns_target_player_stats(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    executor_discord_user_id = 10
+    target_discord_user_id = 123_456_789_012_345_690
+    player = create_player(session, target_discord_user_id)
+    player.rating = 1498.25
+    player.games_played = 3
+    player.wins = 1
+    player.losses = 1
+    player.draws = 1
+    session.commit()
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({executor_discord_user_id}),
+    )
+    interaction = FakeInteraction(user=FakeUser(id=executor_discord_user_id))
+
+    asyncio.run(handlers.dev_player_info(as_interaction(interaction), str(target_discord_user_id)))
+
+    assert interaction.response.messages == [
+        "プレイヤー情報\nrating: 1498.25\ngames_played: 3\nwins: 1\nlosses: 1\ndraws: 1"
+    ]
+
+
+def test_dev_player_info_returns_target_not_registered_message(
+    session_factory: sessionmaker[Session],
+) -> None:
+    handlers = create_handlers(session_factory, super_admin_user_ids=frozenset({10}))
+    interaction = FakeInteraction(user=FakeUser(id=10))
+
+    asyncio.run(handlers.dev_player_info(as_interaction(interaction), "123456789012345691"))
 
     assert interaction.response.messages == ["指定したユーザーは未登録です。"]
 

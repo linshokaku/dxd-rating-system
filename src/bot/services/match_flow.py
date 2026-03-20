@@ -9,10 +9,10 @@ from datetime import datetime
 from typing import Any, TypedDict
 
 import psycopg
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import DBAPIError, InterfaceError, OperationalError
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import Session, selectinload, sessionmaker
 
 from bot.constants import (
     MATCH_APPROVAL_WINDOW,
@@ -47,6 +47,8 @@ from bot.services.errors import (
     MatchAlreadyFinalizedError,
     MatchApprovalNotAvailableError,
     MatchApprovalNotRequiredError,
+    MatchFlowError,
+    MatchNotFinalizedError,
     MatchNotFoundError,
     MatchParentAlreadyAssignedError,
     MatchParticipantError,
@@ -55,6 +57,7 @@ from bot.services.errors import (
     RetryableTaskError,
 )
 from bot.services.matching_queue import MatchingQueueNotificationContext
+from bot.services.rating import RatingParticipantSnapshot, calculate_rating_updates
 
 MATCH_PARENT_ASSIGNED_NOTIFICATION_MESSAGE = "親が決定しました。"
 MATCH_APPROVAL_STARTED_NOTIFICATION_MESSAGE = "承認フェーズに移行しました。"
@@ -126,6 +129,15 @@ class MatchAdminOverrideResult:
 
 
 @dataclass(frozen=True, slots=True)
+class PlayerRatingState:
+    rating: float
+    games_played: int
+    wins: int
+    losses: int
+    draws: int
+
+
+@dataclass(frozen=True, slots=True)
 class PlayerPenaltyAdjustmentResult:
     player_id: int
     penalty_type: PenaltyType
@@ -146,6 +158,11 @@ class ActiveMatchTimerState:
 class NotificationDestinationPayload(TypedDict):
     channel_id: int
     guild_id: int | None
+
+
+class TeamRatingEntryPayload(TypedDict):
+    discord_user_id: int
+    rating: float
 
 
 class MatchFlowService:
@@ -496,9 +513,14 @@ class MatchFlowService:
 
             current_time = self._get_database_now(session)
             finalized_result = session.get(FinalizedMatchResult, match_id)
-            previous_final_result = (
-                None if finalized_result is None else finalized_result.final_result
-            )
+            if (
+                active_state.state != MatchState.FINALIZED
+                or finalized_result is None
+                or finalized_result.rated_at is None
+            ):
+                raise MatchNotFinalizedError("この試合はまだ結果確定していません。")
+
+            previous_final_result = finalized_result.final_result
             session.add(
                 MatchAdminOverride(
                     match_id=match_id,
@@ -509,14 +531,15 @@ class MatchFlowService:
                 )
             )
 
-            self._finalize_match_locked(
+            self._override_finalized_match_locked(
                 session,
                 active_state=active_state,
+                finalized_result=finalized_result,
                 final_result=final_result,
                 finalized_at=current_time,
-                finalized_by_admin=True,
-                apply_auto_penalties=False,
-                finalization_dedupe_suffix=f"admin:{admin_discord_user_id}:{int(current_time.timestamp())}",
+                finalization_dedupe_suffix=(
+                    f"admin:{admin_discord_user_id}:{int(current_time.timestamp())}"
+                ),
             )
             return MatchAdminOverrideResult(
                 match_id=match_id,
@@ -787,6 +810,8 @@ class MatchFlowService:
             session.add(finalized_result)
 
         finalized_result.created_at = active_state.match.created_at
+        if finalized_result.rated_at is None:
+            finalized_result.rated_at = finalized_at
         finalized_result.team_a_player_ids = [
             participant.player_id
             for participant in participants
@@ -821,6 +846,18 @@ class MatchFlowService:
         participants_by_player_id = {
             participant.player_id: participant for participant in participants
         }
+        rating_snapshots_by_player_id = {
+            participant.player_id: RatingParticipantSnapshot(
+                player_id=participant.player_id,
+                team=participant.team,
+                rating=participant.player.rating,
+                games_played=participant.player.games_played,
+                wins=participant.player.wins,
+                losses=participant.player.losses,
+                draws=participant.player.draws,
+            )
+            for participant in participants
+        }
         auto_penalty_notifications: list[tuple[MatchParticipant, PenaltyType, int]] = []
 
         desired_auto_penalties_by_player: dict[int, PenaltyType | None] = {}
@@ -840,6 +877,11 @@ class MatchFlowService:
                     match_id=active_state.match_id,
                     player_id=participant.player_id,
                     team=participant.team,
+                    rating_before=None,
+                    games_played_before=None,
+                    wins_before=None,
+                    losses_before=None,
+                    draws_before=None,
                     latest_report_id=None,
                     last_reported_input_result=None,
                     last_normalized_result=None,
@@ -852,6 +894,26 @@ class MatchFlowService:
                 )
                 session.add(finalized_player_result)
             finalized_player_result.team = participant.team
+            if finalized_player_result.rating_before is None:
+                finalized_player_result.rating_before = rating_snapshots_by_player_id[
+                    participant.player_id
+                ].rating
+            if finalized_player_result.games_played_before is None:
+                finalized_player_result.games_played_before = rating_snapshots_by_player_id[
+                    participant.player_id
+                ].games_played
+            if finalized_player_result.wins_before is None:
+                finalized_player_result.wins_before = rating_snapshots_by_player_id[
+                    participant.player_id
+                ].wins
+            if finalized_player_result.losses_before is None:
+                finalized_player_result.losses_before = rating_snapshots_by_player_id[
+                    participant.player_id
+                ].losses
+            if finalized_player_result.draws_before is None:
+                finalized_player_result.draws_before = rating_snapshots_by_player_id[
+                    participant.player_id
+                ].draws
             finalized_player_result.latest_report_id = (
                 None if latest_report is None else latest_report.id
             )
@@ -902,6 +964,17 @@ class MatchFlowService:
                     )
                 )
 
+        if finalized_by_admin:
+            # TODO: Recalculate rating-related player state when match result correction support
+            # is implemented. For now, admin overrides update only the stored match result.
+            pass
+        else:
+            self._apply_rating_updates(
+                participants=participants,
+                final_result=final_result,
+                rating_snapshots=tuple(rating_snapshots_by_player_id.values()),
+            )
+
         for player_id, desired_penalty_type in desired_auto_penalties_by_player.items():
             if player_id in previous_auto_penalties_by_player:
                 continue
@@ -927,15 +1000,353 @@ class MatchFlowService:
         active_state.finalized_at = finalized_at
         active_state.finalized_by_admin = finalized_by_admin
 
+        self._enqueue_finalization_notifications_locked(
+            session,
+            active_state=active_state,
+            participants=participants,
+            final_result=final_result,
+            finalized_at=finalized_at,
+            finalized_by_admin=finalized_by_admin,
+            finalization_dedupe_suffix=finalization_dedupe_suffix,
+            auto_penalty_notifications=auto_penalty_notifications,
+        )
+
+        return MatchFinalizationResult(
+            match_id=active_state.match_id,
+            final_result=final_result,
+            finalized=True,
+            finalized_at=finalized_at,
+            approval_deadline_at=active_state.approval_deadline_at,
+            admin_review_required=active_state.admin_review_required,
+        )
+
+    def _override_finalized_match_locked(
+        self,
+        session: Session,
+        *,
+        active_state: ActiveMatchState,
+        finalized_result: FinalizedMatchResult,
+        final_result: MatchResult,
+        finalized_at: datetime,
+        finalization_dedupe_suffix: str,
+    ) -> None:
+        participants = self._get_match_participants(session, active_state.match_id)
+        latest_reports_by_player = self._get_latest_reports_by_player(
+            session,
+            active_state.match_id,
+        )
+        player_states_by_player = self._ensure_active_player_states_for_finalization(
+            session=session,
+            active_state=active_state,
+            participants=participants,
+            latest_reports_by_player=latest_reports_by_player,
+            final_result=final_result,
+            finalized_at=finalized_at,
+            finalized_by_admin=True,
+        )
+
+        finalized_result.created_at = active_state.match.created_at
+        finalized_result.team_a_player_ids = [
+            participant.player_id
+            for participant in participants
+            if participant.team == MatchParticipantTeam.TEAM_A
+        ]
+        finalized_result.team_b_player_ids = [
+            participant.player_id
+            for participant in participants
+            if participant.team == MatchParticipantTeam.TEAM_B
+        ]
+        finalized_result.parent_player_id = active_state.parent_player_id
+        finalized_result.parent_decided_at = active_state.parent_decided_at
+        finalized_result.provisional_result = active_state.provisional_result
+        finalized_result.final_result = final_result
+        finalized_result.admin_review_required = active_state.admin_review_required
+        finalized_result.admin_review_reasons = active_state.admin_review_reasons
+        finalized_result.finalized_at = finalized_at
+        finalized_result.finalized_by_admin = True
+
+        existing_finalized_by_player = {
+            result.player_id: result
+            for result in session.scalars(
+                select(FinalizedMatchPlayerResult).where(
+                    FinalizedMatchPlayerResult.match_id == active_state.match_id
+                )
+            ).all()
+        }
+        previous_auto_penalties_by_player = {
+            result.player_id: (result.auto_penalty_type if result.auto_penalty_applied else None)
+            for result in existing_finalized_by_player.values()
+        }
+        rating_snapshots_by_player_id = {
+            participant.player_id: RatingParticipantSnapshot(
+                player_id=participant.player_id,
+                team=participant.team,
+                rating=participant.player.rating,
+                games_played=participant.player.games_played,
+                wins=participant.player.wins,
+                losses=participant.player.losses,
+                draws=participant.player.draws,
+            )
+            for participant in participants
+        }
+
+        for participant in participants:
+            player_state = player_states_by_player[participant.player_id]
+            latest_report = latest_reports_by_player.get(participant.player_id)
+            finalized_player_result = existing_finalized_by_player.get(participant.player_id)
+            if finalized_player_result is None:
+                finalized_player_result = FinalizedMatchPlayerResult(
+                    match_id=active_state.match_id,
+                    player_id=participant.player_id,
+                    team=participant.team,
+                    rating_before=rating_snapshots_by_player_id[participant.player_id].rating,
+                    games_played_before=rating_snapshots_by_player_id[
+                        participant.player_id
+                    ].games_played,
+                    wins_before=rating_snapshots_by_player_id[participant.player_id].wins,
+                    losses_before=rating_snapshots_by_player_id[participant.player_id].losses,
+                    draws_before=rating_snapshots_by_player_id[participant.player_id].draws,
+                    latest_report_id=None,
+                    last_reported_input_result=None,
+                    last_normalized_result=None,
+                    last_reported_at=None,
+                    report_status=player_state.report_status,
+                    approval_status=player_state.approval_status,
+                    approved_at=player_state.approved_at,
+                    auto_penalty_type=None,
+                    auto_penalty_applied=False,
+                )
+                session.add(finalized_player_result)
+
+            finalized_player_result.team = participant.team
+            finalized_player_result.latest_report_id = (
+                None if latest_report is None else latest_report.id
+            )
+            finalized_player_result.last_reported_input_result = (
+                None if latest_report is None else latest_report.reported_input_result
+            )
+            finalized_player_result.last_normalized_result = (
+                None if latest_report is None else latest_report.normalized_result
+            )
+            finalized_player_result.last_reported_at = (
+                None if latest_report is None else latest_report.reported_at
+            )
+            finalized_player_result.report_status = player_state.report_status
+            finalized_player_result.approval_status = player_state.approval_status
+            finalized_player_result.approved_at = player_state.approved_at
+            finalized_player_result.auto_penalty_type = None
+            finalized_player_result.auto_penalty_applied = False
+
+        for player_id, previous_penalty_type in previous_auto_penalties_by_player.items():
+            if previous_penalty_type is None:
+                continue
+            self._apply_penalty_adjustment(
+                session,
+                player_id=player_id,
+                match_id=active_state.match_id,
+                penalty_type=previous_penalty_type,
+                delta=-1,
+                source=PenaltyAdjustmentSource.ADMIN_RESULT_OVERRIDE,
+                admin_discord_user_id=None,
+            )
+
+        active_state.state = MatchState.FINALIZED
+        active_state.finalized_at = finalized_at
+        active_state.finalized_by_admin = True
+
+        self._recalculate_ratings_after_match_correction_locked(
+            session,
+            target_finalized_result=finalized_result,
+        )
+        self._enqueue_finalization_notifications_locked(
+            session,
+            active_state=active_state,
+            participants=participants,
+            final_result=final_result,
+            finalized_at=finalized_at,
+            finalized_by_admin=True,
+            finalization_dedupe_suffix=finalization_dedupe_suffix,
+            auto_penalty_notifications=tuple(),
+        )
+
+    def _recalculate_ratings_after_match_correction_locked(
+        self,
+        session: Session,
+        *,
+        target_finalized_result: FinalizedMatchResult,
+    ) -> None:
+        if target_finalized_result.rated_at is None:
+            raise MatchFlowError("試合結果の補正に必要な rated_at が見つかりません。")
+
+        affected_match_ids = tuple(
+            session.scalars(
+                select(FinalizedMatchResult.match_id)
+                .where(
+                    or_(
+                        FinalizedMatchResult.rated_at > target_finalized_result.rated_at,
+                        and_(
+                            FinalizedMatchResult.rated_at == target_finalized_result.rated_at,
+                            FinalizedMatchResult.match_id >= target_finalized_result.match_id,
+                        ),
+                    )
+                )
+                .order_by(FinalizedMatchResult.rated_at, FinalizedMatchResult.match_id)
+            ).all()
+        )
+        for match_id in sorted(affected_match_ids):
+            self._acquire_match_lock(session, match_id)
+
+        affected_matches = list(
+            session.scalars(
+                select(FinalizedMatchResult)
+                .options(selectinload(FinalizedMatchResult.player_results))
+                .where(FinalizedMatchResult.match_id.in_(affected_match_ids))
+                .order_by(FinalizedMatchResult.rated_at, FinalizedMatchResult.match_id)
+            ).all()
+        )
+        affected_player_ids = sorted(
+            {
+                player_result.player_id
+                for finalized_match in affected_matches
+                for player_result in finalized_match.player_results
+            }
+        )
+        for player_id in affected_player_ids:
+            self._acquire_player_lock(session, player_id)
+
+        locked_players = session.scalars(
+            select(Player).where(Player.id.in_(affected_player_ids))
+        ).all()
+        players_by_id = {player.id: player for player in locked_players}
+        working_states = {
+            player_id: PlayerRatingState(
+                rating=player.rating,
+                games_played=player.games_played,
+                wins=player.wins,
+                losses=player.losses,
+                draws=player.draws,
+            )
+            for player_id, player in players_by_id.items()
+        }
+
+        for finalized_match in reversed(affected_matches[1:]):
+            for player_result in finalized_match.player_results:
+                if (
+                    player_result.rating_before is None
+                    or player_result.games_played_before is None
+                    or player_result.wins_before is None
+                    or player_result.losses_before is None
+                    or player_result.draws_before is None
+                ):
+                    raise MatchFlowError("試合結果の補正に必要な開始時点状態が不足しています。")
+                working_states[player_result.player_id] = PlayerRatingState(
+                    rating=player_result.rating_before,
+                    games_played=player_result.games_played_before,
+                    wins=player_result.wins_before,
+                    losses=player_result.losses_before,
+                    draws=player_result.draws_before,
+                )
+
+        for player_result in affected_matches[0].player_results:
+            if (
+                player_result.rating_before is None
+                or player_result.games_played_before is None
+                or player_result.wins_before is None
+                or player_result.losses_before is None
+                or player_result.draws_before is None
+            ):
+                raise MatchFlowError("試合結果の補正に必要な開始時点状態が不足しています。")
+            working_states[player_result.player_id] = PlayerRatingState(
+                rating=player_result.rating_before,
+                games_played=player_result.games_played_before,
+                wins=player_result.wins_before,
+                losses=player_result.losses_before,
+                draws=player_result.draws_before,
+            )
+
+        for finalized_match in affected_matches:
+            ordered_player_results = sorted(
+                finalized_match.player_results,
+                key=lambda result: (result.team.value, result.player_id),
+            )
+            rating_snapshots = tuple(
+                RatingParticipantSnapshot(
+                    player_id=player_result.player_id,
+                    team=player_result.team,
+                    rating=working_states[player_result.player_id].rating,
+                    games_played=working_states[player_result.player_id].games_played,
+                    wins=working_states[player_result.player_id].wins,
+                    losses=working_states[player_result.player_id].losses,
+                    draws=working_states[player_result.player_id].draws,
+                )
+                for player_result in ordered_player_results
+            )
+
+            for player_result in ordered_player_results:
+                player_state = working_states[player_result.player_id]
+                player_result.rating_before = player_state.rating
+                player_result.games_played_before = player_state.games_played
+                player_result.wins_before = player_state.wins
+                player_result.losses_before = player_state.losses
+                player_result.draws_before = player_state.draws
+
+            rating_updates_by_player_id = calculate_rating_updates(
+                rating_snapshots,
+                finalized_match.final_result,
+            )
+            for player_id, rating_update in rating_updates_by_player_id.items():
+                working_states[player_id] = PlayerRatingState(
+                    rating=rating_update.rating_after,
+                    games_played=rating_update.games_played_after,
+                    wins=rating_update.wins_after,
+                    losses=rating_update.losses_after,
+                    draws=rating_update.draws_after,
+                )
+
+        for player_id, player_state in working_states.items():
+            player = players_by_id[player_id]
+            player.rating = player_state.rating
+            player.games_played = player_state.games_played
+            player.wins = player_state.wins
+            player.losses = player_state.losses
+            player.draws = player_state.draws
+
+    def _enqueue_finalization_notifications_locked(
+        self,
+        session: Session,
+        *,
+        active_state: ActiveMatchState,
+        participants: Sequence[MatchParticipant],
+        final_result: MatchResult,
+        finalized_at: datetime,
+        finalized_by_admin: bool,
+        finalization_dedupe_suffix: str,
+        auto_penalty_notifications: Sequence[tuple[MatchParticipant, PenaltyType, int]],
+    ) -> None:
+        finalized_notification_payload: dict[str, Any] = {
+            "match_id": active_state.match_id,
+            "final_result": final_result.value,
+            "finalized_at": finalized_at.isoformat(),
+            "finalized_by_admin": finalized_by_admin,
+        }
+        if not finalized_by_admin:
+            finalized_notification_payload["team_a_rating_entries"] = (
+                self._build_team_rating_entries(
+                    participants=participants,
+                    team=MatchParticipantTeam.TEAM_A,
+                )
+            )
+            finalized_notification_payload["team_b_rating_entries"] = (
+                self._build_team_rating_entries(
+                    participants=participants,
+                    team=MatchParticipantTeam.TEAM_B,
+                )
+            )
+
         for payload in self._build_match_channel_payloads(
             participants=participants,
             event_type=OutboxEventType.MATCH_FINALIZED,
-            extra_payload={
-                "match_id": active_state.match_id,
-                "final_result": final_result.value,
-                "finalized_at": finalized_at.isoformat(),
-                "finalized_by_admin": finalized_by_admin,
-            },
+            extra_payload=finalized_notification_payload,
         ):
             destination = payload["destination"]
             self._enqueue_outbox_event(
@@ -997,14 +1408,21 @@ class MatchFlowService:
                     payload=payload,
                 )
 
-        return MatchFinalizationResult(
-            match_id=active_state.match_id,
-            final_result=final_result,
-            finalized=True,
-            finalized_at=finalized_at,
-            approval_deadline_at=active_state.approval_deadline_at,
-            admin_review_required=active_state.admin_review_required,
-        )
+    def _apply_rating_updates(
+        self,
+        *,
+        participants: Sequence[MatchParticipant],
+        final_result: MatchResult,
+        rating_snapshots: Sequence[RatingParticipantSnapshot],
+    ) -> None:
+        rating_updates_by_player_id = calculate_rating_updates(rating_snapshots, final_result)
+        for participant in participants:
+            rating_update = rating_updates_by_player_id[participant.player_id]
+            participant.player.rating = rating_update.rating_after
+            participant.player.games_played = rating_update.games_played_after
+            participant.player.wins = rating_update.wins_after
+            participant.player.losses = rating_update.losses_after
+            participant.player.draws = rating_update.draws_after
 
     def _ensure_active_player_states_for_finalization(
         self,
@@ -1300,6 +1718,24 @@ class MatchFlowService:
             }
             for destination in destinations_by_channel_id.values()
         )
+
+    def _build_team_rating_entries(
+        self,
+        *,
+        participants: Sequence[MatchParticipant],
+        team: MatchParticipantTeam,
+    ) -> list[TeamRatingEntryPayload]:
+        return [
+            {
+                "discord_user_id": (
+                    participant.notification_mention_discord_user_id
+                    or participant.player.discord_user_id
+                ),
+                "rating": participant.player.rating,
+            }
+            for participant in participants
+            if participant.team == team
+        ]
 
     def _build_match_approval_requested_payload(
         self,

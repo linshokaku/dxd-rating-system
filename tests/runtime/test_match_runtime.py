@@ -42,6 +42,7 @@ from bot.services import (
     MATCH_APPROVAL_STARTED_NOTIFICATION_MESSAGE,
     MATCH_AUTO_PENALTY_APPLIED_NOTIFICATION_MESSAGE,
     MATCH_CREATED_NOTIFICATION_MESSAGE,
+    MATCH_FINALIZED_NOTIFICATION_MESSAGE,
     PRESENCE_REMINDER_NOTIFICATION_MESSAGE,
     QUEUE_EXPIRED_NOTIFICATION_MESSAGE,
     ActiveMatchTimerState,
@@ -1833,6 +1834,66 @@ def test_discord_outbox_publisher_renders_match_auto_penalty_message() -> None:
                     "mention_discord_user_id": 80_022,
                     "penalty_type": "incorrect_report",
                     "penalty_count": 2,
+                    "destination": {
+                        "channel_id": channel.id,
+                        "guild_id": channel.guild.id,
+                    },
+                },
+                created_at=datetime.now(timezone.utc),
+            ),
+        )
+
+    asyncio.run(scenario())
+
+    assert channel.sent_messages == [expected_message]
+
+
+def test_discord_outbox_publisher_renders_match_finalized_message_with_ratings() -> None:
+    channel = FakeDiscordChannel(
+        id=900_023,
+        guild=FakeDiscordGuild(id=910_023),
+    )
+    client = FakeDiscordClient(channels={channel.id: channel})
+    publisher = DiscordOutboxEventPublisher(client=client)
+
+    expected_message = "\n".join(
+        [
+            f"{MATCH_FINALIZED_NOTIFICATION_MESSAGE} match_id=14",
+            "結果: 引き分け",
+            "更新後レート",
+            "Team A",
+            "    <@80031>: 1517",
+            "    <@80032>: 1504",
+            "    <@80033>: 1498",
+            "Team B",
+            "    <@80034>: 1502",
+            "    <@80035>: 1495",
+            "    <@80036>: 1488",
+        ]
+    )
+
+    async def scenario() -> None:
+        await publish_with_bound_loop(
+            publisher,
+            PendingOutboxEvent(
+                id=8,
+                event_type=OutboxEventType.MATCH_FINALIZED,
+                dedupe_key="match_finalized:14:900023:automatic",
+                payload={
+                    "match_id": 14,
+                    "final_result": "draw",
+                    "finalized_at": "2026-03-20T14:44:56+00:00",
+                    "finalized_by_admin": False,
+                    "team_a_rating_entries": [
+                        {"discord_user_id": 80_031, "rating": 1516.7},
+                        {"discord_user_id": 80_032, "rating": 1504.2},
+                        {"discord_user_id": 80_033, "rating": 1498.4},
+                    ],
+                    "team_b_rating_entries": [
+                        {"discord_user_id": 80_034, "rating": 1501.8},
+                        {"discord_user_id": 80_035, "rating": 1495.1},
+                        {"discord_user_id": 80_036, "rating": 1488.3},
+                    ],
                     "destination": {
                         "channel_id": channel.id,
                         "guild_id": channel.guild.id,

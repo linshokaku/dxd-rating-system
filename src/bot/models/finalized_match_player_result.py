@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, ForeignKeyConstraint
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, ForeignKeyConstraint, Integer
 from sqlalchemy import Enum as SQLAlchemyEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -42,6 +42,11 @@ class FinalizedMatchPlayerResult(Base):
         ),
         nullable=False,
     )
+    rating_before: Mapped[float | None] = mapped_column(Float, nullable=True)
+    games_played_before: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    wins_before: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    losses_before: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    draws_before: Mapped[int | None] = mapped_column(Integer, nullable=True)
     latest_report_id: Mapped[int | None] = mapped_column(
         ForeignKey("match_reports.id"),
         nullable=True,

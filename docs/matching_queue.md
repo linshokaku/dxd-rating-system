@@ -57,31 +57,42 @@ Discord Bot 上で 3v3 対戦向けのマッチングキューを管理する。
 ### 一時状態テーブル
 
 - `match_queue_entries`
-- `matches`
-- `match_participants`
+- `active_match_states`
+- `active_match_player_states`
 - `outbox_events`
 
 意図:
 
 - `match_queue_entries` は現在の待機状態を表す一時状態である
-- `matches` と `match_participants` は現時点ではマッチ成立直後の一時状態を表す
+- `active_match_states` と `active_match_player_states` は進行中試合の一時状態を表す
 - `outbox_events` は未送信または送信済み通知の配送状態を表す一時状態である
 
 補足:
 
-- システムが完全にダウンし、待機中キューや未通知イベント、成立直後マッチなどの
+- システムが完全にダウンし、待機中キューや未通知イベント、進行中試合の一時状態などの
   一時状態を破棄してよいと判断した場合、上記テーブルは初期化対象として扱ってよい
-- ただし、将来 `matches` や `match_participants` を対戦履歴として恒久保持する仕様に
-  変更した場合は、この分類も更新する
 
 ### 永続データテーブル
 
 - `players`
+- `matches`
+- `match_participants`
+- `match_reports`
+- `finalized_match_results`
+- `finalized_match_player_results`
+- `match_admin_overrides`
+- `player_penalties`
+- `player_penalty_adjustments`
 - `alembic_version`
 
 意図:
 
 - `players` はプレイヤー登録情報とレーティングを保持する永続データである
+- `matches`、`match_participants`、`finalized_match_results`、
+  `finalized_match_player_results` は対戦履歴および
+  将来のレーティング再計算に必要な永続データである
+- `match_reports`、`match_admin_overrides`、`player_penalties`、
+  `player_penalty_adjustments` は監査・運用補正に必要な永続データである
 - `alembic_version` はマイグレーション状態を保持する管理用テーブルである
 
 ## 共通ルール

@@ -1,22 +1,28 @@
 from __future__ import annotations
 
 import logging
+import random
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, TypedDict
+from itertools import combinations
+from math import pow
+from typing import Any, Protocol, TypedDict
 
 import psycopg
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import DBAPIError, InterfaceError, OperationalError
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import Session, selectinload, sessionmaker
 
 from bot.constants import (
     MATCH_PARENT_SELECTION_WINDOW,
+    MATCH_QUEUE_CLASS_DEFINITIONS,
     MATCH_QUEUE_TTL,
     OUTBOX_NOTIFY_CHANNEL,
     PRESENCE_REMINDER_LEAD_TIME,
+    MatchQueueClassDefinition,
+    get_match_queue_class_definitions,
 )
 from bot.db.session import session_scope
 from bot.models import (
@@ -33,8 +39,10 @@ from bot.models import (
     Player,
 )
 from bot.services.errors import (
+    InvalidQueueNameError,
     PlayerNotRegisteredError,
     QueueAlreadyJoinedError,
+    QueueJoinNotAllowedError,
     QueueNotJoinedError,
     RetryableTaskError,
 )
@@ -42,8 +50,11 @@ from bot.services.errors import (
 MATCH_PLAYER_COUNT = 6
 TEAM_PLAYER_COUNT = 3
 DEFAULT_CLEANUP_BATCH_SIZE = 100
+RATING_DIVISOR = 400.0
 
 JOIN_QUEUE_MESSAGE = "キューに参加しました。5分間マッチングします。"
+INVALID_QUEUE_NAME_MESSAGE = "指定したキューは存在しません。"
+QUEUE_JOIN_NOT_ALLOWED_MESSAGE = "現在のレーティングではそのキューに参加できません。"
 QUEUE_ALREADY_JOINED_MESSAGE = "すでにキュー参加中です。"
 QUEUE_PRESENT_UPDATED_MESSAGE = "在席を更新しました。次の期限は5分後です。"
 QUEUE_NOT_JOINED_MESSAGE = "キューに参加していません。"
@@ -73,11 +84,16 @@ def _is_transient_task_db_error(exc: Exception) -> bool:
     return isinstance(exc.orig, (psycopg.OperationalError, psycopg.InterfaceError))
 
 
+class RandomLike(Protocol):
+    def randrange(self, stop: int, /) -> int: ...
+
+
 @dataclass(frozen=True, slots=True)
 class JoinQueueResult:
     queue_entry_id: int
     revision: int
     expire_at: datetime
+    queue_class_id: str = MATCH_QUEUE_CLASS_DEFINITIONS[0].queue_class_id
     message: str = JOIN_QUEUE_MESSAGE
 
 
@@ -142,13 +158,35 @@ class MatchingQueueService:
         self,
         session_factory: sessionmaker[Session],
         logger: logging.Logger | None = None,
+        *,
+        queue_class_definitions: Sequence[MatchQueueClassDefinition] | None = None,
+        random_generator: RandomLike | None = None,
     ) -> None:
         self.session_factory = session_factory
         self.logger = logger or logging.getLogger(__name__)
+        self._queue_class_definitions = self._normalize_queue_class_definitions(
+            queue_class_definitions or get_match_queue_class_definitions()
+        )
+        self._queue_class_definitions_by_id = {
+            definition.queue_class_id: definition for definition in self._queue_class_definitions
+        }
+        self._queue_class_definitions_by_name = {
+            definition.queue_name.casefold(): definition
+            for definition in self._queue_class_definitions
+        }
+        self._queue_class_index_by_id = {
+            definition.queue_class_id: index
+            for index, definition in enumerate(self._queue_class_definitions)
+        }
+        self._rating_restrictions_enabled = all(
+            definition.target_rating is not None for definition in self._queue_class_definitions
+        )
+        self._random = random_generator or random.Random()
 
     def join_queue(
         self,
         player_id: int,
+        queue_name: str,
         *,
         notification_context: MatchingQueueNotificationContext | None = None,
     ) -> JoinQueueResult:
@@ -157,6 +195,14 @@ class MatchingQueueService:
         with session_scope(self.session_factory) as session:
             player = self._ensure_player_exists(session, player_id)
             self._acquire_player_lock(session, player_id)
+            queue_class_definition = self._resolve_queue_class_definition(queue_name)
+
+            if not self._is_queue_join_allowed(
+                rating=player.rating,
+                queue_class_definition=queue_class_definition,
+            ):
+                raise QueueJoinNotAllowedError(QUEUE_JOIN_NOT_ALLOWED_MESSAGE)
+
             current_time = self._get_database_now(session)
             waiting_entry = self._get_waiting_entry_for_update(session, player_id)
 
@@ -172,6 +218,7 @@ class MatchingQueueService:
 
             new_entry = MatchQueueEntry(
                 player_id=player_id,
+                queue_class_id=queue_class_definition.queue_class_id,
                 status=MatchQueueEntryStatus.WAITING,
                 joined_at=current_time,
                 last_present_at=current_time,
@@ -192,6 +239,7 @@ class MatchingQueueService:
                 queue_entry_id=new_entry.id,
                 revision=new_entry.revision,
                 expire_at=new_entry.expire_at,
+                queue_class_id=new_entry.queue_class_id,
             )
 
         if result is None:
@@ -424,25 +472,42 @@ class MatchingQueueService:
 
         return tuple(expired_queue_entry_ids)
 
-    def try_create_matches(self) -> tuple[CreatedMatchResult, ...]:
+    def try_create_matches(
+        self,
+        queue_class_id: str | None = None,
+    ) -> tuple[CreatedMatchResult, ...]:
         created_matches: list[CreatedMatchResult] = []
 
+        if queue_class_id is None:
+            for queue_class_definition in self._queue_class_definitions:
+                while True:
+                    created_match = self._try_create_single_match(
+                        queue_class_definition.queue_class_id
+                    )
+                    if created_match is None:
+                        break
+                    created_matches.append(created_match)
+            return tuple(created_matches)
+
+        self._require_queue_class_definition_by_id(queue_class_id)
         while True:
-            created_match = self._try_create_single_match()
+            created_match = self._try_create_single_match(queue_class_id)
             if created_match is None:
                 break
             created_matches.append(created_match)
 
         return tuple(created_matches)
 
-    def _try_create_single_match(self) -> CreatedMatchResult | None:
+    def _try_create_single_match(self, queue_class_id: str) -> CreatedMatchResult | None:
         created_match: CreatedMatchResult | None = None
 
         with session_scope(self.session_factory) as session:
             queue_entries = session.scalars(
                 select(MatchQueueEntry)
+                .options(selectinload(MatchQueueEntry.player))
                 .where(
                     MatchQueueEntry.status == MatchQueueEntryStatus.WAITING,
+                    MatchQueueEntry.queue_class_id == queue_class_id,
                     MatchQueueEntry.expire_at > func.now(),
                 )
                 .order_by(MatchQueueEntry.joined_at, MatchQueueEntry.id)
@@ -453,6 +518,7 @@ class MatchingQueueService:
             if len(queue_entries) < MATCH_PLAYER_COUNT:
                 return None
 
+            team_a_entries, team_b_entries = self._assign_match_teams(queue_entries)
             current_time = self._get_database_now(session)
             match = Match(created_at=current_time)
             session.add(match)
@@ -478,32 +544,34 @@ class MatchingQueueService:
                 )
             )
 
-            for index, queue_entry in enumerate(queue_entries):
-                team = (
-                    MatchParticipantTeam.TEAM_A
-                    if index < TEAM_PLAYER_COUNT
-                    else MatchParticipantTeam.TEAM_B
-                )
-                slot = (index % TEAM_PLAYER_COUNT) + 1
-                participant = MatchParticipant(
-                    match_id=match.id,
-                    player_id=queue_entry.player_id,
-                    queue_entry_id=queue_entry.id,
-                    team=team,
-                    slot=slot,
-                    notification_channel_id=queue_entry.notification_channel_id,
-                    notification_guild_id=queue_entry.notification_guild_id,
-                    notification_mention_discord_user_id=(
-                        queue_entry.notification_mention_discord_user_id
-                    ),
-                    notification_recorded_at=queue_entry.notification_recorded_at,
-                    created_at=current_time,
-                )
-                session.add(participant)
-                queue_entry.status = MatchQueueEntryStatus.MATCHED
+            for team, team_entries in (
+                (MatchParticipantTeam.TEAM_A, team_a_entries),
+                (MatchParticipantTeam.TEAM_B, team_b_entries),
+            ):
+                for slot, queue_entry in enumerate(team_entries, start=1):
+                    participant = MatchParticipant(
+                        match_id=match.id,
+                        player_id=queue_entry.player_id,
+                        queue_entry_id=queue_entry.id,
+                        team=team,
+                        slot=slot,
+                        notification_channel_id=queue_entry.notification_channel_id,
+                        notification_guild_id=queue_entry.notification_guild_id,
+                        notification_mention_discord_user_id=(
+                            queue_entry.notification_mention_discord_user_id
+                        ),
+                        notification_recorded_at=queue_entry.notification_recorded_at,
+                        created_at=current_time,
+                    )
+                    session.add(participant)
+                    queue_entry.status = MatchQueueEntryStatus.MATCHED
 
             session.flush()
-            for payload in self._build_match_created_payloads(match.id, queue_entries):
+            for payload in self._build_match_created_payloads(
+                match.id,
+                team_a_entries,
+                team_b_entries,
+            ):
                 destination = payload["destination"]
                 channel_id = destination["channel_id"]
                 self._enqueue_outbox_event(
@@ -522,17 +590,109 @@ class MatchingQueueService:
 
         if created_match is not None:
             self.logger.info(
-                "Created match match_id=%s queue_entry_ids=%s",
+                "Created match match_id=%s queue_class_id=%s queue_entry_ids=%s",
                 created_match.match_id,
+                queue_class_id,
                 created_match.queue_entry_ids,
             )
         return created_match
 
+    def _assign_match_teams(
+        self,
+        queue_entries: Sequence[MatchQueueEntry],
+    ) -> tuple[tuple[MatchQueueEntry, ...], tuple[MatchQueueEntry, ...]]:
+        first_group, second_group = self._find_best_team_split(queue_entries)
+        if self._random.randrange(2) == 0:
+            team_a_entries, team_b_entries = first_group, second_group
+        else:
+            team_a_entries, team_b_entries = second_group, first_group
+
+        return (
+            self._sort_team_entries(team_a_entries),
+            self._sort_team_entries(team_b_entries),
+        )
+
+    def _find_best_team_split(
+        self,
+        queue_entries: Sequence[MatchQueueEntry],
+    ) -> tuple[tuple[MatchQueueEntry, ...], tuple[MatchQueueEntry, ...]]:
+        if len(queue_entries) != MATCH_PLAYER_COUNT:
+            raise ValueError(
+                f"Expected {MATCH_PLAYER_COUNT} queue entries, got {len(queue_entries)}"
+            )
+
+        best_split: tuple[tuple[MatchQueueEntry, ...], tuple[MatchQueueEntry, ...]] | None = None
+        best_distance_from_even: float | None = None
+        all_indices = tuple(range(len(queue_entries)))
+
+        for remaining_indices in combinations(all_indices[1:], TEAM_PLAYER_COUNT - 1):
+            team_one_indices = (all_indices[0], *remaining_indices)
+            team_one_index_set = set(team_one_indices)
+            team_one_entries = tuple(queue_entries[index] for index in team_one_indices)
+            team_two_entries = tuple(
+                queue_entries[index] for index in all_indices if index not in team_one_index_set
+            )
+            team_one_expected_score = self._calculate_expected_score(
+                team_one_entries,
+                team_two_entries,
+            )
+            distance_from_even = abs(team_one_expected_score - 0.5)
+
+            if best_distance_from_even is None or distance_from_even < best_distance_from_even:
+                best_distance_from_even = distance_from_even
+                best_split = (team_one_entries, team_two_entries)
+
+        if best_split is None:
+            raise RuntimeError("Failed to find a team split for queue entries")
+        return best_split
+
+    def _calculate_expected_score(
+        self,
+        team_a_entries: Sequence[MatchQueueEntry],
+        team_b_entries: Sequence[MatchQueueEntry],
+    ) -> float:
+        team_a_strength = sum(
+            pow(10.0, self._get_entry_rating(entry) / RATING_DIVISOR) for entry in team_a_entries
+        )
+        team_b_strength = sum(
+            pow(10.0, self._get_entry_rating(entry) / RATING_DIVISOR) for entry in team_b_entries
+        )
+        return team_a_strength / (team_a_strength + team_b_strength)
+
+    def _sort_team_entries(
+        self,
+        team_entries: Sequence[MatchQueueEntry],
+    ) -> tuple[MatchQueueEntry, ...]:
+        return tuple(
+            sorted(
+                team_entries,
+                key=lambda entry: (
+                    -self._get_entry_rating(entry),
+                    entry.joined_at,
+                    entry.id,
+                ),
+            )
+        )
+
+    def _get_entry_rating(self, entry: MatchQueueEntry) -> float:
+        if entry.player is None:
+            raise ValueError(f"Player relationship is not loaded for queue_entry_id={entry.id}")
+        return entry.player.rating
+
     def _build_match_created_payloads(
-        self, match_id: int, queue_entries: Sequence[MatchQueueEntry]
+        self,
+        match_id: int,
+        team_a_entries: Sequence[MatchQueueEntry],
+        team_b_entries: Sequence[MatchQueueEntry],
     ) -> tuple[dict[str, Any], ...]:
+        all_entries = tuple(
+            sorted(
+                [*team_a_entries, *team_b_entries],
+                key=lambda entry: (entry.joined_at, entry.id),
+            )
+        )
         destinations_by_channel_id: dict[int, NotificationDestinationPayload] = {}
-        for queue_entry in queue_entries:
+        for queue_entry in all_entries:
             destination = self._build_notification_destination_payload(
                 queue_entry,
                 event_context="match_created",
@@ -540,19 +700,17 @@ class MatchingQueueService:
             destinations_by_channel_id.setdefault(destination["channel_id"], destination)
 
         team_a_discord_user_ids = [
-            queue_entry.notification_mention_discord_user_id
-            for queue_entry in queue_entries[:TEAM_PLAYER_COUNT]
+            queue_entry.notification_mention_discord_user_id for queue_entry in team_a_entries
         ]
         team_b_discord_user_ids = [
-            queue_entry.notification_mention_discord_user_id
-            for queue_entry in queue_entries[TEAM_PLAYER_COUNT:]
+            queue_entry.notification_mention_discord_user_id for queue_entry in team_b_entries
         ]
 
         return tuple(
             {
                 "match_id": match_id,
-                "queue_entry_ids": [queue_entry.id for queue_entry in queue_entries],
-                "player_ids": [queue_entry.player_id for queue_entry in queue_entries],
+                "queue_entry_ids": [queue_entry.id for queue_entry in all_entries],
+                "player_ids": [queue_entry.player_id for queue_entry in all_entries],
                 "destination": destination,
                 "team_a_discord_user_ids": team_a_discord_user_ids,
                 "team_b_discord_user_ids": team_b_discord_user_ids,
@@ -595,6 +753,92 @@ class MatchingQueueService:
         if player is None:
             raise PlayerNotRegisteredError(f"Player is not registered: {player_id}")
         return player
+
+    def _resolve_queue_class_definition(self, queue_name: str) -> MatchQueueClassDefinition:
+        definition = self._queue_class_definitions_by_name.get(queue_name.strip().casefold())
+        if definition is None:
+            raise InvalidQueueNameError(INVALID_QUEUE_NAME_MESSAGE)
+        return definition
+
+    def _require_queue_class_definition_by_id(
+        self,
+        queue_class_id: str,
+    ) -> MatchQueueClassDefinition:
+        definition = self._queue_class_definitions_by_id.get(queue_class_id)
+        if definition is None:
+            raise ValueError(f"Unknown queue_class_id: {queue_class_id}")
+        return definition
+
+    def _is_queue_join_allowed(
+        self,
+        *,
+        rating: float,
+        queue_class_definition: MatchQueueClassDefinition,
+    ) -> bool:
+        if not self._rating_restrictions_enabled:
+            return True
+
+        queue_index = self._queue_class_index_by_id[queue_class_definition.queue_class_id]
+        if len(self._queue_class_definitions) == 1:
+            return True
+
+        if queue_index == 0:
+            upper_definition = self._queue_class_definitions[1]
+            assert upper_definition.target_rating is not None
+            return rating < upper_definition.target_rating
+
+        if queue_index == len(self._queue_class_definitions) - 1:
+            lower_definition = self._queue_class_definitions[-2]
+            assert lower_definition.target_rating is not None
+            return lower_definition.target_rating <= rating
+
+        lower_definition = self._queue_class_definitions[queue_index - 1]
+        upper_definition = self._queue_class_definitions[queue_index + 1]
+        assert lower_definition.target_rating is not None
+        assert upper_definition.target_rating is not None
+        return lower_definition.target_rating <= rating < upper_definition.target_rating
+
+    def _normalize_queue_class_definitions(
+        self,
+        definitions: Sequence[MatchQueueClassDefinition],
+    ) -> tuple[MatchQueueClassDefinition, ...]:
+        normalized_definitions = tuple(definitions)
+        if not normalized_definitions:
+            raise ValueError("At least one queue class definition is required")
+
+        queue_class_ids: set[str] = set()
+        normalized_queue_names: set[str] = set()
+        target_rating_mode: bool | None = None
+        previous_target_rating: float | None = None
+
+        for definition in normalized_definitions:
+            normalized_queue_name = definition.queue_name.strip().casefold()
+            if not normalized_queue_name:
+                raise ValueError("queue_name must not be empty")
+            if definition.queue_class_id in queue_class_ids:
+                raise ValueError(f"Duplicate queue_class_id: {definition.queue_class_id}")
+            if normalized_queue_name in normalized_queue_names:
+                raise ValueError(f"Duplicate queue_name: {definition.queue_name}")
+
+            queue_class_ids.add(definition.queue_class_id)
+            normalized_queue_names.add(normalized_queue_name)
+
+            has_target_rating = definition.target_rating is not None
+            if target_rating_mode is None:
+                target_rating_mode = has_target_rating
+            elif target_rating_mode != has_target_rating:
+                raise ValueError(
+                    "queue_class_definitions must either all define target_rating or all omit it"
+                )
+
+            if definition.target_rating is not None:
+                if previous_target_rating is not None and (
+                    definition.target_rating <= previous_target_rating
+                ):
+                    raise ValueError("target_rating values must be strictly increasing")
+                previous_target_rating = definition.target_rating
+
+        return normalized_definitions
 
     def _raise_retryable_task_error(self, exc: Exception, *, operation: str) -> None:
         if isinstance(exc, RetryableTaskError):

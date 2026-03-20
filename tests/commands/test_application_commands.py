@@ -15,6 +15,8 @@ from bot.models import MatchQueueEntry, Player
 from bot.runtime import MatchRuntime
 from bot.services import MatchingQueueNotificationContext, MatchingQueueService, register_player
 
+DEFAULT_QUEUE_NAME = "low"
+
 
 @dataclass(frozen=True)
 class FakeUser:
@@ -129,7 +131,7 @@ def test_join_command_joins_requesting_player_and_stores_notification_context(
         guild_id=4_001,
     )
 
-    asyncio.run(handlers.join(as_interaction(interaction)))
+    asyncio.run(handlers.join(as_interaction(interaction), DEFAULT_QUEUE_NAME))
 
     queue_entry = get_queue_entry(session, player.id)
 
@@ -146,7 +148,7 @@ def test_join_command_requires_registered_player(session_factory: sessionmaker[S
     )
     interaction = FakeInteraction(user=FakeUser(id=123_456_789_012_345_681))
 
-    asyncio.run(handlers.join(as_interaction(interaction)))
+    asyncio.run(handlers.join(as_interaction(interaction), DEFAULT_QUEUE_NAME))
 
     assert interaction.response.messages == [
         "プレイヤー登録が必要です。先に /register を実行してください。"
@@ -162,6 +164,7 @@ def test_present_command_updates_waiting_entry_and_notification_context(
     matching_queue_service = MatchingQueueService(session_factory)
     matching_queue_service.join_queue(
         player.id,
+        DEFAULT_QUEUE_NAME,
         notification_context=MatchingQueueNotificationContext(
             channel_id=5_001,
             guild_id=6_001,
@@ -312,7 +315,13 @@ def test_dev_join_targets_provided_user_and_uses_target_for_notification_context
         guild_id=12_001,
     )
 
-    asyncio.run(handlers.dev_join(as_interaction(interaction), str(target_discord_user_id)))
+    asyncio.run(
+        handlers.dev_join(
+            as_interaction(interaction),
+            str(target_discord_user_id),
+            DEFAULT_QUEUE_NAME,
+        )
+    )
 
     queue_entry = get_queue_entry(session, player.id)
 
@@ -330,7 +339,7 @@ def test_dev_present_returns_expired_message_for_expired_target(
     target_discord_user_id = 123_456_789_012_345_687
     player = create_player(session, target_discord_user_id)
     matching_queue_service = MatchingQueueService(session_factory)
-    matching_queue_service.join_queue(player.id)
+    matching_queue_service.join_queue(player.id, DEFAULT_QUEUE_NAME)
     queue_entry = get_queue_entry(session, player.id)
     queue_entry.expire_at = queue_entry.joined_at - timedelta(seconds=1)
     session.commit()

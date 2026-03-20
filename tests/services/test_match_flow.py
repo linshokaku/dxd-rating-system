@@ -33,6 +33,8 @@ from bot.services.errors import MatchNotFinalizedError
 from bot.services.rating import RatingParticipantSnapshot, calculate_rating_updates
 from bot.services.registration import register_player
 
+DEFAULT_QUEUE_NAME = "low"
+
 
 def get_database_now(session: Session) -> datetime:
     return session.execute(select(func.now())).scalar_one()
@@ -66,6 +68,7 @@ def create_match(
     for player in players:
         queue_service.join_queue(
             player.id,
+            DEFAULT_QUEUE_NAME,
             notification_context=MatchingQueueNotificationContext(
                 channel_id=channel_id,
                 guild_id=guild_id,
@@ -97,6 +100,7 @@ def create_match_for_players(
     for player in players:
         queue_service.join_queue(
             player.id,
+            DEFAULT_QUEUE_NAME,
             notification_context=MatchingQueueNotificationContext(
                 channel_id=channel_id,
                 guild_id=guild_id,

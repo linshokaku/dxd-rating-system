@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, Integer, text
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, Integer, String, text
 from sqlalchemy import Enum as SQLAlchemyEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
@@ -42,6 +42,7 @@ class MatchQueueEntry(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     player_id: Mapped[int] = mapped_column(ForeignKey("players.id"), nullable=False, index=True)
+    queue_class_id: Mapped[str] = mapped_column(String(length=64), nullable=False, index=True)
     status: Mapped[MatchQueueEntryStatus] = mapped_column(
         SQLAlchemyEnum(
             MatchQueueEntryStatus,

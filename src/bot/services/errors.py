@@ -22,6 +22,14 @@ class QueueNotJoinedError(MatchingQueueError):
     pass
 
 
+class InvalidQueueNameError(MatchingQueueError):
+    pass
+
+
+class QueueJoinNotAllowedError(MatchingQueueError):
+    pass
+
+
 class RetryableTaskError(Exception):
     pass
 

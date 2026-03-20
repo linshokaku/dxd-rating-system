@@ -43,6 +43,7 @@ class MatchRuntimeService(Protocol):
     def join_queue(
         self,
         player_id: int,
+        queue_name: str,
         *,
         notification_context: MatchingQueueNotificationContext | None = None,
     ) -> JoinQueueResult: ...
@@ -71,7 +72,10 @@ class MatchRuntimeService(Protocol):
         warn_on_cleanup: bool = ...,
     ) -> tuple[int, ...]: ...
 
-    def try_create_matches(self) -> tuple[CreatedMatchResult, ...]: ...
+    def try_create_matches(
+        self,
+        queue_class_id: str | None = None,
+    ) -> tuple[CreatedMatchResult, ...]: ...
 
     def load_waiting_entry_timer_states(
         self,
@@ -223,6 +227,7 @@ class MatchRuntime:
     async def join_queue(
         self,
         player_id: int,
+        queue_name: str,
         *,
         notification_context: MatchingQueueNotificationContext | None = None,
     ) -> JoinQueueResult:
@@ -231,6 +236,7 @@ class MatchRuntime:
         result = await asyncio.to_thread(
             self.service.join_queue,
             player_id,
+            queue_name,
             notification_context=notification_context,
         )
         self._schedule_task(
@@ -255,7 +261,10 @@ class MatchRuntime:
                 result.revision,
             ),
         )
-        await self._try_create_matches_safely(context="join")
+        await self._try_create_matches_safely(
+            context="join",
+            queue_class_id=result.queue_class_id,
+        )
         return result
 
     async def present(
@@ -743,8 +752,17 @@ class MatchRuntime:
             rescheduled_approval_deadline_match_ids=tuple(rescheduled_approval_deadline_match_ids),
         )
 
-    async def _try_create_matches(self) -> tuple[CreatedMatchResult, ...]:
-        created_matches = await asyncio.to_thread(self.service.try_create_matches)
+    async def _try_create_matches(
+        self,
+        queue_class_id: str | None = None,
+    ) -> tuple[CreatedMatchResult, ...]:
+        if queue_class_id is None:
+            created_matches = await asyncio.to_thread(self.service.try_create_matches)
+        else:
+            created_matches = await asyncio.to_thread(
+                self.service.try_create_matches,
+                queue_class_id,
+            )
         for created_match in created_matches:
             for queue_entry_id in created_match.queue_entry_ids:
                 self._cancel_scheduled_task(self._presence_reminder_task_key(queue_entry_id))
@@ -763,9 +781,14 @@ class MatchRuntime:
                 )
         return created_matches
 
-    async def _try_create_matches_safely(self, *, context: str) -> tuple[CreatedMatchResult, ...]:
+    async def _try_create_matches_safely(
+        self,
+        *,
+        context: str,
+        queue_class_id: str | None = None,
+    ) -> tuple[CreatedMatchResult, ...]:
         try:
-            return await self._try_create_matches()
+            return await self._try_create_matches(queue_class_id)
         except Exception:
             self.logger.exception("Failed to try_create_matches after %s", context)
             return tuple()

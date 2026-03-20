@@ -10,6 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
+from bot.constants import MATCH_QUEUE_CLASS_DEFINITIONS, MatchQueueClassDefinition
 from bot.models import (
     Match,
     MatchParticipant,
@@ -22,18 +23,34 @@ from bot.models import (
 )
 from bot.services import (
     MATCH_QUEUE_TTL,
+    InvalidQueueNameError,
     MatchingQueueNotificationContext,
     MatchingQueueService,
     PlayerNotRegisteredError,
     QueueAlreadyJoinedError,
+    QueueJoinNotAllowedError,
     QueueNotJoinedError,
     RetryableTaskError,
     register_player,
 )
 
+DEFAULT_QUEUE_DEFINITION = MATCH_QUEUE_CLASS_DEFINITIONS[0]
+DEFAULT_QUEUE_NAME = DEFAULT_QUEUE_DEFINITION.queue_name
+DEFAULT_QUEUE_CLASS_ID = DEFAULT_QUEUE_DEFINITION.queue_class_id
+SECOND_QUEUE_CLASS_ID = MATCH_QUEUE_CLASS_DEFINITIONS[1].queue_class_id
 
-def create_matching_queue_service(session_factory: sessionmaker[Session]) -> MatchingQueueService:
-    return MatchingQueueService(session_factory=session_factory)
+
+def create_matching_queue_service(
+    session_factory: sessionmaker[Session],
+    *,
+    queue_class_definitions: Sequence[MatchQueueClassDefinition] | None = None,
+    random_generator: object | None = None,
+) -> MatchingQueueService:
+    return MatchingQueueService(
+        session_factory=session_factory,
+        queue_class_definitions=queue_class_definitions,
+        random_generator=random_generator,
+    )
 
 
 def get_database_now(session: Session) -> datetime:
@@ -59,6 +76,7 @@ def create_queue_entry(
     session: Session,
     *,
     player_id: int,
+    queue_class_id: str = DEFAULT_QUEUE_CLASS_ID,
     status: MatchQueueEntryStatus = MatchQueueEntryStatus.WAITING,
     joined_at: datetime | None = None,
     last_present_at: datetime | None = None,
@@ -100,6 +118,7 @@ def create_queue_entry(
 
     queue_entry = MatchQueueEntry(
         player_id=player_id,
+        queue_class_id=queue_class_id,
         status=status,
         joined_at=resolved_joined_at,
         last_present_at=resolved_last_present_at,
@@ -138,6 +157,7 @@ def create_waiting_entries(
     session: Session,
     players: Sequence[Player],
     *,
+    queue_class_id: str = DEFAULT_QUEUE_CLASS_ID,
     base_joined_at: datetime | None = None,
     expire_at: datetime | None = None,
 ) -> list[MatchQueueEntry]:
@@ -150,6 +170,7 @@ def create_waiting_entries(
         entry = create_queue_entry(
             session,
             player_id=player.id,
+            queue_class_id=queue_class_id,
             joined_at=resolved_base_joined_at + timedelta(seconds=index),
             last_present_at=resolved_base_joined_at + timedelta(seconds=index),
             expire_at=resolved_expire_at,
@@ -166,7 +187,54 @@ def test_join_queue_raises_for_unregistered_player(session_factory: sessionmaker
     service = create_matching_queue_service(session_factory)
 
     with pytest.raises(PlayerNotRegisteredError):
-        service.join_queue(player_id=9999)
+        service.join_queue(player_id=9999, queue_name=DEFAULT_QUEUE_NAME)
+
+
+def test_join_queue_raises_for_invalid_queue_name(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    player = create_player(session, 10_000)
+    service = create_matching_queue_service(session_factory)
+
+    with pytest.raises(InvalidQueueNameError):
+        service.join_queue(player.id, "unknown")
+
+
+def test_join_queue_rejects_player_when_rating_is_outside_allowed_range(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    player = create_player(session, 10_000_1)
+    player.rating = 2_100
+    session.commit()
+    queue_class_definitions = (
+        MatchQueueClassDefinition(
+            queue_class_id="restricted_low",
+            queue_name="low",
+            description="low",
+            target_rating=1_200,
+        ),
+        MatchQueueClassDefinition(
+            queue_class_id="restricted_mid",
+            queue_name="mid",
+            description="mid",
+            target_rating=1_500,
+        ),
+        MatchQueueClassDefinition(
+            queue_class_id="restricted_high",
+            queue_name="high",
+            description="high",
+            target_rating=1_800,
+        ),
+    )
+    service = create_matching_queue_service(
+        session_factory,
+        queue_class_definitions=queue_class_definitions,
+    )
+
+    with pytest.raises(QueueJoinNotAllowedError):
+        service.join_queue(player.id, "mid")
 
 
 # 初回 `join` で `waiting` 行が作成され、`joined_at`、`last_present_at`、
@@ -180,13 +248,15 @@ def test_join_queue_creates_waiting_entry(
     player = create_player(session, 10_001)
     service = create_matching_queue_service(session_factory)
 
-    result = service.join_queue(player.id)
+    result = service.join_queue(player.id, DEFAULT_QUEUE_NAME)
 
     entries = get_queue_entries_for_player(session, player.id)
 
     assert result.queue_entry_id == entries[0].id
     assert result.revision == 1
     assert result.expire_at == entries[0].expire_at
+    assert result.queue_class_id == DEFAULT_QUEUE_CLASS_ID
+    assert entries[0].queue_class_id == DEFAULT_QUEUE_CLASS_ID
     assert entries[0].status == MatchQueueEntryStatus.WAITING
     assert entries[0].joined_at == entries[0].last_present_at
     assert entries[0].expire_at > entries[0].joined_at
@@ -209,6 +279,7 @@ def test_join_queue_stores_notification_context(
 
     result = service.join_queue(
         player.id,
+        DEFAULT_QUEUE_NAME,
         notification_context=MatchingQueueNotificationContext(
             channel_id=333_001,
             guild_id=444_001,
@@ -233,10 +304,10 @@ def test_join_queue_raises_when_player_is_already_waiting(
 ) -> None:
     player = create_player(session, 10_002)
     service = create_matching_queue_service(session_factory)
-    service.join_queue(player.id)
+    service.join_queue(player.id, DEFAULT_QUEUE_NAME)
 
     with pytest.raises(QueueAlreadyJoinedError):
-        service.join_queue(player.id)
+        service.join_queue(player.id, DEFAULT_QUEUE_NAME)
 
     entries = get_queue_entries_for_player(session, player.id)
     assert len(entries) == 1
@@ -259,7 +330,7 @@ def test_join_queue_expires_stale_waiting_entry_and_creates_new_entry_without_ou
     )
     service = create_matching_queue_service(session_factory)
 
-    result = service.join_queue(player.id)
+    result = service.join_queue(player.id, DEFAULT_QUEUE_NAME)
 
     entries = get_queue_entries_for_player(session, player.id)
 
@@ -282,7 +353,7 @@ def test_present_updates_waiting_entry(
 ) -> None:
     player = create_player(session, 10_004)
     service = create_matching_queue_service(session_factory)
-    joined = service.join_queue(player.id)
+    joined = service.join_queue(player.id, DEFAULT_QUEUE_NAME)
 
     result = service.present(player.id)
 
@@ -387,7 +458,7 @@ def test_stale_revision_tasks_become_noop(
 ) -> None:
     player = create_player(session, 10_007)
     service = create_matching_queue_service(session_factory)
-    joined = service.join_queue(player.id)
+    joined = service.join_queue(player.id, DEFAULT_QUEUE_NAME)
 
     reminder_result = service.process_presence_reminder(joined.queue_entry_id, expected_revision=0)
     expire_result = service.process_expire(joined.queue_entry_id, expected_revision=0)
@@ -436,7 +507,7 @@ def test_leave_marks_waiting_entry_as_left(
 ) -> None:
     player = create_player(session, 10_008)
     service = create_matching_queue_service(session_factory)
-    joined = service.join_queue(player.id)
+    joined = service.join_queue(player.id, DEFAULT_QUEUE_NAME)
 
     result = service.leave(player.id)
 
@@ -697,6 +768,29 @@ def test_try_create_matches_is_noop_when_fewer_than_six_players_are_waiting(
     assert len(waiting_entries) == 5
     assert all(entry.status == MatchQueueEntryStatus.WAITING for entry in waiting_entries)
     assert get_outbox_events(session) == []
+
+
+def test_try_create_matches_does_not_mix_players_from_different_queue_classes(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    low_players = create_players(session, 3, start_discord_user_id=30_051)
+    high_players = create_players(session, 3, start_discord_user_id=30_061)
+    create_waiting_entries(session, low_players, queue_class_id=DEFAULT_QUEUE_CLASS_ID)
+    create_waiting_entries(session, high_players, queue_class_id=SECOND_QUEUE_CLASS_ID)
+    service = create_matching_queue_service(session_factory)
+
+    created_matches = service.try_create_matches()
+
+    session.expire_all()
+    waiting_entries = session.scalars(select(MatchQueueEntry).order_by(MatchQueueEntry.id)).all()
+    assert created_matches == ()
+    assert len(waiting_entries) == 6
+    assert all(entry.status == MatchQueueEntryStatus.WAITING for entry in waiting_entries)
+    assert {entry.queue_class_id for entry in waiting_entries} == {
+        DEFAULT_QUEUE_CLASS_ID,
+        SECOND_QUEUE_CLASS_ID,
+    }
 
 
 # 6 人ちょうどの待機で 1 マッチが作成され、対象のキュー行が `matched` になること

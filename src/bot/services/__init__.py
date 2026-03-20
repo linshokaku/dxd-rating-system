@@ -7,6 +7,7 @@ from bot.constants import (
     PRESENCE_REMINDER_LEAD_TIME,
 )
 from bot.services.errors import (
+    InvalidQueueNameError,
     MatchAlreadyFinalizedError,
     MatchApprovalNotAvailableError,
     MatchApprovalNotRequiredError,
@@ -20,6 +21,7 @@ from bot.services.errors import (
     PlayerAlreadyRegisteredError,
     PlayerNotRegisteredError,
     QueueAlreadyJoinedError,
+    QueueJoinNotAllowedError,
     QueueNotJoinedError,
     RegistrationError,
     RetryableTaskError,
@@ -64,6 +66,7 @@ __all__ = [
     "ExpireQueueEntryResult",
     "ActiveMatchTimerState",
     "JoinQueueResult",
+    "InvalidQueueNameError",
     "LeaveQueueResult",
     "MATCH_ADMIN_REVIEW_REQUIRED_NOTIFICATION_MESSAGE",
     "MATCH_APPROVAL_REQUESTED_NOTIFICATION_MESSAGE",
@@ -107,6 +110,7 @@ __all__ = [
     "PlayerPenaltyAdjustmentResult",
     "QUEUE_EXPIRED_NOTIFICATION_MESSAGE",
     "QueueAlreadyJoinedError",
+    "QueueJoinNotAllowedError",
     "QueueNotJoinedError",
     "RegistrationError",
     "RetryableTaskError",

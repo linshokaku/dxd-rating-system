@@ -379,13 +379,9 @@ class DiscordOutboxEventPublisher:
             rating = item.get("rating")
             if not isinstance(discord_user_id, int) or isinstance(discord_user_id, bool):
                 self._raise_publish_error(
-                    f"Outbox payload '{key}.discord_user_id' must be an int: "
-                    f"{discord_user_id!r}"
+                    f"Outbox payload '{key}.discord_user_id' must be an int: {discord_user_id!r}"
                 )
-            if (
-                not isinstance(rating, int | float)
-                or isinstance(rating, bool)
-            ):
+            if not isinstance(rating, int | float) or isinstance(rating, bool):
                 self._raise_publish_error(
                     f"Outbox payload '{key}.rating' must be an int | float: {rating!r}"
                 )
@@ -417,14 +413,12 @@ class DiscordOutboxEventPublisher:
         return [
             "Team A",
             *[
-                f"    {format_discord_user_mention(entry.discord_user_id)}: "
-                f"{round(entry.rating)}"
+                f"    {format_discord_user_mention(entry.discord_user_id)}: {round(entry.rating)}"
                 for entry in team_a_rating_entries
             ],
             "Team B",
             *[
-                f"    {format_discord_user_mention(entry.discord_user_id)}: "
-                f"{round(entry.rating)}"
+                f"    {format_discord_user_mention(entry.discord_user_id)}: {round(entry.rating)}"
                 for entry in team_b_rating_entries
             ],
         ]

@@ -34,6 +34,10 @@ class MatchNotFoundError(MatchFlowError):
     pass
 
 
+class MatchNotFinalizedError(MatchFlowError):
+    pass
+
+
 class MatchParticipantError(MatchFlowError):
     pass
 

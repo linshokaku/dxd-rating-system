@@ -4,10 +4,10 @@
 
 Discord コミュニティ向けの 3vs3 対戦において、各プレイヤーに **一軸のレート** を持たせ、以下を実現する。
 
-* 対戦前に 2 チームの **期待勝率** を計算できる
-* 対戦後に各プレイヤーの **レートを更新** できる
-* 実装が比較的簡単で、挙動を説明しやすい
-* 新規プレイヤーは早く収束し、古参プレイヤーは安定する
+- 対戦前に 2 チームの **期待勝率** を計算できる
+- 対戦後に各プレイヤーの **レートを更新** できる
+- 実装が比較的簡単で、挙動を説明しやすい
+- 新規プレイヤーは早く収束し、古参プレイヤーは安定する
 
 ---
 
@@ -15,26 +15,23 @@ Discord コミュニティ向けの 3vs3 対戦において、各プレイヤー
 
 各プレイヤーのレート `r` を、そのまま足し合わせるのではなく、まず強さ指標 `q` に変換する。
 
-[
-q_i = 10^{r_i / 400}
-]
+```text
+q_i = 10^(r_i / 400)
+````
 
 チーム強さは、メンバーの `q` の和とする。
 
-[
-Q_A = \sum_{i \in A} q_i,\qquad
-Q_B = \sum_{j \in B} q_j
-]
+```text
+Q_A = sum(q_i for i in A)
+Q_B = sum(q_j for j in B)
+```
 
 この `Q` を用いて、チーム A の期待勝率を求める。
 
-[
-p_A = \frac{Q_A}{Q_A + Q_B}
-]
-
-[
-p_B = \frac{Q_B}{Q_A + Q_B} = 1 - p_A
-]
+```text
+p_A = Q_A / (Q_A + Q_B)
+p_B = Q_B / (Q_A + Q_B) = 1 - p_A
+```
 
 この方式は、Elo の `Q = 10^(R/400)` 表現をチーム戦に拡張したものとみなす。
 
@@ -84,35 +81,29 @@ p_B = \frac{Q_B}{Q_A + Q_B} = 1 - p_A
 
 各プレイヤーについて `q` を計算する。
 
-[
-q_i = 10^{r_i / 400}
-]
+```text
+q_i = 10^(r_i / 400)
+```
 
 チーム強さを合計する。
 
-[
-Q_A = q_{A1} + q_{A2} + q_{A3}
-]
-
-[
-Q_B = q_{B1} + q_{B2} + q_{B3}
-]
+```text
+Q_A = q_A1 + q_A2 + q_A3
+Q_B = q_B1 + q_B2 + q_B3
+```
 
 期待勝率を計算する。
 
-[
-p_A = \frac{Q_A}{Q_A + Q_B}
-]
-
-[
-p_B = \frac{Q_B}{Q_A + Q_B}
-]
+```text
+p_A = Q_A / (Q_A + Q_B)
+p_B = Q_B / (Q_A + Q_B)
+```
 
 ### 備考
 
 * `p_A + p_B = 1`
 * 3vs3 以外に拡張する場合も、同人数チームなら同様に `q` の総和で扱える
-* マッチング時は `p_A` が 0.5 に近い組み合わせほど公平とみなせる
+* マッチング時は `p_A` が `0.5` に近い組み合わせほど公平とみなせる
 
 ---
 
@@ -134,26 +125,26 @@ p_B = \frac{Q_B}{Q_A + Q_B}
 
 チーム A のプレイヤー `i` の更新式:
 
-[
-r_i' = r_i + K_i \cdot \frac{q_i}{Q_A} \cdot (y - p_A)
-]
+```text
+r_i' = r_i + K_i * (q_i / Q_A) * (y - p_A)
+```
 
 チーム B のプレイヤー `j` の更新式:
 
-[
-r_j' = r_j - K_j \cdot \frac{q_j}{Q_B} \cdot (y - p_A)
-]
+```text
+r_j' = r_j - K_j * (q_j / Q_B) * (y - p_A)
+```
 
 ここで、
 
-* `q_i = 10^(r_i/400)`
-* `Q_A = Σ q_i`
-* `Q_B = Σ q_j`
+* `q_i = 10^(r_i / 400)`
+* `Q_A = sum(q_i for i in A)`
+* `Q_B = sum(q_j for j in B)`
 * `p_A = Q_A / (Q_A + Q_B)`
 
 ### 直感
 
-* `(y - p_A)` は「実結果 − 期待結果」
+* `(y - p_A)` は「実結果 - 期待結果」
 * 予想より良い結果ならプラス
 * 予想より悪い結果ならマイナス
 * チーム内では `q_i / Q_team` が大きい人ほど更新量が大きい
@@ -178,14 +169,22 @@ K は固定値ではなく、**通算試合数に応じて段階的に変える*
 
 各プレイヤーの `games_played` に応じて K を以下で決定する。
 
-[
-K_i =
-\begin{cases}
-40 & \text{if } games_played < 20 \
-32 & \text{if } 20 \le games_played < 100 \
-24 & \text{if } games_played \ge 100
-\end{cases}
-]
+```text
+if games_played < 20:
+    K = 40
+elif games_played < 100:
+    K = 32
+else:
+    K = 24
+```
+
+別表で書くなら以下でもよい。
+
+| 条件                         |  K |
+| -------------------------- | -: |
+| `games_played < 20`        | 40 |
+| `20 <= games_played < 100` | 32 |
+| `games_played >= 100`      | 24 |
 
 ### 備考
 
@@ -206,22 +205,22 @@ K_i =
 
 ### 2. 各プレイヤーの q を計算
 
-[
-q_i = 10^{r_i / 400}
-]
+```text
+q_i = 10^(r_i / 400)
+```
 
 ### 3. チーム強さを計算
 
-[
-Q_A = \sum_{i\in A} q_i,\qquad
-Q_B = \sum_{j\in B} q_j
-]
+```text
+Q_A = sum(q_i for i in A)
+Q_B = sum(q_j for j in B)
+```
 
 ### 4. 期待勝率を計算
 
-[
-p_A = \frac{Q_A}{Q_A + Q_B}
-]
+```text
+p_A = Q_A / (Q_A + Q_B)
+```
 
 ### 5. 試合結果 y を決定
 
@@ -237,15 +236,15 @@ p_A = \frac{Q_A}{Q_A + Q_B}
 
 A 側:
 
-[
-r_i' = r_i + K_i \cdot \frac{q_i}{Q_A} \cdot (y - p_A)
-]
+```text
+r_i' = r_i + K_i * (q_i / Q_A) * (y - p_A)
+```
 
 B 側:
 
-[
-r_j' = r_j - K_j \cdot \frac{q_j}{Q_B} \cdot (y - p_A)
-]
+```text
+r_j' = r_j - K_j * (q_j / Q_B) * (y - p_A)
+```
 
 ### 8. 保存
 
@@ -262,7 +261,7 @@ r_j' = r_j - K_j \cdot \frac{q_j}{Q_B} \cdot (y - p_A)
 
 例:
 
-* DB保存: `1523.4187`
+* DB 保存: `1523.4187`
 * 表示: `1523`
 
 ### q の再利用
@@ -272,7 +271,7 @@ r_j' = r_j - K_j \cdot \frac{q_j}{Q_B} \cdot (y - p_A)
 
 ### 同時更新する
 
-6人全員の更新量を先に計算し、その後まとめて反映する。
+6 人全員の更新量を先に計算し、その後まとめて反映する。
 片側だけ先に更新してから相手側を計算しない。
 
 ### 引き分けの扱い
@@ -297,7 +296,7 @@ r_j' = r_j - K_j \cdot \frac{q_j}{Q_B} \cdot (y - p_A)
 * ロール相性を表現できない
 * シナジーを表現できない
 * 特定の組み合わせだけ強い、という効果を表せない
-* 3人全員の寄与を独立加算的に扱っている
+* 3 人全員の寄与を独立加算的に扱っている
 
 そのため、編成相性が非常に重要なゲームでは限界がある。
 ただし Discord コミュニティ向けの初期実装としては十分現実的。
@@ -318,22 +317,22 @@ r_j' = r_j - K_j \cdot \frac{q_j}{Q_B} \cdot (y - p_A)
 
 ### 強さ変換
 
-[
-q_i = 10^{r_i / 400}
-]
+```text
+q_i = 10^(r_i / 400)
+```
 
 ### チーム強さ
 
-[
-Q_A = \sum_{i\in A} q_i,\qquad
-Q_B = \sum_{j\in B} q_j
-]
+```text
+Q_A = sum(q_i for i in A)
+Q_B = sum(q_j for j in B)
+```
 
 ### 期待勝率
 
-[
-p_A = \frac{Q_A}{Q_A + Q_B}
-]
+```text
+p_A = Q_A / (Q_A + Q_B)
+```
 
 ### 試合結果
 
@@ -344,22 +343,21 @@ p_A = \frac{Q_A}{Q_A + Q_B}
 ### 更新式
 
 A 側:
-[
-r_i' = r_i + K_i \cdot \frac{q_i}{Q_A} \cdot (y - p_A)
-]
+
+```text
+r_i' = r_i + K_i * (q_i / Q_A) * (y - p_A)
+```
 
 B 側:
-[
-r_j' = r_j - K_j \cdot \frac{q_j}{Q_B} \cdot (y - p_A)
-]
+
+```text
+r_j' = r_j - K_j * (q_j / Q_B) * (y - p_A)
+```
 
 ### K
 
-[
-K_i =
-\begin{cases}
-40 & games_played < 20 \
-32 & 20 \le games_played < 100 \
-24 & games_played \ge 100
-\end{cases}
-]
+| 条件                         |  K |
+| -------------------------- | -: |
+| `games_played < 20`        | 40 |
+| `20 <= games_played < 100` | 32 |
+| `games_played >= 100`      | 24 |

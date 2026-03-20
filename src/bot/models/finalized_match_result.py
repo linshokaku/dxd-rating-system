@@ -22,6 +22,7 @@ class FinalizedMatchResult(Base):
 
     match_id: Mapped[int] = mapped_column(ForeignKey("matches.id"), primary_key=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    rated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     team_a_player_ids: Mapped[list[int]] = mapped_column(JSON, nullable=False)
     team_b_player_ids: Mapped[list[int]] = mapped_column(JSON, nullable=False)
     parent_player_id: Mapped[int | None] = mapped_column(

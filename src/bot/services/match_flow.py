@@ -55,6 +55,7 @@ from bot.services.errors import (
     RetryableTaskError,
 )
 from bot.services.matching_queue import MatchingQueueNotificationContext
+from bot.services.rating import RatingParticipantSnapshot, calculate_rating_updates
 
 MATCH_PARENT_ASSIGNED_NOTIFICATION_MESSAGE = "親が決定しました。"
 MATCH_APPROVAL_STARTED_NOTIFICATION_MESSAGE = "承認フェーズに移行しました。"
@@ -146,6 +147,11 @@ class ActiveMatchTimerState:
 class NotificationDestinationPayload(TypedDict):
     channel_id: int
     guild_id: int | None
+
+
+class TeamRatingEntryPayload(TypedDict):
+    discord_user_id: int
+    rating: float
 
 
 class MatchFlowService:
@@ -787,6 +793,8 @@ class MatchFlowService:
             session.add(finalized_result)
 
         finalized_result.created_at = active_state.match.created_at
+        if finalized_result.rated_at is None:
+            finalized_result.rated_at = finalized_at
         finalized_result.team_a_player_ids = [
             participant.player_id
             for participant in participants
@@ -821,6 +829,18 @@ class MatchFlowService:
         participants_by_player_id = {
             participant.player_id: participant for participant in participants
         }
+        rating_snapshots_by_player_id = {
+            participant.player_id: RatingParticipantSnapshot(
+                player_id=participant.player_id,
+                team=participant.team,
+                rating=participant.player.rating,
+                games_played=participant.player.games_played,
+                wins=participant.player.wins,
+                losses=participant.player.losses,
+                draws=participant.player.draws,
+            )
+            for participant in participants
+        }
         auto_penalty_notifications: list[tuple[MatchParticipant, PenaltyType, int]] = []
 
         desired_auto_penalties_by_player: dict[int, PenaltyType | None] = {}
@@ -840,6 +860,11 @@ class MatchFlowService:
                     match_id=active_state.match_id,
                     player_id=participant.player_id,
                     team=participant.team,
+                    rating_before=None,
+                    games_played_before=None,
+                    wins_before=None,
+                    losses_before=None,
+                    draws_before=None,
                     latest_report_id=None,
                     last_reported_input_result=None,
                     last_normalized_result=None,
@@ -852,6 +877,26 @@ class MatchFlowService:
                 )
                 session.add(finalized_player_result)
             finalized_player_result.team = participant.team
+            if finalized_player_result.rating_before is None:
+                finalized_player_result.rating_before = rating_snapshots_by_player_id[
+                    participant.player_id
+                ].rating
+            if finalized_player_result.games_played_before is None:
+                finalized_player_result.games_played_before = rating_snapshots_by_player_id[
+                    participant.player_id
+                ].games_played
+            if finalized_player_result.wins_before is None:
+                finalized_player_result.wins_before = rating_snapshots_by_player_id[
+                    participant.player_id
+                ].wins
+            if finalized_player_result.losses_before is None:
+                finalized_player_result.losses_before = rating_snapshots_by_player_id[
+                    participant.player_id
+                ].losses
+            if finalized_player_result.draws_before is None:
+                finalized_player_result.draws_before = rating_snapshots_by_player_id[
+                    participant.player_id
+                ].draws
             finalized_player_result.latest_report_id = (
                 None if latest_report is None else latest_report.id
             )
@@ -902,6 +947,17 @@ class MatchFlowService:
                     )
                 )
 
+        if finalized_by_admin:
+            # TODO: Recalculate rating-related player state when match result correction support
+            # is implemented. For now, admin overrides update only the stored match result.
+            pass
+        else:
+            self._apply_rating_updates(
+                participants=participants,
+                final_result=final_result,
+                rating_snapshots=tuple(rating_snapshots_by_player_id.values()),
+            )
+
         for player_id, desired_penalty_type in desired_auto_penalties_by_player.items():
             if player_id in previous_auto_penalties_by_player:
                 continue
@@ -927,15 +983,30 @@ class MatchFlowService:
         active_state.finalized_at = finalized_at
         active_state.finalized_by_admin = finalized_by_admin
 
+        finalized_notification_payload: dict[str, Any] = {
+            "match_id": active_state.match_id,
+            "final_result": final_result.value,
+            "finalized_at": finalized_at.isoformat(),
+            "finalized_by_admin": finalized_by_admin,
+        }
+        if not finalized_by_admin:
+            finalized_notification_payload["team_a_rating_entries"] = (
+                self._build_team_rating_entries(
+                    participants=participants,
+                    team=MatchParticipantTeam.TEAM_A,
+                )
+            )
+            finalized_notification_payload["team_b_rating_entries"] = (
+                self._build_team_rating_entries(
+                    participants=participants,
+                    team=MatchParticipantTeam.TEAM_B,
+                )
+            )
+
         for payload in self._build_match_channel_payloads(
             participants=participants,
             event_type=OutboxEventType.MATCH_FINALIZED,
-            extra_payload={
-                "match_id": active_state.match_id,
-                "final_result": final_result.value,
-                "finalized_at": finalized_at.isoformat(),
-                "finalized_by_admin": finalized_by_admin,
-            },
+            extra_payload=finalized_notification_payload,
         ):
             destination = payload["destination"]
             self._enqueue_outbox_event(
@@ -1005,6 +1076,22 @@ class MatchFlowService:
             approval_deadline_at=active_state.approval_deadline_at,
             admin_review_required=active_state.admin_review_required,
         )
+
+    def _apply_rating_updates(
+        self,
+        *,
+        participants: Sequence[MatchParticipant],
+        final_result: MatchResult,
+        rating_snapshots: Sequence[RatingParticipantSnapshot],
+    ) -> None:
+        rating_updates_by_player_id = calculate_rating_updates(rating_snapshots, final_result)
+        for participant in participants:
+            rating_update = rating_updates_by_player_id[participant.player_id]
+            participant.player.rating = rating_update.rating_after
+            participant.player.games_played = rating_update.games_played_after
+            participant.player.wins = rating_update.wins_after
+            participant.player.losses = rating_update.losses_after
+            participant.player.draws = rating_update.draws_after
 
     def _ensure_active_player_states_for_finalization(
         self,
@@ -1300,6 +1387,24 @@ class MatchFlowService:
             }
             for destination in destinations_by_channel_id.values()
         )
+
+    def _build_team_rating_entries(
+        self,
+        *,
+        participants: Sequence[MatchParticipant],
+        team: MatchParticipantTeam,
+    ) -> list[TeamRatingEntryPayload]:
+        return [
+            {
+                "discord_user_id": (
+                    participant.notification_mention_discord_user_id
+                    or participant.player.discord_user_id
+                ),
+                "rating": participant.player.rating,
+            }
+            for participant in participants
+            if participant.team == team
+        ]
 
     def _build_match_approval_requested_payload(
         self,

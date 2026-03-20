@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
+import pytest
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from bot.constants import MATCH_PARENT_SELECTION_WINDOW
 from bot.models import (
+    INITIAL_RATING,
     ActiveMatchPlayerState,
     ActiveMatchState,
     FinalizedMatchPlayerResult,
@@ -127,7 +129,7 @@ def test_submit_reports_finalizes_immediately_when_no_approval_targets(
     session: Session,
     session_factory: sessionmaker[Session],
 ) -> None:
-    match_id, _, participants = create_match(
+    match_id, players, participants = create_match(
         session,
         session_factory,
         start_discord_user_id=60_150,
@@ -164,6 +166,9 @@ def test_submit_reports_finalizes_immediately_when_no_approval_targets(
     player_states = session.scalars(
         select(ActiveMatchPlayerState).where(ActiveMatchPlayerState.match_id == match_id)
     ).all()
+    finalized_player_results = session.scalars(
+        select(FinalizedMatchPlayerResult).where(FinalizedMatchPlayerResult.match_id == match_id)
+    ).all()
     approval_events = session.scalars(
         select(OutboxEvent)
         .where(OutboxEvent.event_type == OutboxEventType.MATCH_APPROVAL_REQUESTED)
@@ -173,6 +178,11 @@ def test_submit_reports_finalizes_immediately_when_no_approval_targets(
         select(OutboxEvent).where(OutboxEvent.event_type == OutboxEventType.MATCH_FINALIZED)
     ).all()
     penalties = session.scalars(select(PlayerPenalty)).all()
+    players_by_id = {player.id: player for player in session.scalars(select(Player)).all()}
+    finalized_player_results_by_id = {
+        player_result.player_id: player_result for player_result in finalized_player_results
+    }
+    expected_delta = 20.0 / 3.0
 
     assert last_result is not None
     assert last_result.finalized is True
@@ -182,6 +192,7 @@ def test_submit_reports_finalizes_immediately_when_no_approval_targets(
     assert active_state.state == MatchState.FINALIZED
     assert finalized_result is not None
     assert finalized_result.final_result == MatchResult.TEAM_A_WIN
+    assert finalized_result.rated_at == finalized_result.finalized_at
     assert len(player_states) == 6
     assert all(
         player_state.report_status == MatchReportStatus.CORRECT for player_state in player_states
@@ -192,7 +203,48 @@ def test_submit_reports_finalizes_immediately_when_no_approval_targets(
     )
     assert approval_events == []
     assert len(finalized_events) == 1
+    finalized_event_payload = finalized_events[0].payload
+    team_a_rating_entries = finalized_event_payload["team_a_rating_entries"]
+    team_b_rating_entries = finalized_event_payload["team_b_rating_entries"]
+    assert [entry["discord_user_id"] for entry in team_a_rating_entries] == [
+        participant.notification_mention_discord_user_id
+        for participant in participants
+        if participant.team == MatchParticipantTeam.TEAM_A
+    ]
+    assert [entry["discord_user_id"] for entry in team_b_rating_entries] == [
+        participant.notification_mention_discord_user_id
+        for participant in participants
+        if participant.team == MatchParticipantTeam.TEAM_B
+    ]
+    assert [entry["rating"] for entry in team_a_rating_entries] == pytest.approx(
+        [INITIAL_RATING + expected_delta] * 3
+    )
+    assert [entry["rating"] for entry in team_b_rating_entries] == pytest.approx(
+        [INITIAL_RATING - expected_delta] * 3
+    )
     assert penalties == []
+    for player in players:
+        persisted_player = players_by_id[player.id]
+        finalized_player_result = finalized_player_results_by_id[player.id]
+        assert persisted_player.games_played == 1
+        assert finalized_player_result.rating_before == INITIAL_RATING
+        assert finalized_player_result.games_played_before == 0
+        assert finalized_player_result.wins_before == 0
+        assert finalized_player_result.losses_before == 0
+        assert finalized_player_result.draws_before == 0
+        participant = next(
+            participant for participant in participants if participant.player_id == player.id
+        )
+        if participant.team == MatchParticipantTeam.TEAM_A:
+            assert persisted_player.rating == pytest.approx(INITIAL_RATING + expected_delta)
+            assert persisted_player.wins == 1
+            assert persisted_player.losses == 0
+            assert persisted_player.draws == 0
+        else:
+            assert persisted_player.rating == pytest.approx(INITIAL_RATING - expected_delta)
+            assert persisted_player.wins == 0
+            assert persisted_player.losses == 1
+            assert persisted_player.draws == 0
 
 
 def test_submit_reports_from_all_players_starts_approval_and_accepts_approval(
@@ -443,3 +495,123 @@ def test_process_deadlines_finalizes_match_and_applies_auto_penalties(
             1,
         ),
     }
+
+
+def test_submit_draw_reports_updates_record_without_changing_equal_ratings(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    match_id, players, participants = create_match(
+        session,
+        session_factory,
+        start_discord_user_id=60_350,
+        channel_id=91_003_5,
+        guild_id=92_003_5,
+    )
+    match_service = MatchFlowService(session_factory)
+
+    match_service.volunteer_parent(match_id, participants[0].player_id)
+
+    session.expire_all()
+    active_state = session.get(ActiveMatchState, match_id)
+    assert active_state is not None
+    now = get_database_now(session)
+    active_state.report_open_at = now - timedelta(minutes=1)
+    active_state.report_deadline_at = now + timedelta(minutes=10)
+    session.commit()
+
+    assert match_service.process_report_open(match_id) is True
+
+    last_result = None
+    for participant in participants:
+        last_result = match_service.submit_report(
+            match_id,
+            participant.player_id,
+            MatchReportInputResult.DRAW,
+        )
+
+    session.expire_all()
+    finalized_result = session.get(FinalizedMatchResult, match_id)
+    players_by_id = {player.id: player for player in session.scalars(select(Player)).all()}
+    finalized_player_results = {
+        player_result.player_id: player_result
+        for player_result in session.scalars(
+            select(FinalizedMatchPlayerResult).where(
+                FinalizedMatchPlayerResult.match_id == match_id
+            )
+        ).all()
+    }
+
+    assert last_result is not None
+    assert last_result.finalized is True
+    assert finalized_result is not None
+    assert finalized_result.final_result == MatchResult.DRAW
+    assert finalized_result.rated_at == finalized_result.finalized_at
+    for player in players:
+        persisted_player = players_by_id[player.id]
+        finalized_player_result = finalized_player_results[player.id]
+        assert persisted_player.rating == pytest.approx(INITIAL_RATING)
+        assert persisted_player.games_played == 1
+        assert persisted_player.wins == 0
+        assert persisted_player.losses == 0
+        assert persisted_player.draws == 1
+        assert finalized_player_result.rating_before == INITIAL_RATING
+        assert finalized_player_result.games_played_before == 0
+        assert finalized_player_result.wins_before == 0
+        assert finalized_player_result.losses_before == 0
+        assert finalized_player_result.draws_before == 0
+
+
+def test_submit_void_reports_does_not_change_player_rating_state(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    match_id, players, participants = create_match(
+        session,
+        session_factory,
+        start_discord_user_id=60_360,
+        channel_id=91_003_6,
+        guild_id=92_003_6,
+    )
+    match_service = MatchFlowService(session_factory)
+
+    match_service.volunteer_parent(match_id, participants[0].player_id)
+
+    last_result = None
+    for participant in participants:
+        last_result = match_service.submit_report(
+            match_id,
+            participant.player_id,
+            MatchReportInputResult.VOID,
+        )
+
+    session.expire_all()
+    finalized_result = session.get(FinalizedMatchResult, match_id)
+    players_by_id = {player.id: player for player in session.scalars(select(Player)).all()}
+    finalized_player_results = {
+        player_result.player_id: player_result
+        for player_result in session.scalars(
+            select(FinalizedMatchPlayerResult).where(
+                FinalizedMatchPlayerResult.match_id == match_id
+            )
+        ).all()
+    }
+
+    assert last_result is not None
+    assert last_result.finalized is True
+    assert finalized_result is not None
+    assert finalized_result.final_result == MatchResult.VOID
+    assert finalized_result.rated_at == finalized_result.finalized_at
+    for player in players:
+        persisted_player = players_by_id[player.id]
+        finalized_player_result = finalized_player_results[player.id]
+        assert persisted_player.rating == pytest.approx(INITIAL_RATING)
+        assert persisted_player.games_played == 0
+        assert persisted_player.wins == 0
+        assert persisted_player.losses == 0
+        assert persisted_player.draws == 0
+        assert finalized_player_result.rating_before == INITIAL_RATING
+        assert finalized_player_result.games_played_before == 0
+        assert finalized_player_result.wins_before == 0
+        assert finalized_player_result.losses_before == 0
+        assert finalized_player_result.draws_before == 0

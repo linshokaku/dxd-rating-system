@@ -23,6 +23,10 @@ def test_register_player_creates_player_with_initial_rating(session: Session) ->
     assert player.id is not None
     assert player.discord_user_id == discord_user_id
     assert player.rating == INITIAL_RATING
+    assert player.games_played == 0
+    assert player.wins == 0
+    assert player.losses == 0
+    assert player.draws == 0
     assert player.created_at is not None
     assert persisted_player is not None
     assert persisted_player.id == player.id

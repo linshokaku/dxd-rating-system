@@ -52,6 +52,12 @@ class ResolvedNotification:
     content: str
 
 
+@dataclass(frozen=True, slots=True)
+class TeamRatingEntry:
+    discord_user_id: int
+    rating: float
+
+
 class DiscordOutboxEventPublisher:
     def __init__(
         self,
@@ -257,6 +263,10 @@ class DiscordOutboxEventPublisher:
         ]
         if finalized_by_admin:
             lines.append("admin により結果が確定または更新されました。")
+        else:
+            rating_lines = self._render_team_rating_lines(payload)
+            if rating_lines:
+                lines.extend(["更新後レート", *rating_lines])
         return "\n".join(lines)
 
     def _render_match_admin_review_required_content(self, payload: dict[str, object]) -> str:
@@ -345,6 +355,79 @@ class DiscordOutboxEventPublisher:
         if not isinstance(value, list) or any(not isinstance(item, int) for item in value):
             self._raise_publish_error(f"Outbox payload '{key}' must be a list[int]: {value!r}")
         return cast(list[int], value)
+
+    def _get_optional_team_rating_entries(
+        self,
+        payload: dict[str, object],
+        key: str,
+    ) -> list[TeamRatingEntry] | None:
+        value = payload.get(key)
+        if value is None:
+            return None
+        if not isinstance(value, list):
+            self._raise_publish_error(
+                f"Outbox payload '{key}' must be a list[dict[str, int | float]]: {value!r}"
+            )
+
+        entries: list[TeamRatingEntry] = []
+        for item in value:
+            if not isinstance(item, dict):
+                self._raise_publish_error(
+                    f"Outbox payload '{key}' must be a list[dict[str, int | float]]: {value!r}"
+                )
+            discord_user_id = item.get("discord_user_id")
+            rating = item.get("rating")
+            if not isinstance(discord_user_id, int) or isinstance(discord_user_id, bool):
+                self._raise_publish_error(
+                    f"Outbox payload '{key}.discord_user_id' must be an int: "
+                    f"{discord_user_id!r}"
+                )
+            if (
+                not isinstance(rating, int | float)
+                or isinstance(rating, bool)
+            ):
+                self._raise_publish_error(
+                    f"Outbox payload '{key}.rating' must be an int | float: {rating!r}"
+                )
+            entries.append(
+                TeamRatingEntry(
+                    discord_user_id=discord_user_id,
+                    rating=float(rating),
+                )
+            )
+        return entries
+
+    def _render_team_rating_lines(self, payload: dict[str, object]) -> list[str]:
+        team_a_rating_entries = self._get_optional_team_rating_entries(
+            payload,
+            "team_a_rating_entries",
+        )
+        team_b_rating_entries = self._get_optional_team_rating_entries(
+            payload,
+            "team_b_rating_entries",
+        )
+        if team_a_rating_entries is None and team_b_rating_entries is None:
+            return []
+        if not team_a_rating_entries or not team_b_rating_entries:
+            self._raise_publish_error(
+                "match_finalized payload team rating entries must either both be present "
+                "or both be omitted"
+            )
+
+        return [
+            "Team A",
+            *[
+                f"    {format_discord_user_mention(entry.discord_user_id)}: "
+                f"{round(entry.rating)}"
+                for entry in team_a_rating_entries
+            ],
+            "Team B",
+            *[
+                f"    {format_discord_user_mention(entry.discord_user_id)}: "
+                f"{round(entry.rating)}"
+                for entry in team_b_rating_entries
+            ],
+        ]
 
     def _require_destination(self, payload: dict[str, object]) -> NotificationDestination:
         value = payload.get("destination")

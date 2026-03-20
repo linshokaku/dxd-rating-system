@@ -27,6 +27,7 @@ Discord Bot 上で 3v3 対戦向けのマッチングキューを管理する。
 
 - `id`
 - `player_id`
+- `queue_class_id`
 - `status`
 - `joined_at`
 - `last_present_at`
@@ -48,6 +49,12 @@ Discord Bot 上で 3v3 対戦向けのマッチングキューを管理する。
 - `status = 'waiting'` の行は、1プレイヤーにつき 1 件まで
 - PostgreSQL の部分ユニークインデックスを利用する
   - 例: `UNIQUE (player_id) WHERE status = 'waiting'`
+
+補足:
+
+- `queue_class_id` は、どのマッチングキューへ参加したかを表す内部識別子である
+- キュー定義の正は DB ではなくアプリケーションコード上の定数とする
+- ユーザーは `queue_class_id` を直接指定せず、`/join` の `queue_name` から解決する
 
 ## テーブル分類
 
@@ -108,6 +115,26 @@ Discord Bot 上で 3v3 対戦向けのマッチングキューを管理する。
 - `left`、`expired`、`matched` になった行は再利用しない
 - 再 join 時は新しい行を作る
 
+## キュー定義と参加条件
+
+### キュー定義
+
+- キュー定義は `docs/match_class.md` に従う
+- 初期状態では `low` と `high` の 2 キューを用意する
+- アプリケーションコード上では `queue_name -> queue_class_id` を解決できる定数定義を持つ
+
+### 参加条件の評価タイミング
+
+- プレイヤーの参加可能条件は `join` 時にのみチェックする
+- `join` 時点のプレイヤーのレーティングで判定する
+- `join` 成功後にレーティングが変化しても、待機中は再判定しない
+- `present`、`leave`、起動時再同期、マッチ作成直前では参加条件を再チェックしない
+
+### 中間階級追加後の判定
+
+- 中間階級追加後の参加可能条件は `docs/match_class.md` で定義した `target_rating` と半開区間ルールに従う
+- 実装では、`queue_class_id` に対応するキュー定義を読み、そのプレイヤーの `join` 時点レートだけで参加可否を判定する
+
 ## 状態遷移
 
 - `waiting -> waiting`
@@ -129,29 +156,39 @@ Discord Bot 上で 3v3 対戦向けのマッチングキューを管理する。
 ### 成功条件
 
 - プレイヤーが登録済みである
+- 指定した `queue_name` が有効である
+- `queue_name` から `queue_class_id` を解決できる
+- `join` 時点のプレイヤーのレーティングが、そのキューの参加条件を満たす
 - 有効な `waiting` 行を持っていない
 
 ### 処理
 
 1. トランザクションを開始する
 2. `pg_advisory_xact_lock(player_id)` を取得する
-3. 対象プレイヤーの `status = 'waiting'` 行を `FOR UPDATE` で取得する
-4. 行があり、かつ `expire_at > now()` なら失敗する
-5. 行があり、かつ `expire_at <= now()` なら、その行を `expired` に更新する
-6. 新しい `waiting` 行を作成する
-7. `joined_at = now()`
-8. `last_present_at = now()`
-9. `expire_at = now() + interval '5 minutes'`
-10. `revision = 1`
-11. `last_reminded_revision = NULL` にする
-12. commit する
-13. commit 後に以下 2 種類の単発タスクを登録する
-14. `remind_at = expire_at - interval '1 minute'` の在席確認リマインドタスク
-15. `expire_at` の expire タスク
-16. commit 後に、別トランザクションで `try_create_matches()` を実行する
+3. 入力された `queue_name` を `queue_class_id` へ解決する
+4. 対象プレイヤーの現在レーティングで、そのキューへの参加可否を判定する
+5. 対象プレイヤーの `status = 'waiting'` 行を `FOR UPDATE` で取得する
+6. 行があり、かつ `expire_at > now()` なら失敗する
+7. 行があり、かつ `expire_at <= now()` なら、その行を `expired` に更新する
+8. 新しい `waiting` 行を作成する
+9. `queue_class_id = resolved_queue_class_id` を設定する
+10. `joined_at = now()`
+11. `last_present_at = now()`
+12. `expire_at = now() + interval '5 minutes'`
+13. `revision = 1`
+14. `last_reminded_revision = NULL` にする
+15. commit する
+16. commit 後に以下 2 種類の単発タスクを登録する
+17. `remind_at = expire_at - interval '1 minute'` の在席確認リマインドタスク
+18. `expire_at` の expire タスク
+19. commit 後に、別トランザクションで参加先 `queue_class_id` を対象にマッチング試行を行う
 
 ### 失敗時の応答
 
+- 指定した `queue_name` が存在しない場合は失敗
+  - 応答例: `指定したキューは存在しません。`
+- その時点のレーティングでは指定キューへ参加できない場合は失敗
+  - 応答例: `現在のレーティングではそのキューに参加できません。`
 - すでにキュー参加中なら失敗
 - 応答例: `すでにキュー参加中です。`
 
@@ -185,6 +222,9 @@ Discord Bot 上で 3v3 対戦向けのマッチングキューを管理する。
 
 ### 補足
 
+- `present` は現在参加中の `waiting` 行に対して暗黙適用する
+- `queue_name` の入力は受け取らない
+- `queue_class_id` や参加可能条件は再判定しない
 - 古いタスクは cancel できれば cancel する
 - cancel できなくても `revision` 不一致で no-op にできるため、正しさは保てる
 
@@ -220,6 +260,8 @@ Discord Bot 上で 3v3 対戦向けのマッチングキューを管理する。
 
 ### 推奨 UX
 
+- `leave` は現在参加中の `waiting` 行に対して暗黙適用する
+- `queue_name` の入力は受け取らない
 - `waiting` 行がない場合は冪等に成功扱いにする
 - 応答例: `キューから退出しました。`
 
@@ -394,7 +436,8 @@ Discord Bot 上で 3v3 対戦向けのマッチングキューを管理する。
 
 ### 目的
 
-- `join` 成功後に、現在の待機人数でマッチ成立可能かを即時に試す
+- `join` 成功後に、参加先キューの待機人数でマッチ成立可能かを即時に試す
+- 各 `queue_class_id` ごとに独立してマッチを作成する
 - すでに 6 人以上の `waiting` 行がある場合、可能な限り連続でマッチを作成する
 
 ### 発火元
@@ -405,29 +448,35 @@ Discord Bot 上で 3v3 対戦向けのマッチングキューを管理する。
 ### 実行方針
 
 - `join` と同一トランザクションでは実行しない
-- `join` commit 後に別トランザクションで `try_create_matches()` を実行する
+- `join` commit 後に別トランザクションで、参加先 `queue_class_id` を対象にマッチング試行を行う
 - `try_create_matches()` の失敗によって `join` 自体は失敗させない
+- 起動時・再起動時の再同期では、定義済みの全 `queue_class_id` を対象にマッチング試行を行ってよい
 
 ### 候補抽出条件
 
 - `status = 'waiting'`
 - `expire_at > now()`
+- 対象 `queue_class_id` と一致する
 - `joined_at` の古い順を優先する
 
 ### ロック方針
 
-- 候補行は `ORDER BY joined_at, id`
+- 候補行は対象 `queue_class_id` に絞った上で `ORDER BY joined_at, id`
 - `SELECT ... FOR UPDATE SKIP LOCKED` で取得する
 - 6 人に満たない場合は no-op で終了する
-- 6 人以上いる限りループして複数マッチを作ってよい
+- 同じ `queue_class_id` で 6 人以上いる限りループして複数マッチを作ってよい
 
 ### 成立時の処理
 
 1. 候補 6 人をロックして取得する
-2. 対象プレイヤーのマッチを作成する
-3. 対応するキュー行を `matched` に更新する
-4. commit する
-5. commit 後に `マッチ成立` 通知を送る
+2. `docs/match_class.md` の全探索ルールに従って、`q` ベース期待勝率が最も 50% に近い 3v3 分割を選ぶ
+3. 同値が複数ある場合は、最初に見つかった候補を採用する
+4. 採用した 2 チームに対して、どちらを Team A / Team B とするかをランダムに決定する
+5. 各チーム内の並び順を、マッチ構築時点レーティングの降順、同率なら待機列順で確定する
+6. 対象プレイヤーのマッチを作成する
+7. 対応するキュー行を `matched` に更新する
+8. commit する
+9. commit 後に `マッチ成立` 通知を送る
 
 ### 通知方針
 
@@ -446,6 +495,8 @@ Discord Bot 上で 3v3 対戦向けのマッチングキューを管理する。
   3. Team A のメンバー一覧
   4. `Team B`
   5. Team B のメンバー一覧
+- Team A / Team B はマッチごとにランダムに決定されたラベルをそのまま使う
+- 各チーム内の表示順は、マッチ構築時点レーティングの降順、同率なら待機列順とする
 - Team A / Team B のメンバーは、Discord 上の通常ユーザーであれば mention 形式で表記してよい
 - ダミーユーザーは mention せず、`<dummy_{dummy_id}>` の形式で表記する
 
@@ -475,7 +526,7 @@ Team B
 1. `status = 'waiting' and expire_at <= now()` の行を cleanup する
 2. cleanup は `FOR UPDATE SKIP LOCKED` で少しずつ取得して `expired` に更新する
 3. 必要なら outbox に expire 通知イベントを積む
-4. 次に別トランザクションで `try_create_matches()` を実行する
+4. 次に別トランザクションで、定義済みの全 `queue_class_id` を対象にマッチング試行を行う
 5. その後、`status = 'waiting' and expire_at > now()` の行を取得する
 6. それぞれについて、在席確認リマインドの送信有無を確認する
 7. `expire_at - interval '1 minute' <= now() < expire_at` かつ (`last_reminded_revision IS NULL` または `last_reminded_revision != revision`) の行は、その場で在席確認リマインド処理を試みる
@@ -535,13 +586,16 @@ Team B
 - in-memory タイマーは精度向上のための仕組みであり、整合性担保の主役ではない
 - 整合性は `status`、`expire_at`、`revision`、DB ロックで守る
 - マッチ成立処理を入れる場合も、`waiting -> matched` はトランザクション内で更新し、expire と競合しないよう `FOR UPDATE` を前提にする
+- マッチ作成候補は必ず同じ `queue_class_id` 内からだけ選び、異なるキューをまたいで混在させない
 
 ## テスト項目
 
 ### join
 
 - [x] 未登録プレイヤーの `join` が失敗すること
-- [x] 初回 `join` で `waiting` 行が作成され、`joined_at`、`last_present_at`、`expire_at`、`revision = 1`、`last_reminded_revision = NULL` が設定されること
+- [x] 初回 `join` で `waiting` 行が作成され、`queue_class_id`、`joined_at`、`last_present_at`、`expire_at`、`revision = 1`、`last_reminded_revision = NULL` が設定されること
+- [ ] 無効な `queue_name` を指定した `join` が失敗すること
+- [ ] 参加条件を満たさないキューへの `join` が失敗すること
 - [x] 有効な `waiting` 行がある状態での重複 `join` が失敗すること
 - [x] 期限切れの `waiting` 行が残っている状態で `join` すると、古い行が `expired` になり、新しい `waiting` 行が作られること
 - [x] `join` 後に在席確認リマインドタスクと expire タスクが登録されること
@@ -552,6 +606,7 @@ Team B
 ### present
 
 - [x] 有効な `waiting` 行に対する `present` で `last_present_at` と `expire_at` が更新され、`revision` が増加し、`last_reminded_revision = NULL` に戻ること
+- [ ] `present` が現在参加中のキュー行へ暗黙適用され、`queue_class_id` を変更しないこと
 - [x] `present` 後に新しい在席確認リマインドタスクと expire タスクが登録されること
 - [x] `waiting` 行が存在しない場合の `present` が失敗すること
 - [x] `expire_at <= now()` の行に対する `present` は `expired` に遷移して timeout 応答になること
@@ -560,6 +615,7 @@ Team B
 ### leave
 
 - [x] 有効な `waiting` 行に対する `leave` で `left` に遷移し、`removed_at` と `removal_reason = 'user_leave'` が設定されること
+- [ ] `leave` が現在参加中のキュー行へ暗黙適用されること
 - [x] `waiting` 行がない場合の `leave` が冪等に成功扱いできること
 - [x] `expire_at <= now()` の行に対する `leave` は `left` ではなく `expired` になること
 - [x] `leave` 後にローカルの在席確認リマインドタスクと expire タスクが cancel されること
@@ -591,10 +647,15 @@ Team B
 ### マッチング試行
 
 - [x] 待機人数が 6 人未満のとき、`try_create_matches()` が no-op で終了すること
+- [ ] 異なる `queue_class_id` にいるプレイヤー同士が同じマッチへ混在しないこと
 - [x] 6 人ちょうどの待機で 1 マッチが作成され、対象のキュー行が `matched` になること
 - [x] 12 人以上の待機で 1 回の `try_create_matches()` が複数マッチを連続生成できること
 - [x] 候補抽出が `joined_at, id` の古い順で行われること
 - [x] `expire_at <= now()` の行が候補から除外されること
+- [ ] チーム分けが `q` ベース期待勝率の最適化で決まること
+- [ ] 同値の候補が複数ある場合に、最初に見つかった候補が採用されること
+- [ ] Team A / Team B の割り当てがランダムに行われ、その結果が試合中固定されること
+- [ ] 各チーム内の並び順がレーティング降順、同率なら待機列順になること
 - [ ] 複数プロセスが同時に `try_create_matches()` を走らせても、同じプレイヤーが二重にマッチへ入らないこと
 - [ ] `join` を起点にマッチ成立した場合でも、`join` 応答は先に返り、`マッチ成立` は別通知になること
 - [x] `matched` になった行に対して後から reminder / expire タスクが起きても no-op になること

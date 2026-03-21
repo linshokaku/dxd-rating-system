@@ -234,14 +234,37 @@ def create_match_for_players(
     session_factory: sessionmaker[Session],
     *,
     players: list[Player],
+    match_format: MatchFormat = DEFAULT_MATCH_FORMAT,
     channel_id: int,
     guild_id: int,
 ) -> tuple[int, list[MatchParticipant]]:
+    participants_by_match_id = create_matches_for_players(
+        session,
+        session_factory,
+        players=players,
+        match_format=match_format,
+        channel_id=channel_id,
+        guild_id=guild_id,
+    )
+    assert len(participants_by_match_id) == 1
+    match_id = sorted(participants_by_match_id)[0]
+    return match_id, participants_by_match_id[match_id]
+
+
+def create_matches_for_players(
+    session: Session,
+    session_factory: sessionmaker[Session],
+    *,
+    players: list[Player],
+    match_format: MatchFormat = DEFAULT_MATCH_FORMAT,
+    channel_id: int,
+    guild_id: int,
+) -> dict[int, list[MatchParticipant]]:
     queue_service = MatchingQueueService(session_factory)
     for player in players:
         queue_service.join_queue(
             player.id,
-            DEFAULT_MATCH_FORMAT,
+            match_format,
             DEFAULT_QUEUE_NAME,
             notification_context=MatchingQueueNotificationContext(
                 channel_id=channel_id,
@@ -253,13 +276,14 @@ def create_match_for_players(
     created_matches = queue_service.try_create_matches()
 
     session.expire_all()
-    assert len(created_matches) == 1
-    participants = session.scalars(
-        select(MatchParticipant)
-        .where(MatchParticipant.match_id == created_matches[0].match_id)
-        .order_by(MatchParticipant.team, MatchParticipant.slot)
-    ).all()
-    return created_matches[0].match_id, participants
+    participants_by_match_id: dict[int, list[MatchParticipant]] = {}
+    for created_match in created_matches:
+        participants_by_match_id[created_match.match_id] = session.scalars(
+            select(MatchParticipant)
+            .where(MatchParticipant.match_id == created_match.match_id)
+            .order_by(MatchParticipant.team, MatchParticipant.slot)
+        ).all()
+    return participants_by_match_id
 
 
 def input_result_for_match_result(
@@ -328,6 +352,48 @@ def get_match_events(
         ).all()
         if event.payload.get("match_id") == match_id
     ]
+
+
+def snapshot_player_format_stats_state(
+    session: Session,
+    *,
+    player_ids: list[int],
+    match_format: MatchFormat,
+) -> dict[int, tuple[float, int, int, int, int]]:
+    format_stats_by_player_id = get_player_format_stats_by_player_id(
+        session,
+        player_ids,
+        match_format=match_format,
+    )
+    return {
+        player_id: (
+            format_stats.rating,
+            format_stats.games_played,
+            format_stats.wins,
+            format_stats.losses,
+            format_stats.draws,
+        )
+        for player_id, format_stats in format_stats_by_player_id.items()
+    }
+
+
+def snapshot_finalized_player_rating_state(
+    session: Session,
+    *,
+    match_ids: list[int],
+) -> dict[int, dict[int, tuple[float | None, int | None, int | None, int | None, int | None]]]:
+    player_results_by_match_id = {match_id: {} for match_id in match_ids}
+    for player_result in session.scalars(
+        select(FinalizedMatchPlayerResult).where(FinalizedMatchPlayerResult.match_id.in_(match_ids))
+    ).all():
+        player_results_by_match_id[player_result.match_id][player_result.player_id] = (
+            player_result.rating_before,
+            player_result.games_played_before,
+            player_result.wins_before,
+            player_result.losses_before,
+            player_result.draws_before,
+        )
+    return player_results_by_match_id
 
 
 def test_try_create_matches_initializes_active_match_state_and_notification_context(
@@ -1506,141 +1572,330 @@ def test_override_match_result_rejects_non_finalized_match(
         )
 
 
+@pytest.mark.parametrize(
+    ("match_format", "start_discord_user_id", "first_channel_id", "first_guild_id"),
+    [
+        (MatchFormat.ONE_VS_ONE, 60_370, 91_003_8, 92_003_8),
+        (MatchFormat.TWO_VS_TWO, 60_380, 91_003_9, 92_003_9),
+        (MatchFormat.THREE_VS_THREE, 60_390, 91_003_10, 92_003_10),
+    ],
+)
 def test_override_match_result_recalculates_rating_state_for_corrected_and_following_matches(
     session: Session,
     session_factory: sessionmaker[Session],
+    match_format: MatchFormat,
+    start_discord_user_id: int,
+    first_channel_id: int,
+    first_guild_id: int,
 ) -> None:
-    players = create_players(session, 6, start_discord_user_id=60_370)
+    format_definition = get_match_format_definition(match_format)
+    assert format_definition is not None
+    players = create_players(
+        session,
+        format_definition.players_per_batch,
+        start_discord_user_id=start_discord_user_id,
+    )
     match_service = MatchFlowService(session_factory)
+    match_records: list[tuple[int, list[MatchParticipant], MatchResult]] = []
 
-    first_match_id, first_participants = create_match_for_players(
+    first_batch_matches = create_matches_for_players(
         session,
         session_factory,
         players=players,
-        channel_id=91_003_8,
-        guild_id=92_003_8,
+        match_format=match_format,
+        channel_id=first_channel_id,
+        guild_id=first_guild_id,
     )
-    finalize_match_with_result(
-        session,
-        match_service,
-        match_id=first_match_id,
-        participants=first_participants,
-        final_result=MatchResult.TEAM_A_WIN,
-    )
+    for index, match_id in enumerate(sorted(first_batch_matches)):
+        participants = first_batch_matches[match_id]
+        final_result = MatchResult.TEAM_A_WIN if index == 0 else MatchResult.TEAM_B_WIN
+        finalize_match_with_result(
+            session,
+            match_service,
+            match_id=match_id,
+            participants=participants,
+            final_result=final_result,
+        )
+        match_records.append((match_id, participants, final_result))
 
-    second_match_id, second_participants = create_match_for_players(
+    second_batch_matches = create_matches_for_players(
         session,
         session_factory,
         players=players,
-        channel_id=91_003_9,
-        guild_id=92_003_9,
+        match_format=match_format,
+        channel_id=first_channel_id + 100,
+        guild_id=first_guild_id + 100,
     )
-    finalize_match_with_result(
-        session,
-        match_service,
-        match_id=second_match_id,
-        participants=second_participants,
-        final_result=MatchResult.TEAM_A_WIN,
-    )
+    for match_id in sorted(second_batch_matches):
+        participants = second_batch_matches[match_id]
+        finalize_match_with_result(
+            session,
+            match_service,
+            match_id=match_id,
+            participants=participants,
+            final_result=MatchResult.TEAM_A_WIN,
+        )
+        match_records.append((match_id, participants, MatchResult.TEAM_A_WIN))
+
+    target_match_id = match_records[0][0]
 
     session.expire_all()
-    original_first_finalized = session.get(FinalizedMatchResult, first_match_id)
-    assert original_first_finalized is not None
-    original_first_finalized_at = original_first_finalized.finalized_at
+    original_target_finalized = session.get(FinalizedMatchResult, target_match_id)
+    assert original_target_finalized is not None
+    original_target_finalized_at = original_target_finalized.finalized_at
 
     override_result = match_service.override_match_result(
-        first_match_id,
+        target_match_id,
         MatchResult.TEAM_B_WIN,
         admin_discord_user_id=99_002,
     )
 
     session.expire_all()
-    first_finalized_result = session.get(FinalizedMatchResult, first_match_id)
-    second_finalized_result = session.get(FinalizedMatchResult, second_match_id)
+    match_ids = [match_id for match_id, _, _ in match_records]
+    finalized_results_by_match_id = {
+        match_id: session.get(FinalizedMatchResult, match_id) for match_id in match_ids
+    }
     format_stats_by_player_id = get_player_format_stats_by_player_id(
-        session, [player.id for player in players]
+        session,
+        [player.id for player in players],
+        match_format=match_format,
     )
-    first_player_results = {
-        result.player_id: result
-        for result in session.scalars(
-            select(FinalizedMatchPlayerResult).where(
-                FinalizedMatchPlayerResult.match_id == first_match_id
-            )
-        ).all()
+    finalized_player_results_by_match_id: dict[int, dict[int, FinalizedMatchPlayerResult]] = {
+        match_id: {} for match_id in match_ids
     }
-    second_player_results = {
-        result.player_id: result
-        for result in session.scalars(
-            select(FinalizedMatchPlayerResult).where(
-                FinalizedMatchPlayerResult.match_id == second_match_id
-            )
-        ).all()
-    }
+    for result in session.scalars(
+        select(FinalizedMatchPlayerResult).where(FinalizedMatchPlayerResult.match_id.in_(match_ids))
+    ).all():
+        finalized_player_results_by_match_id[result.match_id][result.player_id] = result
 
-    initial_snapshots = tuple(
-        RatingParticipantSnapshot(
-            player_id=participant.player_id,
-            team=participant.team,
+    expected_player_states = {
+        player.id: RatingParticipantSnapshot(
+            player_id=player.id,
+            team=MatchParticipantTeam.TEAM_A,
             rating=INITIAL_RATING,
             games_played=0,
             wins=0,
             losses=0,
             draws=0,
         )
-        for participant in first_participants
-    )
-    first_match_updates = calculate_rating_updates(initial_snapshots, MatchResult.TEAM_B_WIN)
-    second_match_snapshots = tuple(
-        RatingParticipantSnapshot(
-            player_id=participant.player_id,
-            team=participant.team,
-            rating=first_match_updates[participant.player_id].rating_after,
-            games_played=first_match_updates[participant.player_id].games_played_after,
-            wins=first_match_updates[participant.player_id].wins_after,
-            losses=first_match_updates[participant.player_id].losses_after,
-            draws=first_match_updates[participant.player_id].draws_after,
-        )
-        for participant in second_participants
-    )
-    second_match_snapshots_by_player_id = {
-        snapshot.player_id: snapshot for snapshot in second_match_snapshots
+        for player in players
     }
-    second_match_updates = calculate_rating_updates(
-        second_match_snapshots,
-        MatchResult.TEAM_A_WIN,
-    )
+    expected_snapshots_by_match_id: dict[int, dict[int, RatingParticipantSnapshot]] = {}
+    expected_results_by_match_id = {
+        match_records[0][0]: MatchResult.TEAM_B_WIN,
+        **{match_id: final_result for match_id, _, final_result in match_records[1:]},
+    }
 
-    assert override_result.match_id == first_match_id
+    for match_id, participants, _ in match_records:
+        rating_snapshots = tuple(
+            RatingParticipantSnapshot(
+                player_id=participant.player_id,
+                team=participant.team,
+                rating=expected_player_states[participant.player_id].rating,
+                games_played=expected_player_states[participant.player_id].games_played,
+                wins=expected_player_states[participant.player_id].wins,
+                losses=expected_player_states[participant.player_id].losses,
+                draws=expected_player_states[participant.player_id].draws,
+            )
+            for participant in participants
+        )
+        expected_snapshots_by_match_id[match_id] = {
+            snapshot.player_id: snapshot for snapshot in rating_snapshots
+        }
+        rating_updates_by_player_id = calculate_rating_updates(
+            rating_snapshots,
+            expected_results_by_match_id[match_id],
+        )
+        for player_id, rating_update in rating_updates_by_player_id.items():
+            expected_player_states[player_id] = RatingParticipantSnapshot(
+                player_id=player_id,
+                team=expected_player_states[player_id].team,
+                rating=rating_update.rating_after,
+                games_played=rating_update.games_played_after,
+                wins=rating_update.wins_after,
+                losses=rating_update.losses_after,
+                draws=rating_update.draws_after,
+            )
+
+    assert override_result.match_id == target_match_id
     assert override_result.final_result == MatchResult.TEAM_B_WIN
-    assert first_finalized_result is not None
-    assert first_finalized_result.final_result == MatchResult.TEAM_B_WIN
-    assert first_finalized_result.finalized_by_admin is True
-    assert first_finalized_result.finalized_at >= original_first_finalized_at
-    assert second_finalized_result is not None
-    assert second_finalized_result.final_result == MatchResult.TEAM_A_WIN
-    assert second_finalized_result.finalized_by_admin is False
+    target_finalized_result = finalized_results_by_match_id[target_match_id]
+    assert target_finalized_result is not None
+    assert target_finalized_result.final_result == MatchResult.TEAM_B_WIN
+    assert target_finalized_result.finalized_by_admin is True
+    assert target_finalized_result.finalized_at >= original_target_finalized_at
+
+    for match_id, participants, _ in match_records:
+        finalized_result = finalized_results_by_match_id[match_id]
+        assert finalized_result is not None
+        assert finalized_result.final_result == expected_results_by_match_id[match_id]
+        assert finalized_result.finalized_by_admin is (match_id == target_match_id)
+
+        expected_snapshots_by_player_id = expected_snapshots_by_match_id[match_id]
+        for participant in participants:
+            expected_snapshot = expected_snapshots_by_player_id[participant.player_id]
+            player_result = finalized_player_results_by_match_id[match_id][participant.player_id]
+            assert player_result.rating_before == pytest.approx(expected_snapshot.rating)
+            assert player_result.games_played_before == expected_snapshot.games_played
+            assert player_result.wins_before == expected_snapshot.wins
+            assert player_result.losses_before == expected_snapshot.losses
+            assert player_result.draws_before == expected_snapshot.draws
 
     for player in players:
-        first_player_result = first_player_results[player.id]
-        second_player_result = second_player_results[player.id]
-        second_snapshot = second_match_snapshots_by_player_id[player.id]
-        second_update = second_match_updates[player.id]
+        expected_player_state = expected_player_states[player.id]
         persisted_player = format_stats_by_player_id[player.id]
+        assert persisted_player.rating == pytest.approx(expected_player_state.rating)
+        assert persisted_player.games_played == expected_player_state.games_played
+        assert persisted_player.wins == expected_player_state.wins
+        assert persisted_player.losses == expected_player_state.losses
+        assert persisted_player.draws == expected_player_state.draws
 
-        assert first_player_result.rating_before == INITIAL_RATING
-        assert first_player_result.games_played_before == 0
-        assert first_player_result.wins_before == 0
-        assert first_player_result.losses_before == 0
-        assert first_player_result.draws_before == 0
 
-        assert second_player_result.rating_before == pytest.approx(second_snapshot.rating)
-        assert second_player_result.games_played_before == second_snapshot.games_played
-        assert second_player_result.wins_before == second_snapshot.wins
-        assert second_player_result.losses_before == second_snapshot.losses
-        assert second_player_result.draws_before == second_snapshot.draws
+@pytest.mark.parametrize(
+    ("match_format", "start_discord_user_id", "first_channel_id", "first_guild_id"),
+    [
+        (MatchFormat.ONE_VS_ONE, 60_470, 91_004_8, 92_004_8),
+        (MatchFormat.TWO_VS_TWO, 60_480, 91_004_9, 92_004_9),
+        (MatchFormat.THREE_VS_THREE, 60_490, 91_004_10, 92_004_10),
+    ],
+)
+def test_override_match_result_restores_original_rating_state_when_reverted(
+    session: Session,
+    session_factory: sessionmaker[Session],
+    match_format: MatchFormat,
+    start_discord_user_id: int,
+    first_channel_id: int,
+    first_guild_id: int,
+) -> None:
+    format_definition = get_match_format_definition(match_format)
+    assert format_definition is not None
+    players = create_players(
+        session,
+        format_definition.players_per_batch,
+        start_discord_user_id=start_discord_user_id,
+    )
+    player_ids = [player.id for player in players]
+    match_service = MatchFlowService(session_factory)
+    match_records: list[tuple[int, list[MatchParticipant], MatchResult]] = []
 
-        assert persisted_player.rating == pytest.approx(second_update.rating_after)
-        assert persisted_player.games_played == second_update.games_played_after
-        assert persisted_player.wins == second_update.wins_after
-        assert persisted_player.losses == second_update.losses_after
-        assert persisted_player.draws == second_update.draws_after
+    first_batch_matches = create_matches_for_players(
+        session,
+        session_factory,
+        players=players,
+        match_format=match_format,
+        channel_id=first_channel_id,
+        guild_id=first_guild_id,
+    )
+    original_target_result = MatchResult.TEAM_A_WIN
+    corrected_target_result = MatchResult.TEAM_B_WIN
+    for index, match_id in enumerate(sorted(first_batch_matches)):
+        participants = first_batch_matches[match_id]
+        final_result = original_target_result if index == 0 else MatchResult.TEAM_B_WIN
+        finalize_match_with_result(
+            session,
+            match_service,
+            match_id=match_id,
+            participants=participants,
+            final_result=final_result,
+        )
+        match_records.append((match_id, participants, final_result))
+
+    second_batch_matches = create_matches_for_players(
+        session,
+        session_factory,
+        players=players,
+        match_format=match_format,
+        channel_id=first_channel_id + 100,
+        guild_id=first_guild_id + 100,
+    )
+    for match_id in sorted(second_batch_matches):
+        participants = second_batch_matches[match_id]
+        finalize_match_with_result(
+            session,
+            match_service,
+            match_id=match_id,
+            participants=participants,
+            final_result=MatchResult.TEAM_A_WIN,
+        )
+        match_records.append((match_id, participants, MatchResult.TEAM_A_WIN))
+
+    target_match_id = match_records[0][0]
+    match_ids = [match_id for match_id, _, _ in match_records]
+
+    session.expire_all()
+    original_final_results_by_match_id: dict[int, MatchResult] = {}
+    for match_id in match_ids:
+        finalized_result = session.get(FinalizedMatchResult, match_id)
+        assert finalized_result is not None
+        original_final_results_by_match_id[match_id] = finalized_result.final_result
+    original_format_stats_state_by_player_id = snapshot_player_format_stats_state(
+        session,
+        player_ids=player_ids,
+        match_format=match_format,
+    )
+    original_finalized_player_rating_state = snapshot_finalized_player_rating_state(
+        session,
+        match_ids=match_ids,
+    )
+
+    first_override_result = match_service.override_match_result(
+        target_match_id,
+        corrected_target_result,
+        admin_discord_user_id=99_101,
+    )
+
+    session.expire_all()
+    corrected_format_stats_state_by_player_id = snapshot_player_format_stats_state(
+        session,
+        player_ids=player_ids,
+        match_format=match_format,
+    )
+
+    second_override_result = match_service.override_match_result(
+        target_match_id,
+        original_target_result,
+        admin_discord_user_id=99_102,
+    )
+
+    session.expire_all()
+    reverted_finalized_results_by_match_id = {
+        match_id: session.get(FinalizedMatchResult, match_id) for match_id in match_ids
+    }
+    reverted_format_stats_state_by_player_id = snapshot_player_format_stats_state(
+        session,
+        player_ids=player_ids,
+        match_format=match_format,
+    )
+    reverted_finalized_player_rating_state = snapshot_finalized_player_rating_state(
+        session,
+        match_ids=match_ids,
+    )
+
+    assert first_override_result.match_id == target_match_id
+    assert first_override_result.final_result == corrected_target_result
+    assert corrected_format_stats_state_by_player_id != original_format_stats_state_by_player_id
+    assert second_override_result.match_id == target_match_id
+    assert second_override_result.final_result == original_target_result
+
+    target_finalized_result = reverted_finalized_results_by_match_id[target_match_id]
+    assert target_finalized_result is not None
+    assert target_finalized_result.final_result == original_target_result
+    assert target_finalized_result.finalized_by_admin is True
+
+    for match_id in match_ids:
+        finalized_result = reverted_finalized_results_by_match_id[match_id]
+        assert finalized_result is not None
+        assert finalized_result.final_result == original_final_results_by_match_id[match_id]
+        assert finalized_result.finalized_by_admin is (match_id == target_match_id)
+
+    for player_id, original_state in original_format_stats_state_by_player_id.items():
+        reverted_state = reverted_format_stats_state_by_player_id[player_id]
+        assert reverted_state[0] == pytest.approx(original_state[0])
+        assert reverted_state[1:] == original_state[1:]
+
+    for match_id, original_player_states in original_finalized_player_rating_state.items():
+        reverted_player_states = reverted_finalized_player_rating_state[match_id]
+        for player_id, original_state in original_player_states.items():
+            reverted_state = reverted_player_states[player_id]
+            assert reverted_state[0] == pytest.approx(original_state[0])
+            assert reverted_state[1:] == original_state[1:]

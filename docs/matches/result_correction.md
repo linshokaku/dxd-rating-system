@@ -10,12 +10,13 @@
 
 - 修正対象は結果確定済みの試合のみとする
 - 修正対象試合以後の全試合を再計算する
-- 再計算対象は、修正対象と同じ `match_format` の試合に限定する
+- 再計算対象は、修正対象と同じ `season_id` かつ同じ `match_format` の試合に限定する
 
 補足:
 
 - レーティングと戦績はフォーマットごとに独立している
 - そのため `1v1` の結果修正は `1v1` の保持値だけへ影響し、`2v2` と `3v3` には影響しない
+- シーズンも独立管理するため、あるシーズンの結果修正は別シーズンの `player_format_stats` へは影響しない
 
 ## 対象となる修正
 
@@ -45,6 +46,15 @@ admin による結果修正後も変更しない。
 
 最新の最終結果更新時刻であり、admin 修正で更新されうる。
 
+### `started_at`
+
+`matches.created_at` をその試合の開始時刻とみなす。
+
+### `started_season_id`
+
+`started_at` を含むシーズンの `season_id` とする。  
+試合結果確定時も admin 修正時も、この `season_id` のレート行を更新対象とする。
+
 ### 試合開始時点状態
 
 各試合の `rated_at` 時点における、その試合の更新直前の `player_format_stats` を指す。
@@ -64,6 +74,7 @@ admin による結果修正後も変更しない。
 - `match_id`
 - `match_format`
 - `queue_class_id`
+- `started_season_id`
 
 ### `finalized_match_results`
 
@@ -85,11 +96,11 @@ admin による結果修正後も変更しない。
 
 ## 現在状態
 
-再計算の対象となる現在状態は、対象 `match_format` の `player_format_stats` とする。
+再計算の対象となる現在状態は、対象 `season_id` かつ対象 `match_format` の `player_format_stats` とする。
 
 ## 試合順序
 
-各 `match_format` の内部で、以下の順序を固定する。
+各 `season_id` と各 `match_format` の組み合わせ内部で、以下の順序を固定する。
 
 1. `rated_at` 昇順
 2. `match_id` 昇順
@@ -111,11 +122,12 @@ admin による結果修正後も変更しない。
 ## 修正時の処理手順
 
 1. 修正対象試合を特定し、結果を書き換える
-2. 対象 `match_format` の現在の `player_format_stats` をワーキング状態として取得する
-3. 最新試合から修正対象試合の直後までを逆順にたどる
-4. 各試合について、参加プレイヤーのワーキング状態を `*_before` で上書きする
-5. 修正対象試合から最新試合までを時系列順に再計算する
-6. 再計算後の最終状態を対象 `match_format` の `player_format_stats` へ保存する
+2. 対象試合の `started_season_id` を特定する
+3. 対象 `season_id` かつ対象 `match_format` の現在の `player_format_stats` をワーキング状態として取得する
+4. 同じ `season_id` かつ同じ `match_format` の最新試合から修正対象試合の直後までを逆順にたどる
+5. 各試合について、参加プレイヤーのワーキング状態を `*_before` で上書きする
+6. 修正対象試合から最新試合までを時系列順に再計算する
+7. 再計算後の最終状態を対象 `season_id` かつ対象 `match_format` の `player_format_stats` へ保存する
 
 ## 再計算時に参照する仕様
 
@@ -132,6 +144,12 @@ admin による結果修正後も変更しない。
 - 試合順序が固定されていること
 - 巻き戻し対象が固定されていること
 - 再計算手順が決定的であること
+
+## シーズン跨ぎ時の補足
+
+- 試合結果確定や admin 修正がシーズン切替後に行われても、更新先は常に `started_season_id` のレート行である
+- そのため、前シーズン所属試合が次シーズン開始後に確定しても、前シーズンの `player_format_stats` が更新される
+- ただし、すでに次シーズン側で確定済みの carryover は更新しない
 
 ## 実装フェーズ補足
 

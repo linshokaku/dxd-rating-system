@@ -35,6 +35,7 @@ from bot.services import (
     PlayerAccessRestrictionDuration,
     PlayerAccessRestrictionService,
     PlayerAlreadyRegisteredError,
+    PlayerIdentityService,
     PlayerInfo,
     PlayerLookupService,
     PlayerNotRegisteredError,
@@ -249,14 +250,19 @@ class BotCommandHandlers:
         match_service: MatchCommandService | None = None,
         player_access_restriction_service: PlayerAccessRestrictionCommandService | None = None,
         player_lookup_service: PlayerLookupService | None = None,
+        player_identity_service: PlayerIdentityService | None = None,
         logger: logging.Logger | None = None,
     ) -> None:
         self.settings = settings
         self.session_factory = session_factory
+        self.logger = logger or logging.getLogger(__name__)
         self._matching_queue_service = matching_queue_service
         self._match_service = match_service
         self._player_access_restriction_service = (
             player_access_restriction_service or PlayerAccessRestrictionService(session_factory)
+        )
+        self.player_identity_service = player_identity_service or PlayerIdentityService(
+            session_factory
         )
         if (
             self._match_service is None
@@ -268,7 +274,6 @@ class BotCommandHandlers:
         ):
             self._match_service = cast(MatchCommandService, matching_queue_service)
         self.player_lookup_service = player_lookup_service or PlayerLookupService(session_factory)
-        self.logger = logger or logging.getLogger(__name__)
 
     @property
     def matching_queue_service(self) -> MatchingQueueCommandService | None:
@@ -289,6 +294,7 @@ class BotCommandHandlers:
         self._match_service = service
 
     async def register(self, interaction: discord.Interaction[Any]) -> None:
+        await self._sync_requesting_user_identity(interaction)
         try:
             await asyncio.to_thread(self._register_player, interaction.user.id)
         except PlayerAlreadyRegisteredError:
@@ -302,6 +308,7 @@ class BotCommandHandlers:
             await self._send_message(interaction, REGISTER_FAILED_MESSAGE)
             return
 
+        await self._sync_requesting_user_identity(interaction)
         await self._send_message(interaction, REGISTER_SUCCESS_MESSAGE)
 
     async def join(
@@ -310,6 +317,7 @@ class BotCommandHandlers:
         match_format: str,
         queue_name: str,
     ) -> None:
+        await self._sync_requesting_user_identity(interaction)
         try:
             notification_context = self._build_notification_context(interaction)
             player_id = await asyncio.to_thread(self._lookup_player_id, interaction.user.id)
@@ -354,6 +362,7 @@ class BotCommandHandlers:
         await self._send_message(interaction, result.message)
 
     async def present(self, interaction: discord.Interaction[Any]) -> None:
+        await self._sync_requesting_user_identity(interaction)
         try:
             notification_context = self._build_notification_context(interaction)
             player_id = await asyncio.to_thread(self._lookup_player_id, interaction.user.id)
@@ -381,6 +390,7 @@ class BotCommandHandlers:
         await self._send_message(interaction, result.message)
 
     async def leave(self, interaction: discord.Interaction[Any]) -> None:
+        await self._sync_requesting_user_identity(interaction)
         try:
             player_id = await asyncio.to_thread(self._lookup_player_id, interaction.user.id)
             service = self._require_matching_queue_service()
@@ -399,6 +409,7 @@ class BotCommandHandlers:
         await self._send_message(interaction, result.message)
 
     async def player_info(self, interaction: discord.Interaction[Any]) -> None:
+        await self._sync_requesting_user_identity(interaction)
         try:
             player_info = await asyncio.to_thread(
                 self._lookup_player_info,
@@ -418,6 +429,7 @@ class BotCommandHandlers:
         await self._send_message(interaction, self._format_player_info_message(player_info))
 
     async def match_parent(self, interaction: discord.Interaction[Any], match_id: int) -> None:
+        await self._sync_requesting_user_identity(interaction)
         await self._run_match_parent(
             interaction=interaction,
             match_id=match_id,
@@ -427,6 +439,7 @@ class BotCommandHandlers:
         )
 
     async def match_spectate(self, interaction: discord.Interaction[Any], match_id: int) -> None:
+        await self._sync_requesting_user_identity(interaction)
         await self._run_match_spectate(
             interaction=interaction,
             match_id=match_id,
@@ -436,6 +449,7 @@ class BotCommandHandlers:
         )
 
     async def match_win(self, interaction: discord.Interaction[Any], match_id: int) -> None:
+        await self._sync_requesting_user_identity(interaction)
         await self._run_match_report(
             interaction=interaction,
             match_id=match_id,
@@ -446,6 +460,7 @@ class BotCommandHandlers:
         )
 
     async def match_lose(self, interaction: discord.Interaction[Any], match_id: int) -> None:
+        await self._sync_requesting_user_identity(interaction)
         await self._run_match_report(
             interaction=interaction,
             match_id=match_id,
@@ -456,6 +471,7 @@ class BotCommandHandlers:
         )
 
     async def match_draw(self, interaction: discord.Interaction[Any], match_id: int) -> None:
+        await self._sync_requesting_user_identity(interaction)
         await self._run_match_report(
             interaction=interaction,
             match_id=match_id,
@@ -466,6 +482,7 @@ class BotCommandHandlers:
         )
 
     async def match_void(self, interaction: discord.Interaction[Any], match_id: int) -> None:
+        await self._sync_requesting_user_identity(interaction)
         await self._run_match_report(
             interaction=interaction,
             match_id=match_id,
@@ -476,6 +493,7 @@ class BotCommandHandlers:
         )
 
     async def match_approve(self, interaction: discord.Interaction[Any], match_id: int) -> None:
+        await self._sync_requesting_user_identity(interaction)
         try:
             notification_context = self._build_notification_context(interaction)
             player_id = await asyncio.to_thread(self._lookup_player_id, interaction.user.id)
@@ -585,6 +603,7 @@ class BotCommandHandlers:
             return
 
         try:
+            await self._sync_admin_target_user_identity(target_user)
             target_discord_user_id = self._resolve_admin_target_discord_user_id(
                 target_user=target_user,
                 dummy_user=dummy_user,
@@ -650,6 +669,7 @@ class BotCommandHandlers:
             return
 
         try:
+            await self._sync_admin_target_user_identity(target_user)
             target_discord_user_id = self._resolve_admin_target_discord_user_id(
                 target_user=target_user,
                 dummy_user=dummy_user,
@@ -1039,6 +1059,7 @@ class BotCommandHandlers:
         await self._send_message(interaction, DEV_MATCH_APPROVE_SUCCESS_MESSAGE)
 
     async def dev_is_admin(self, interaction: discord.Interaction[Any]) -> None:
+        await self._sync_requesting_user_identity(interaction)
         try:
             message = "はい" if is_super_admin(interaction.user.id, self.settings) else "いいえ"
         except Exception:
@@ -1237,6 +1258,7 @@ class BotCommandHandlers:
             return
 
         try:
+            await self._sync_admin_target_user_identity(target_user)
             target_discord_user_id = self._resolve_admin_target_discord_user_id(
                 target_user=target_user,
                 dummy_user=dummy_user,
@@ -1312,11 +1334,40 @@ class BotCommandHandlers:
         )
 
     async def _ensure_admin(self, interaction: discord.Interaction[Any]) -> bool:
+        await self._sync_requesting_user_identity(interaction)
         if is_super_admin(interaction.user.id, self.settings):
             return True
 
         await self._send_message(interaction, ADMIN_ONLY_MESSAGE)
         return False
+
+    async def _sync_requesting_user_identity(
+        self,
+        interaction: discord.Interaction[Any],
+    ) -> None:
+        await asyncio.to_thread(self._best_effort_sync_discord_user, interaction.user)
+
+    async def _sync_admin_target_user_identity(
+        self,
+        target_user: DiscordUserLike | None,
+    ) -> None:
+        if target_user is None:
+            return
+
+        await asyncio.to_thread(self._best_effort_sync_discord_user, target_user)
+
+    def _best_effort_sync_discord_user(self, discord_user: DiscordUserLike | None) -> None:
+        if discord_user is None:
+            return
+
+        discord_user_id = getattr(discord_user, "id", None)
+        try:
+            self.player_identity_service.sync_discord_user(discord_user)
+        except Exception:
+            self.logger.exception(
+                "Failed to sync player identity cache discord_user_id=%s",
+                discord_user_id,
+            )
 
     def _parse_discord_user_id(self, value: str) -> int:
         normalized_value = value.strip()

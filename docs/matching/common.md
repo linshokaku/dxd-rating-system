@@ -74,6 +74,7 @@
 
 ### 永続データテーブル
 
+- `seasons`
 - `players`
 - `player_format_stats`
 - `matches`
@@ -109,9 +110,18 @@
 ### 参加条件の評価タイミング
 
 - プレイヤーの参加可能条件は `join` 時にのみチェックする
-- 参加条件判定に使うのは、参加先 `match_format` の `player_format_stats.rating` である
+- 参加条件判定に使うのは、参加時点で稼働中のシーズンに属する `player_format_stats.rating` である
+- 対象シーズン行の `carryover_status = 'pending'` なら、参加条件判定の前に carryover を確定する
 - `join` 成功後にそのフォーマットのレートが変化しても、待機中は再判定しない
 - `present`、`leave`、起動時再同期、マッチ作成直前では参加条件を再チェックしない
+
+### シーズン切替時の扱い
+
+- シーズン切替時に `waiting` 行は削除しない
+- シーズン切替前に参加した待機行も、そのままマッチング対象に含める
+- 既存の待機行に対して、シーズン切替を理由とした参加条件の再判定は行わない
+- そのため、待機中にシーズンが切り替わると、`queue_class_id` とマッチ作成時点の実際のレート帯がずれる場合がある
+- このずれは仕様として許容し、過度な複雑化を避ける
 
 ## 状態遷移
 
@@ -145,21 +155,22 @@
 2. `pg_advisory_xact_lock(player_id)` を取得する
 3. 入力された `match_format` と `queue_name` を `queue_class_id` へ解決する
 4. 対象プレイヤーの `player_format_stats` から、その `match_format` の現在レートを取得する
-5. 参加可否を判定する
-6. 対象プレイヤーの `status = 'waiting'` 行を `FOR UPDATE` で取得する
-7. 行があり、かつ `expire_at > now()` なら失敗する
-8. 行があり、かつ `expire_at <= now()` なら、その行を `expired` に更新する
-9. 新しい `waiting` 行を作成する
-10. `match_format = input_match_format` を設定する
-11. `queue_class_id = resolved_queue_class_id` を設定する
-12. `joined_at = now()`
-13. `last_present_at = now()`
-14. `expire_at = now() + interval '5 minutes'`
-15. `revision = 1`
-16. `last_reminded_revision = NULL`
-17. commit する
-18. commit 後に在席確認リマインドタスクと `expire` タスクを登録する
-19. commit 後に、別トランザクションで参加先 `queue_class_id` を対象にマッチング試行を行う
+5. 取得した行の `carryover_status = 'pending'` なら、先に carryover を確定する
+6. 参加可否を判定する
+7. 対象プレイヤーの `status = 'waiting'` 行を `FOR UPDATE` で取得する
+8. 行があり、かつ `expire_at > now()` なら失敗する
+9. 行があり、かつ `expire_at <= now()` なら、その行を `expired` に更新する
+10. 新しい `waiting` 行を作成する
+11. `match_format = input_match_format` を設定する
+12. `queue_class_id = resolved_queue_class_id` を設定する
+13. `joined_at = now()`
+14. `last_present_at = now()`
+15. `expire_at = now() + interval '5 minutes'`
+16. `revision = 1`
+17. `last_reminded_revision = NULL`
+18. commit する
+19. commit 後に在席確認リマインドタスクと `expire` タスクを登録する
+20. commit 後に、別トランザクションで参加先 `queue_class_id` を対象にマッチング試行を行う
 
 ### 失敗時の応答
 
@@ -168,7 +179,7 @@
 - `queue_name` が存在しない場合
   - `指定したキューは存在しません。`
 - 指定フォーマットの現在レートでは参加できない場合
-  - `現在のレーティングではそのキューに参加できません。`
+  - `現在のレーティングではそのキューに参加できません。現在レート: {rating}`
 - すでにキュー参加中の場合
   - `すでにキュー参加中です。`
 

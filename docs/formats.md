@@ -22,7 +22,7 @@ players_per_batch = team_size * 2 * batch_size
 
 ## 独立管理の範囲
 
-各プレイヤーは、各 `match_format` ごとに独立した以下の値を持つ。
+各プレイヤーは、各 `season_id` と各 `match_format` の組み合わせごとに独立した以下の値を持つ。
 
 - `rating`
 - `games_played`
@@ -35,7 +35,8 @@ players_per_batch = team_size * 2 * batch_size
 - `1v1` の試合は `1v1` の保持値だけを更新する
 - `2v2` の試合は `2v2` の保持値だけを更新する
 - `3v3` の試合は `3v3` の保持値だけを更新する
-- キュー参加条件の判定も、参加先 `match_format` の `rating` を用いる
+- 同一 `match_format` でも `season_id` が違えば保持値は別物とする
+- キュー参加条件の判定には、参加時点で稼働中のシーズンの `rating` を用いる
 
 現時点では、以下は独立管理の対象に含めない。
 
@@ -83,13 +84,18 @@ players_per_batch = team_size * 2 * batch_size
 
 ### `players`
 
-`players` はプレイヤー登録の基底情報のみを持つ。
+`players` はプレイヤー登録の基底情報を持つ。
+表示用途の軽量な補助情報は、必要に応じて同じテーブルへ持たせてよい。
 
 最低限:
 
 - `id`
 - `discord_user_id`
 - `created_at`
+
+補足:
+
+- Bot が保持する表示名キャッシュの詳細は [players/identity.md](players/identity.md) を参照する
 
 ### `player_format_stats`
 
@@ -98,6 +104,7 @@ players_per_batch = team_size * 2 * batch_size
 最低限:
 
 - `player_id`
+- `season_id`
 - `match_format`
 - `rating`
 - `games_played`
@@ -105,17 +112,19 @@ players_per_batch = team_size * 2 * batch_size
 - `losses`
 - `draws`
 - `last_played_at`
+- `carryover_status`
 - `created_at`
 - `updated_at`
 
 制約:
 
-- `UNIQUE (player_id, match_format)`
+- `UNIQUE (player_id, season_id, match_format)`
 
 意図:
 
 - `players` を登録情報に限定し、フォーマット追加時の拡張を容易にする
 - `1v1`、`2v2`、`3v3` の独立管理を素直に表現する
+- シーズンごとのレートと戦績をそのまま永続化できるようにする
 
 ### `match_queue_entries`
 
@@ -137,6 +146,8 @@ players_per_batch = team_size * 2 * batch_size
 
 - `match_format` は冗長に見えても持たせてよい
 - `queue_class_id` からも導けるが、検索条件と監査を簡潔にできる
+- `season_id` は持たせない
+- シーズン切替時も既存の `waiting` 行はそのまま残してよい
 
 ### `matches`
 
@@ -145,6 +156,7 @@ players_per_batch = team_size * 2 * batch_size
 - `id`
 - `match_format`
 - `queue_class_id`
+- `started_season_id`
 - `created_at`
 
 補足:
@@ -152,6 +164,7 @@ players_per_batch = team_size * 2 * batch_size
 - `match_id` 単位で試合進行を管理する
 - `1v1` の 1 バッチ 2 試合は、2 件の `matches` 行として持つ
 - 初期仕様では batch 専用テーブルは必須ではない
+- `created_at` を `started_at` とみなし、その時刻を含むシーズンを `started_season_id` に保存する
 
 ### 試合関連テーブル
 

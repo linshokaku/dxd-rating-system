@@ -11,10 +11,11 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from bot.commands import BotCommandHandlers
 from bot.config import Settings
-from bot.models import MatchQueueEntry, Player
+from bot.models import MatchFormat, MatchQueueEntry, Player, PlayerFormatStats
 from bot.runtime import MatchRuntime
 from bot.services import MatchingQueueNotificationContext, MatchingQueueService, register_player
 
+DEFAULT_MATCH_FORMAT = MatchFormat.THREE_VS_THREE
 DEFAULT_QUEUE_NAME = "low"
 
 
@@ -75,6 +76,42 @@ def create_player(session: Session, discord_user_id: int) -> Player:
     return player
 
 
+def get_player_format_stats(
+    session: Session,
+    player_id: int,
+    match_format: MatchFormat = DEFAULT_MATCH_FORMAT,
+) -> PlayerFormatStats:
+    format_stats = session.get(
+        PlayerFormatStats,
+        {"player_id": player_id, "match_format": match_format},
+    )
+    assert format_stats is not None
+    return format_stats
+
+
+def format_player_info_message(
+    stats_by_format: dict[MatchFormat, tuple[float, int, int, int, int]],
+) -> str:
+    lines = ["プレイヤー情報"]
+    for match_format in (
+        MatchFormat.ONE_VS_ONE,
+        MatchFormat.TWO_VS_TWO,
+        MatchFormat.THREE_VS_THREE,
+    ):
+        rating, games_played, wins, losses, draws = stats_by_format[match_format]
+        lines.extend(
+            [
+                match_format.value,
+                f"rating: {rating:.2f}",
+                f"games_played: {games_played}",
+                f"wins: {wins}",
+                f"losses: {losses}",
+                f"draws: {draws}",
+            ]
+        )
+    return "\n".join(lines)
+
+
 def get_queue_entry(session: Session, player_id: int) -> MatchQueueEntry:
     session.expire_all()
     queue_entry = session.scalar(
@@ -131,7 +168,13 @@ def test_join_command_joins_requesting_player_and_stores_notification_context(
         guild_id=4_001,
     )
 
-    asyncio.run(handlers.join(as_interaction(interaction), DEFAULT_QUEUE_NAME))
+    asyncio.run(
+        handlers.join(
+            as_interaction(interaction),
+            DEFAULT_MATCH_FORMAT.value,
+            DEFAULT_QUEUE_NAME,
+        )
+    )
 
     queue_entry = get_queue_entry(session, player.id)
 
@@ -148,7 +191,13 @@ def test_join_command_requires_registered_player(session_factory: sessionmaker[S
     )
     interaction = FakeInteraction(user=FakeUser(id=123_456_789_012_345_681))
 
-    asyncio.run(handlers.join(as_interaction(interaction), DEFAULT_QUEUE_NAME))
+    asyncio.run(
+        handlers.join(
+            as_interaction(interaction),
+            DEFAULT_MATCH_FORMAT.value,
+            DEFAULT_QUEUE_NAME,
+        )
+    )
 
     assert interaction.response.messages == [
         "プレイヤー登録が必要です。先に /register を実行してください。"
@@ -164,6 +213,7 @@ def test_present_command_updates_waiting_entry_and_notification_context(
     matching_queue_service = MatchingQueueService(session_factory)
     matching_queue_service.join_queue(
         player.id,
+        DEFAULT_MATCH_FORMAT,
         DEFAULT_QUEUE_NAME,
         notification_context=MatchingQueueNotificationContext(
             channel_id=5_001,
@@ -231,11 +281,12 @@ def test_player_info_command_returns_requesting_player_stats(
 ) -> None:
     discord_user_id = 123_456_789_012_345_686
     player = create_player(session, discord_user_id)
-    player.rating = 1512.5
-    player.games_played = 8
-    player.wins = 5
-    player.losses = 2
-    player.draws = 1
+    three_vs_three_stats = get_player_format_stats(session, player.id)
+    three_vs_three_stats.rating = 1512.5
+    three_vs_three_stats.games_played = 8
+    three_vs_three_stats.wins = 5
+    three_vs_three_stats.losses = 2
+    three_vs_three_stats.draws = 1
     session.commit()
     handlers = create_handlers(session_factory)
     interaction = FakeInteraction(user=FakeUser(id=discord_user_id))
@@ -243,7 +294,13 @@ def test_player_info_command_returns_requesting_player_stats(
     asyncio.run(handlers.player_info(as_interaction(interaction)))
 
     assert interaction.response.messages == [
-        "プレイヤー情報\nrating: 1512.50\ngames_played: 8\nwins: 5\nlosses: 2\ndraws: 1"
+        format_player_info_message(
+            {
+                MatchFormat.ONE_VS_ONE: (1500.0, 0, 0, 0, 0),
+                MatchFormat.TWO_VS_TWO: (1500.0, 0, 0, 0, 0),
+                MatchFormat.THREE_VS_THREE: (1512.5, 8, 5, 2, 1),
+            }
+        )
     ]
 
 
@@ -319,6 +376,7 @@ def test_dev_join_targets_provided_user_and_uses_target_for_notification_context
         handlers.dev_join(
             as_interaction(interaction),
             str(target_discord_user_id),
+            DEFAULT_MATCH_FORMAT.value,
             DEFAULT_QUEUE_NAME,
         )
     )
@@ -339,7 +397,7 @@ def test_dev_present_returns_expired_message_for_expired_target(
     target_discord_user_id = 123_456_789_012_345_687
     player = create_player(session, target_discord_user_id)
     matching_queue_service = MatchingQueueService(session_factory)
-    matching_queue_service.join_queue(player.id, DEFAULT_QUEUE_NAME)
+    matching_queue_service.join_queue(player.id, DEFAULT_MATCH_FORMAT, DEFAULT_QUEUE_NAME)
     queue_entry = get_queue_entry(session, player.id)
     queue_entry.expire_at = queue_entry.joined_at - timedelta(seconds=1)
     session.commit()
@@ -402,11 +460,12 @@ def test_dev_player_info_returns_target_player_stats(
     executor_discord_user_id = 10
     target_discord_user_id = 123_456_789_012_345_690
     player = create_player(session, target_discord_user_id)
-    player.rating = 1498.25
-    player.games_played = 3
-    player.wins = 1
-    player.losses = 1
-    player.draws = 1
+    three_vs_three_stats = get_player_format_stats(session, player.id)
+    three_vs_three_stats.rating = 1498.25
+    three_vs_three_stats.games_played = 3
+    three_vs_three_stats.wins = 1
+    three_vs_three_stats.losses = 1
+    three_vs_three_stats.draws = 1
     session.commit()
     handlers = create_handlers(
         session_factory,
@@ -417,7 +476,13 @@ def test_dev_player_info_returns_target_player_stats(
     asyncio.run(handlers.dev_player_info(as_interaction(interaction), str(target_discord_user_id)))
 
     assert interaction.response.messages == [
-        "プレイヤー情報\nrating: 1498.25\ngames_played: 3\nwins: 1\nlosses: 1\ndraws: 1"
+        format_player_info_message(
+            {
+                MatchFormat.ONE_VS_ONE: (1500.0, 0, 0, 0, 0),
+                MatchFormat.TWO_VS_TWO: (1500.0, 0, 0, 0, 0),
+                MatchFormat.THREE_VS_THREE: (1498.25, 3, 1, 1, 1),
+            }
+        )
     ]
 
 

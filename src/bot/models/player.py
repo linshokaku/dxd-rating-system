@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import BigInteger, DateTime, Float, Integer, func, text
+from sqlalchemy import BigInteger, DateTime, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from bot.models.base import Base
@@ -14,10 +14,9 @@ if TYPE_CHECKING:
     from bot.models.match_participant import MatchParticipant
     from bot.models.match_queue_entry import MatchQueueEntry
     from bot.models.match_report import MatchReport
+    from bot.models.player_format_stats import PlayerFormatStats
     from bot.models.player_penalty import PlayerPenalty
     from bot.models.player_penalty_adjustment import PlayerPenaltyAdjustment
-
-INITIAL_RATING = 1500
 
 
 class Player(Base):
@@ -25,19 +24,14 @@ class Player(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     discord_user_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True)
-    rating: Mapped[float] = mapped_column(
-        Float,
-        default=INITIAL_RATING,
-        server_default=text(str(INITIAL_RATING)),
-    )
-    games_played: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
-    wins: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
-    losses: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
-    draws: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
+    format_stats: Mapped[list[PlayerFormatStats]] = relationship(
+        back_populates="player",
+        cascade="all, delete-orphan",
+    )
     match_queue_entries: Mapped[list[MatchQueueEntry]] = relationship(back_populates="player")
     match_participants: Mapped[list[MatchParticipant]] = relationship(back_populates="player")
     match_reports: Mapped[list[MatchReport]] = relationship(back_populates="player")

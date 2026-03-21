@@ -11,7 +11,7 @@ from typing import Any, ParamSpec, Protocol, TypeVar
 from sqlalchemy.orm import Session, sessionmaker
 
 from bot.constants import MATCH_PARENT_SELECTION_WINDOW, PRESENCE_REMINDER_LEAD_TIME
-from bot.models import MatchReportInputResult, MatchResult, MatchState, PenaltyType
+from bot.models import MatchFormat, MatchReportInputResult, MatchResult, MatchState, PenaltyType
 from bot.runtime.outbox import retry_delay_for_failure_count
 from bot.services import (
     ActiveMatchTimerState,
@@ -43,6 +43,7 @@ class MatchRuntimeService(Protocol):
     def join_queue(
         self,
         player_id: int,
+        match_format: MatchFormat | str,
         queue_name: str,
         *,
         notification_context: MatchingQueueNotificationContext | None = None,
@@ -227,6 +228,7 @@ class MatchRuntime:
     async def join_queue(
         self,
         player_id: int,
+        match_format: MatchFormat | str,
         queue_name: str,
         *,
         notification_context: MatchingQueueNotificationContext | None = None,
@@ -236,6 +238,7 @@ class MatchRuntime:
         result = await asyncio.to_thread(
             self.service.join_queue,
             player_id,
+            match_format,
             queue_name,
             notification_context=notification_context,
         )

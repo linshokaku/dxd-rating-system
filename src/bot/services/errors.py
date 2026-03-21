@@ -26,6 +26,10 @@ class InvalidQueueNameError(MatchingQueueError):
     pass
 
 
+class InvalidMatchFormatError(MatchingQueueError):
+    pass
+
+
 class QueueJoinNotAllowedError(MatchingQueueError):
     pass
 

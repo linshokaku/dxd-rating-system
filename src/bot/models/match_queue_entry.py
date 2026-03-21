@@ -11,6 +11,7 @@ from sqlalchemy.sql import func
 
 from bot.models.base import Base
 from bot.models.enum_utils import enum_values
+from bot.models.match_format import MatchFormat
 
 if TYPE_CHECKING:
     from bot.models.match_participant import MatchParticipant
@@ -42,6 +43,18 @@ class MatchQueueEntry(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     player_id: Mapped[int] = mapped_column(ForeignKey("players.id"), nullable=False, index=True)
+    match_format: Mapped[MatchFormat] = mapped_column(
+        SQLAlchemyEnum(
+            MatchFormat,
+            name="match_format",
+            native_enum=False,
+            create_constraint=True,
+            validate_strings=True,
+            values_callable=enum_values,
+        ),
+        nullable=False,
+        index=True,
+    )
     queue_class_id: Mapped[str] = mapped_column(String(length=64), nullable=False, index=True)
     status: Mapped[MatchQueueEntryStatus] = mapped_column(
         SQLAlchemyEnum(

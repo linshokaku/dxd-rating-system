@@ -5,6 +5,7 @@ from bot.models.finalized_match_player_result import FinalizedMatchPlayerResult
 from bot.models.finalized_match_result import FinalizedMatchResult
 from bot.models.match import Match
 from bot.models.match_admin_override import MatchAdminOverride
+from bot.models.match_format import MatchFormat
 from bot.models.match_participant import MatchParticipant, MatchParticipantTeam
 from bot.models.match_queue_entry import (
     MatchQueueEntry,
@@ -22,7 +23,8 @@ from bot.models.match_result_enums import (
     PenaltyType,
 )
 from bot.models.outbox_event import OutboxEvent, OutboxEventType
-from bot.models.player import INITIAL_RATING, Player
+from bot.models.player import Player
+from bot.models.player_format_stats import INITIAL_RATING, PlayerFormatStats
 from bot.models.player_penalty import PlayerPenalty
 from bot.models.player_penalty_adjustment import PlayerPenaltyAdjustment
 
@@ -36,6 +38,7 @@ __all__ = [
     "Match",
     "MatchAdminOverride",
     "MatchApprovalStatus",
+    "MatchFormat",
     "MatchParticipant",
     "MatchParticipantTeam",
     "MatchQueueEntry",
@@ -51,6 +54,7 @@ __all__ = [
     "PenaltyAdjustmentSource",
     "PenaltyType",
     "Player",
+    "PlayerFormatStats",
     "PlayerPenalty",
     "PlayerPenaltyAdjustment",
 ]

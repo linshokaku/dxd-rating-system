@@ -77,9 +77,14 @@ from bot.services.matching_queue import (
 )
 from bot.services.registration import (
     PlayerFormatInfo,
+    PlayerIdentityService,
     PlayerInfo,
     PlayerLookupService,
+    build_dummy_player_display_name,
+    format_player_display_name,
     register_player,
+    resolve_player_display_name,
+    update_player_identity,
 )
 
 __all__ = [
@@ -132,6 +137,7 @@ __all__ = [
     "PlayerAccessRestrictionAlreadyExistsError",
     "PlayerAccessRestrictionDuration",
     "PlayerAccessRestrictionService",
+    "PlayerIdentityService",
     "PlayerFormatInfo",
     "PlayerInfo",
     "PlayerLookupService",
@@ -152,6 +158,10 @@ __all__ = [
     "RetryableTaskError",
     "SPECTATE_RESTRICTED_MESSAGE",
     "UnrestrictPlayerAccessResult",
+    "build_dummy_player_display_name",
+    "format_player_display_name",
     "register_player",
+    "resolve_player_display_name",
+    "update_player_identity",
     "WaitingEntryTimerState",
 ]

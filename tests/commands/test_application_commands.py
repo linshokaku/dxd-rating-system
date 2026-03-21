@@ -40,6 +40,13 @@ DEFAULT_QUEUE_NAME = "low"
 @dataclass(frozen=True)
 class FakeUser:
     id: int
+    name: str | None = None
+    global_name: str | None = None
+    nick: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.name is None:
+            object.__setattr__(self, "name", f"user-{self.id}")
 
 
 @dataclass
@@ -175,8 +182,9 @@ def test_register_command_registers_requesting_user(
     session: Session,
     session_factory: sessionmaker[Session],
 ) -> None:
+    discord_user_id = 123_456_789_012_345_678
     handlers = create_handlers(session_factory)
-    interaction = FakeInteraction(user=FakeUser(id=123_456_789_012_345_678))
+    interaction = FakeInteraction(user=FakeUser(id=discord_user_id))
 
     asyncio.run(handlers.register(as_interaction(interaction)))
 
@@ -186,6 +194,9 @@ def test_register_command_registers_requesting_user(
 
     assert interaction.response.messages == ["登録が完了しました。"]
     assert persisted_player is not None
+    assert persisted_player.display_name == f"user-{discord_user_id}"
+    assert persisted_player.display_name_updated_at is not None
+    assert persisted_player.last_seen_at == persisted_player.display_name_updated_at
 
 
 def test_register_command_returns_duplicate_message_for_registered_user(
@@ -200,6 +211,14 @@ def test_register_command_returns_duplicate_message_for_registered_user(
     asyncio.run(handlers.register(as_interaction(interaction)))
 
     assert interaction.response.messages == ["すでに登録済みです。"]
+    session.expire_all()
+    persisted_player = session.scalar(
+        select(Player).where(Player.discord_user_id == discord_user_id)
+    )
+    assert persisted_player is not None
+    assert persisted_player.display_name == f"user-{discord_user_id}"
+    assert persisted_player.display_name_updated_at is not None
+    assert persisted_player.last_seen_at == persisted_player.display_name_updated_at
 
 
 def test_join_command_joins_requesting_player_and_stores_notification_context(
@@ -213,7 +232,12 @@ def test_join_command_joins_requesting_player_and_stores_notification_context(
         matching_queue_service=MatchingQueueService(session_factory),
     )
     interaction = FakeInteraction(
-        user=FakeUser(id=discord_user_id),
+        user=FakeUser(
+            id=discord_user_id,
+            name="queue-user",
+            global_name="queue-global",
+            nick="queue-guild",
+        ),
         channel_id=3_001,
         guild_id=4_001,
     )
@@ -227,11 +251,19 @@ def test_join_command_joins_requesting_player_and_stores_notification_context(
     )
 
     queue_entry = get_queue_entry(session, player.id)
+    session.expire_all()
+    persisted_player = session.scalar(
+        select(Player).where(Player.discord_user_id == discord_user_id)
+    )
 
     assert interaction.response.messages == ["キューに参加しました。5分間マッチングします。"]
     assert queue_entry.notification_channel_id == 3_001
     assert queue_entry.notification_guild_id == 4_001
     assert queue_entry.notification_mention_discord_user_id == discord_user_id
+    assert persisted_player is not None
+    assert persisted_player.display_name == "queue-guild"
+    assert persisted_player.display_name_updated_at is not None
+    assert persisted_player.last_seen_at == persisted_player.display_name_updated_at
 
 
 def test_join_command_requires_registered_player(session_factory: sessionmaker[Session]) -> None:
@@ -580,6 +612,24 @@ def test_dev_register_requires_admin(
     assert persisted_player is None
 
 
+def test_dev_register_sets_fixed_dummy_display_name(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    handlers = create_handlers(session_factory, super_admin_user_ids=frozenset({10}))
+    interaction = FakeInteraction(user=FakeUser(id=10))
+
+    asyncio.run(handlers.dev_register(as_interaction(interaction), "777"))
+
+    persisted_player = session.scalar(select(Player).where(Player.discord_user_id == 777))
+
+    assert interaction.response.messages == ["ダミーユーザーを登録しました。"]
+    assert persisted_player is not None
+    assert persisted_player.display_name == "<dummy_777>"
+    assert persisted_player.display_name_updated_at is not None
+    assert persisted_player.last_seen_at == persisted_player.display_name_updated_at
+
+
 def test_dev_register_validates_discord_user_id(session_factory: sessionmaker[Session]) -> None:
     handlers = create_handlers(session_factory, super_admin_user_ids=frozenset({10}))
     interaction = FakeInteraction(user=FakeUser(id=10))
@@ -818,7 +868,12 @@ def test_admin_restrict_and_unrestrict_user_commands_manage_restrictions(
             as_interaction(restrict_interaction),
             PlayerAccessRestrictionType.QUEUE_JOIN.value,
             PlayerAccessRestrictionDuration.SEVEN_DAYS.value,
-            target_user=FakeUser(id=target_discord_user_id),
+            target_user=FakeUser(
+                id=target_discord_user_id,
+                name="target-user",
+                global_name="target-global",
+                nick="target-guild",
+            ),
             reason="test reason",
         )
     )
@@ -826,7 +881,12 @@ def test_admin_restrict_and_unrestrict_user_commands_manage_restrictions(
         handlers.admin_unrestrict_user(
             as_interaction(unrestrict_interaction),
             PlayerAccessRestrictionType.QUEUE_JOIN.value,
-            target_user=FakeUser(id=target_discord_user_id),
+            target_user=FakeUser(
+                id=target_discord_user_id,
+                name="target-user",
+                global_name="target-global",
+                nick="target-guild",
+            ),
         )
     )
 
@@ -834,6 +894,7 @@ def test_admin_restrict_and_unrestrict_user_commands_manage_restrictions(
     restriction = session.scalar(
         select(PlayerAccessRestriction).where(PlayerAccessRestriction.player_id == player.id)
     )
+    persisted_player = session.scalar(select(Player).where(Player.id == player.id))
     queue_entry = session.scalar(
         select(MatchQueueEntry).where(MatchQueueEntry.player_id == player.id)
     )
@@ -848,6 +909,10 @@ def test_admin_restrict_and_unrestrict_user_commands_manage_restrictions(
     assert restriction.restriction_type == PlayerAccessRestrictionType.QUEUE_JOIN
     assert restriction.reason == "test reason"
     assert restriction.revoked_at is not None
+    assert persisted_player is not None
+    assert persisted_player.display_name == "target-guild"
+    assert persisted_player.display_name_updated_at is not None
+    assert persisted_player.last_seen_at == persisted_player.display_name_updated_at
     assert queue_entry is not None
     assert queue_entry.status == MatchQueueEntryStatus.WAITING
 

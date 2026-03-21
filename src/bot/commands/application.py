@@ -1390,6 +1390,11 @@ class BotCommandHandlers:
     def _format_player_info_message(self, player_info: PlayerInfo) -> str:
         lines = ["プレイヤー情報"]
         for format_stats in player_info.format_stats:
+            last_played_at = (
+                "-"
+                if format_stats.last_played_at is None
+                else format_stats.last_played_at.isoformat()
+            )
             lines.extend(
                 [
                     format_stats.match_format.value,
@@ -1398,6 +1403,7 @@ class BotCommandHandlers:
                     f"wins: {format_stats.wins}",
                     f"losses: {format_stats.losses}",
                     f"draws: {format_stats.draws}",
+                    f"last_played_at: {last_played_at}",
                 ]
             )
         return "\n".join(lines)

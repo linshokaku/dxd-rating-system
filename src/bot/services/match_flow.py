@@ -84,6 +84,13 @@ _PLAYER_ADVISORY_LOCK_NAMESPACE = 20_260_320
 _MAX_MATCH_ROOM_SIZE = 12
 _MATCH_SPECTATOR_REMOVAL_REASON_FINALIZED = "match_finalized"
 _MATCH_SPECTATE_RESTRICTED_MESSAGE = "現在観戦を制限されています。"
+_RATED_MATCH_RESULTS = frozenset(
+    {
+        MatchResult.TEAM_A_WIN,
+        MatchResult.TEAM_B_WIN,
+        MatchResult.DRAW,
+    }
+)
 
 
 def _is_transient_task_db_error(exc: Exception) -> bool:
@@ -1055,12 +1062,15 @@ class MatchFlowService:
             # is implemented. For now, admin overrides update only the stored match result.
             pass
         else:
+            if finalized_result.rated_at is None:
+                raise MatchFlowError("レート更新時刻が見つかりません。")
             self._apply_rating_updates(
                 participants=participants,
                 final_result=final_result,
                 rating_snapshots=tuple(rating_snapshots_by_player_id.values()),
                 match_format=active_state.match.match_format,
                 player_format_stats_by_player_id=player_format_stats_by_player_id,
+                played_at=finalized_result.rated_at,
             )
 
         for player_id, desired_penalty_type in desired_auto_penalties_by_player.items():
@@ -1432,6 +1442,12 @@ class MatchFlowService:
             player_format_stats.losses = player_state.losses
             player_format_stats.draws = player_state.draws
 
+        self._refresh_last_played_at_for_players(
+            session,
+            player_format_stats_by_player_id=player_format_stats_by_player_id,
+            match_format=target_finalized_result.match.match_format,
+        )
+
     def _enqueue_finalization_notifications_locked(
         self,
         session: Session,
@@ -1539,8 +1555,10 @@ class MatchFlowService:
         rating_snapshots: Sequence[RatingParticipantSnapshot],
         match_format: MatchFormat,
         player_format_stats_by_player_id: dict[int, PlayerFormatStats],
+        played_at: datetime,
     ) -> None:
         rating_updates_by_player_id = calculate_rating_updates(rating_snapshots, final_result)
+        should_update_last_played_at = final_result in _RATED_MATCH_RESULTS
         for participant in participants:
             rating_update = rating_updates_by_player_id[participant.player_id]
             format_stats = player_format_stats_by_player_id[participant.player_id]
@@ -1553,6 +1571,45 @@ class MatchFlowService:
             format_stats.wins = rating_update.wins_after
             format_stats.losses = rating_update.losses_after
             format_stats.draws = rating_update.draws_after
+            if should_update_last_played_at:
+                format_stats.last_played_at = played_at
+
+    def _refresh_last_played_at_for_players(
+        self,
+        session: Session,
+        *,
+        player_format_stats_by_player_id: dict[int, PlayerFormatStats],
+        match_format: MatchFormat,
+    ) -> None:
+        if not player_format_stats_by_player_id:
+            return
+
+        session.flush()
+        player_ids = list(player_format_stats_by_player_id)
+        last_played_at_by_player_id = {
+            player_id: last_played_at
+            for player_id, last_played_at in session.execute(
+                select(
+                    FinalizedMatchPlayerResult.player_id,
+                    func.max(FinalizedMatchResult.rated_at),
+                )
+                .join(
+                    FinalizedMatchResult,
+                    FinalizedMatchResult.match_id == FinalizedMatchPlayerResult.match_id,
+                )
+                .join(Match, Match.id == FinalizedMatchPlayerResult.match_id)
+                .where(
+                    FinalizedMatchPlayerResult.player_id.in_(player_ids),
+                    Match.match_format == match_format,
+                    FinalizedMatchResult.final_result.in_(_RATED_MATCH_RESULTS),
+                    FinalizedMatchResult.rated_at.is_not(None),
+                )
+                .group_by(FinalizedMatchPlayerResult.player_id)
+            ).all()
+        }
+
+        for player_id, format_stats in player_format_stats_by_player_id.items():
+            format_stats.last_played_at = last_played_at_by_player_id.get(player_id)
 
     def _ensure_active_player_states_for_finalization(
         self,

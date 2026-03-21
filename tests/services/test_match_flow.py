@@ -376,7 +376,7 @@ def snapshot_player_format_stats_state(
     *,
     player_ids: list[int],
     match_format: MatchFormat,
-) -> dict[int, tuple[float, int, int, int, int]]:
+) -> dict[int, tuple[float, int, int, int, int, datetime | None]]:
     format_stats_by_player_id = get_player_format_stats_by_player_id(
         session,
         player_ids,
@@ -389,6 +389,7 @@ def snapshot_player_format_stats_state(
             format_stats.wins,
             format_stats.losses,
             format_stats.draws,
+            format_stats.last_played_at,
         )
         for player_id, format_stats in format_stats_by_player_id.items()
     }
@@ -746,6 +747,7 @@ def test_submit_reports_finalizes_immediately_when_no_approval_targets(
         persisted_player = format_stats_by_player_id[player.id]
         finalized_player_result = finalized_player_results_by_id[player.id]
         assert persisted_player.games_played == 1
+        assert persisted_player.last_played_at == finalized_result.rated_at
         assert finalized_player_result.rating_before == INITIAL_RATING
         assert finalized_player_result.games_played_before == 0
         assert finalized_player_result.wins_before == 0
@@ -1689,6 +1691,7 @@ def test_submit_draw_reports_updates_record_without_changing_equal_ratings(
         assert persisted_player.wins == 0
         assert persisted_player.losses == 0
         assert persisted_player.draws == 1
+        assert persisted_player.last_played_at == finalized_result.rated_at
         assert finalized_player_result.rating_before == INITIAL_RATING
         assert finalized_player_result.games_played_before == 0
         assert finalized_player_result.wins_before == 0
@@ -1746,11 +1749,91 @@ def test_submit_void_reports_does_not_change_player_rating_state(
         assert persisted_player.wins == 0
         assert persisted_player.losses == 0
         assert persisted_player.draws == 0
+        assert persisted_player.last_played_at is None
         assert finalized_player_result.rating_before == INITIAL_RATING
         assert finalized_player_result.games_played_before == 0
         assert finalized_player_result.wins_before == 0
         assert finalized_player_result.losses_before == 0
         assert finalized_player_result.draws_before == 0
+
+
+def test_override_match_result_recalculates_last_played_at_when_latest_match_becomes_void(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    players = create_players(session, 6, start_discord_user_id=60_364)
+    player_ids = [player.id for player in players]
+    match_service = MatchFlowService(session_factory)
+
+    first_batch_matches = create_matches_for_players(
+        session,
+        session_factory,
+        players=players,
+        channel_id=91_003_6,
+        guild_id=92_003_6,
+    )
+    first_match_id = sorted(first_batch_matches)[0]
+    first_participants = first_batch_matches[first_match_id]
+    finalize_match_with_result(
+        session,
+        match_service,
+        match_id=first_match_id,
+        participants=first_participants,
+        final_result=MatchResult.TEAM_A_WIN,
+    )
+
+    second_batch_matches = create_matches_for_players(
+        session,
+        session_factory,
+        players=players,
+        channel_id=91_003_7,
+        guild_id=92_003_7,
+    )
+    second_match_id = sorted(second_batch_matches)[0]
+    second_participants = second_batch_matches[second_match_id]
+    finalize_match_with_result(
+        session,
+        match_service,
+        match_id=second_match_id,
+        participants=second_participants,
+        final_result=MatchResult.TEAM_B_WIN,
+    )
+
+    session.expire_all()
+    first_finalized_result = session.get(FinalizedMatchResult, first_match_id)
+    assert first_finalized_result is not None
+    assert first_finalized_result.rated_at is not None
+
+    expected_rating_updates_by_player_id = calculate_rating_updates(
+        build_initial_rating_snapshots(first_participants),
+        MatchResult.TEAM_A_WIN,
+    )
+
+    override_result = match_service.override_match_result(
+        second_match_id,
+        MatchResult.VOID,
+        admin_discord_user_id=99_003,
+    )
+
+    session.expire_all()
+    overridden_finalized_result = session.get(FinalizedMatchResult, second_match_id)
+    format_stats_by_player_id = get_player_format_stats_by_player_id(session, player_ids)
+
+    assert override_result.match_id == second_match_id
+    assert override_result.final_result == MatchResult.VOID
+    assert overridden_finalized_result is not None
+    assert overridden_finalized_result.final_result == MatchResult.VOID
+    assert overridden_finalized_result.finalized_by_admin is True
+
+    for player in players:
+        expected_update = expected_rating_updates_by_player_id[player.id]
+        persisted_player = format_stats_by_player_id[player.id]
+        assert persisted_player.rating == pytest.approx(expected_update.rating_after)
+        assert persisted_player.games_played == expected_update.games_played_after
+        assert persisted_player.wins == expected_update.wins_after
+        assert persisted_player.losses == expected_update.losses_after
+        assert persisted_player.draws == expected_update.draws_after
+        assert persisted_player.last_played_at == first_finalized_result.rated_at
 
 
 def test_override_match_result_rejects_non_finalized_match(

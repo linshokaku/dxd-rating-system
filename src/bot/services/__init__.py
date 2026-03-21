@@ -7,6 +7,7 @@ from bot.constants import (
     PRESENCE_REMINDER_LEAD_TIME,
 )
 from bot.services.errors import (
+    InvalidMatchFormatError,
     InvalidQueueNameError,
     MatchAlreadyFinalizedError,
     MatchApprovalNotAvailableError,
@@ -18,6 +19,9 @@ from bot.services.errors import (
     MatchParticipantError,
     MatchReportingClosedError,
     MatchReportNotOpenError,
+    MatchSpectatingClosedError,
+    MatchSpectatorAlreadyRegisteredError,
+    MatchSpectatorCapacityError,
     PlayerAlreadyRegisteredError,
     PlayerNotRegisteredError,
     QueueAlreadyJoinedError,
@@ -40,12 +44,12 @@ from bot.services.match_flow import (
     MatchFlowService,
     MatchParentAssignmentResult,
     MatchReportSubmissionResult,
+    MatchSpectateResult,
     PlayerPenaltyAdjustmentResult,
 )
 from bot.services.matching_queue import (
     DEFAULT_CLEANUP_BATCH_SIZE,
     MATCH_CREATED_NOTIFICATION_MESSAGE,
-    MATCH_PLAYER_COUNT,
     PRESENCE_REMINDER_NOTIFICATION_MESSAGE,
     QUEUE_EXPIRED_NOTIFICATION_MESSAGE,
     CreatedMatchResult,
@@ -58,7 +62,12 @@ from bot.services.matching_queue import (
     PresentQueueResult,
     WaitingEntryTimerState,
 )
-from bot.services.registration import PlayerInfo, PlayerLookupService, register_player
+from bot.services.registration import (
+    PlayerFormatInfo,
+    PlayerInfo,
+    PlayerLookupService,
+    register_player,
+)
 
 __all__ = [
     "CreatedMatchResult",
@@ -66,6 +75,7 @@ __all__ = [
     "ExpireQueueEntryResult",
     "ActiveMatchTimerState",
     "JoinQueueResult",
+    "InvalidMatchFormatError",
     "InvalidQueueNameError",
     "LeaveQueueResult",
     "MATCH_ADMIN_REVIEW_REQUIRED_NOTIFICATION_MESSAGE",
@@ -73,7 +83,6 @@ __all__ = [
     "MATCH_APPROVAL_STARTED_NOTIFICATION_MESSAGE",
     "MATCH_AUTO_PENALTY_APPLIED_NOTIFICATION_MESSAGE",
     "MATCH_APPROVAL_WINDOW",
-    "MATCH_PLAYER_COUNT",
     "MATCH_PARENT_ASSIGNED_NOTIFICATION_MESSAGE",
     "MATCH_PARENT_SELECTION_WINDOW",
     "MATCH_QUEUE_TTL",
@@ -96,10 +105,15 @@ __all__ = [
     "MatchReportNotOpenError",
     "MatchReportSubmissionResult",
     "MatchReportingClosedError",
+    "MatchSpectatingClosedError",
+    "MatchSpectateResult",
+    "MatchSpectatorAlreadyRegisteredError",
+    "MatchSpectatorCapacityError",
     "MatchingQueueError",
     "MatchingQueueNotificationContext",
     "MatchingQueueService",
     "PlayerAlreadyRegisteredError",
+    "PlayerFormatInfo",
     "PlayerInfo",
     "PlayerLookupService",
     "PlayerNotRegisteredError",

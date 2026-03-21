@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Any, TypedDict
 
 import psycopg
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import DBAPIError, InterfaceError, OperationalError
 from sqlalchemy.orm import Session, selectinload, sessionmaker
@@ -19,6 +19,8 @@ from bot.constants import (
     MATCH_REPORT_DEADLINE_DELAY,
     MATCH_REPORT_OPEN_DELAY,
     OUTBOX_NOTIFY_CHANNEL,
+    MatchFormatDefinition,
+    get_match_format_definition,
 )
 from bot.db.session import session_scope
 from bot.models import (
@@ -26,20 +28,25 @@ from bot.models import (
     ActiveMatchState,
     FinalizedMatchPlayerResult,
     FinalizedMatchResult,
+    Match,
     MatchAdminOverride,
     MatchApprovalStatus,
+    MatchFormat,
     MatchParticipant,
     MatchParticipantTeam,
     MatchReport,
     MatchReportInputResult,
     MatchReportStatus,
     MatchResult,
+    MatchSpectator,
+    MatchSpectatorStatus,
     MatchState,
     OutboxEvent,
     OutboxEventType,
     PenaltyAdjustmentSource,
     PenaltyType,
     Player,
+    PlayerFormatStats,
     PlayerPenalty,
     PlayerPenaltyAdjustment,
 )
@@ -54,6 +61,9 @@ from bot.services.errors import (
     MatchParticipantError,
     MatchReportingClosedError,
     MatchReportNotOpenError,
+    MatchSpectatingClosedError,
+    MatchSpectatorAlreadyRegisteredError,
+    MatchSpectatorCapacityError,
     RetryableTaskError,
 )
 from bot.services.matching_queue import MatchingQueueNotificationContext
@@ -68,6 +78,8 @@ MATCH_ADMIN_REVIEW_REQUIRED_NOTIFICATION_MESSAGE = "admin による確認が必�
 
 _MATCH_ADVISORY_LOCK_NAMESPACE = 20_260_319
 _PLAYER_ADVISORY_LOCK_NAMESPACE = 20_260_320
+_MAX_MATCH_ROOM_SIZE = 12
+_MATCH_SPECTATOR_REMOVAL_REASON_FINALIZED = "match_finalized"
 
 
 def _is_transient_task_db_error(exc: Exception) -> bool:
@@ -109,6 +121,13 @@ class MatchReportSubmissionResult:
 class MatchApprovalResult:
     match_id: int
     approval_status: MatchApprovalStatus
+
+
+@dataclass(frozen=True, slots=True)
+class MatchSpectateResult:
+    match_id: int
+    active_spectator_count: int
+    max_spectators: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,6 +235,57 @@ class MatchFlowService:
                 parent_player_id=player_id,
                 decided_at=current_time,
                 event_dedupe_suffix="manual",
+            )
+
+    def spectate_match(
+        self,
+        match_id: int,
+        player_id: int,
+    ) -> MatchSpectateResult:
+        with session_scope(self.session_factory) as session:
+            self._acquire_match_lock(session, match_id)
+            current_time = self._get_database_now(session)
+            self._ensure_player_exists(session, player_id)
+
+            active_state = self._get_active_match_state_for_update(session, match_id)
+            if active_state is None:
+                self._raise_missing_match(match_id)
+            assert active_state is not None
+
+            if active_state.state not in {
+                MatchState.WAITING_FOR_PARENT,
+                MatchState.WAITING_FOR_RESULT_REPORTS,
+            }:
+                raise MatchSpectatingClosedError("この試合は観戦受付を終了しています。")
+
+            participant_count = self._get_match_participant_count(session, match_id)
+            max_spectators = self._calculate_max_spectators(participant_count)
+            participant = self._get_match_participant_for_update(session, match_id, player_id)
+            if participant is not None:
+                raise MatchParticipantError("この試合の参加者は観戦応募できません。")
+
+            spectator = self._get_active_match_spectator_for_update(session, match_id, player_id)
+            if spectator is not None:
+                raise MatchSpectatorAlreadyRegisteredError("すでにこの試合へ観戦応募済みです。")
+
+            active_spectator_count = self._count_active_match_spectators(session, match_id)
+            if active_spectator_count >= max_spectators:
+                raise MatchSpectatorCapacityError("この試合の観戦枠は埋まっています。")
+
+            session.add(
+                MatchSpectator(
+                    match_id=match_id,
+                    player_id=player_id,
+                    status=MatchSpectatorStatus.ACTIVE,
+                    created_at=current_time,
+                )
+            )
+            session.flush()
+
+            return MatchSpectateResult(
+                match_id=match_id,
+                active_spectator_count=active_spectator_count + 1,
+                max_spectators=max_spectators,
             )
 
     def process_parent_deadline(self, match_id: int) -> MatchParentAssignmentResult:
@@ -640,6 +710,7 @@ class MatchFlowService:
         finalization_dedupe_suffix: str,
     ) -> MatchFinalizationResult:
         participants = self._get_match_participants(session, active_state.match_id)
+        match_format = active_state.match.match_format
         latest_reports_by_player = self._get_latest_reports_by_player(
             session,
             active_state.match_id,
@@ -648,10 +719,12 @@ class MatchFlowService:
             latest_reports_by_player=latest_reports_by_player,
             parent_player_id=active_state.parent_player_id,
         )
+        format_definition = self._require_match_format_definition(match_format)
         admin_review_reasons = self._determine_admin_review_reasons(
             participants=participants,
             latest_reports_by_player=latest_reports_by_player,
             unresolved_tie=unresolved_tie,
+            team_size=format_definition.team_size,
         )
 
         active_state.provisional_result = provisional_result
@@ -846,15 +919,20 @@ class MatchFlowService:
         participants_by_player_id = {
             participant.player_id: participant for participant in participants
         }
+        player_format_stats_by_player_id = self._get_player_format_stats_by_player_id(
+            session,
+            player_ids=[participant.player_id for participant in participants],
+            match_format=active_state.match.match_format,
+        )
         rating_snapshots_by_player_id = {
             participant.player_id: RatingParticipantSnapshot(
                 player_id=participant.player_id,
                 team=participant.team,
-                rating=participant.player.rating,
-                games_played=participant.player.games_played,
-                wins=participant.player.wins,
-                losses=participant.player.losses,
-                draws=participant.player.draws,
+                rating=player_format_stats_by_player_id[participant.player_id].rating,
+                games_played=player_format_stats_by_player_id[participant.player_id].games_played,
+                wins=player_format_stats_by_player_id[participant.player_id].wins,
+                losses=player_format_stats_by_player_id[participant.player_id].losses,
+                draws=player_format_stats_by_player_id[participant.player_id].draws,
             )
             for participant in participants
         }
@@ -973,6 +1051,8 @@ class MatchFlowService:
                 participants=participants,
                 final_result=final_result,
                 rating_snapshots=tuple(rating_snapshots_by_player_id.values()),
+                match_format=active_state.match.match_format,
+                player_format_stats_by_player_id=player_format_stats_by_player_id,
             )
 
         for player_id, desired_penalty_type in desired_auto_penalties_by_player.items():
@@ -999,6 +1079,12 @@ class MatchFlowService:
         active_state.state = MatchState.FINALIZED
         active_state.finalized_at = finalized_at
         active_state.finalized_by_admin = finalized_by_admin
+        self._close_active_match_spectators(
+            session,
+            match_id=active_state.match_id,
+            removed_at=finalized_at,
+            removal_reason=_MATCH_SPECTATOR_REMOVAL_REASON_FINALIZED,
+        )
 
         self._enqueue_finalization_notifications_locked(
             session,
@@ -1077,15 +1163,20 @@ class MatchFlowService:
             result.player_id: (result.auto_penalty_type if result.auto_penalty_applied else None)
             for result in existing_finalized_by_player.values()
         }
+        player_format_stats_by_player_id = self._get_player_format_stats_by_player_id(
+            session,
+            player_ids=[participant.player_id for participant in participants],
+            match_format=active_state.match.match_format,
+        )
         rating_snapshots_by_player_id = {
             participant.player_id: RatingParticipantSnapshot(
                 player_id=participant.player_id,
                 team=participant.team,
-                rating=participant.player.rating,
-                games_played=participant.player.games_played,
-                wins=participant.player.wins,
-                losses=participant.player.losses,
-                draws=participant.player.draws,
+                rating=player_format_stats_by_player_id[participant.player_id].rating,
+                games_played=player_format_stats_by_player_id[participant.player_id].games_played,
+                wins=player_format_stats_by_player_id[participant.player_id].wins,
+                losses=player_format_stats_by_player_id[participant.player_id].losses,
+                draws=player_format_stats_by_player_id[participant.player_id].draws,
             )
             for participant in participants
         }
@@ -1153,6 +1244,12 @@ class MatchFlowService:
         active_state.state = MatchState.FINALIZED
         active_state.finalized_at = finalized_at
         active_state.finalized_by_admin = True
+        self._close_active_match_spectators(
+            session,
+            match_id=active_state.match_id,
+            removed_at=finalized_at,
+            removal_reason=_MATCH_SPECTATOR_REMOVAL_REASON_FINALIZED,
+        )
 
         self._recalculate_ratings_after_match_correction_locked(
             session,
@@ -1181,14 +1278,16 @@ class MatchFlowService:
         affected_match_ids = tuple(
             session.scalars(
                 select(FinalizedMatchResult.match_id)
+                .join(Match, Match.id == FinalizedMatchResult.match_id)
                 .where(
+                    Match.match_format == target_finalized_result.match.match_format,
                     or_(
                         FinalizedMatchResult.rated_at > target_finalized_result.rated_at,
                         and_(
                             FinalizedMatchResult.rated_at == target_finalized_result.rated_at,
                             FinalizedMatchResult.match_id >= target_finalized_result.match_id,
                         ),
-                    )
+                    ),
                 )
                 .order_by(FinalizedMatchResult.rated_at, FinalizedMatchResult.match_id)
             ).all()
@@ -1214,19 +1313,33 @@ class MatchFlowService:
         for player_id in affected_player_ids:
             self._acquire_player_lock(session, player_id)
 
-        locked_players = session.scalars(
-            select(Player).where(Player.id.in_(affected_player_ids))
+        locked_player_format_stats = session.scalars(
+            select(PlayerFormatStats).where(
+                PlayerFormatStats.player_id.in_(affected_player_ids),
+                PlayerFormatStats.match_format == target_finalized_result.match.match_format,
+            )
         ).all()
-        players_by_id = {player.id: player for player in locked_players}
+        player_format_stats_by_player_id = {
+            player_format_stats.player_id: player_format_stats
+            for player_format_stats in locked_player_format_stats
+        }
+        missing_player_ids = sorted(
+            set(affected_player_ids) - set(player_format_stats_by_player_id)
+        )
+        if missing_player_ids:
+            raise MatchFlowError(
+                "試合結果の補正に必要なプレイヤー統計が不足しています。"
+                f" player_ids={missing_player_ids}"
+            )
         working_states = {
             player_id: PlayerRatingState(
-                rating=player.rating,
-                games_played=player.games_played,
-                wins=player.wins,
-                losses=player.losses,
-                draws=player.draws,
+                rating=player_format_stats.rating,
+                games_played=player_format_stats.games_played,
+                wins=player_format_stats.wins,
+                losses=player_format_stats.losses,
+                draws=player_format_stats.draws,
             )
-            for player_id, player in players_by_id.items()
+            for player_id, player_format_stats in player_format_stats_by_player_id.items()
         }
 
         for finalized_match in reversed(affected_matches[1:]):
@@ -1304,12 +1417,12 @@ class MatchFlowService:
                 )
 
         for player_id, player_state in working_states.items():
-            player = players_by_id[player_id]
-            player.rating = player_state.rating
-            player.games_played = player_state.games_played
-            player.wins = player_state.wins
-            player.losses = player_state.losses
-            player.draws = player_state.draws
+            player_format_stats = player_format_stats_by_player_id[player_id]
+            player_format_stats.rating = player_state.rating
+            player_format_stats.games_played = player_state.games_played
+            player_format_stats.wins = player_state.wins
+            player_format_stats.losses = player_state.losses
+            player_format_stats.draws = player_state.draws
 
     def _enqueue_finalization_notifications_locked(
         self,
@@ -1334,12 +1447,14 @@ class MatchFlowService:
                 self._build_team_rating_entries(
                     participants=participants,
                     team=MatchParticipantTeam.TEAM_A,
+                    match_format=active_state.match.match_format,
                 )
             )
             finalized_notification_payload["team_b_rating_entries"] = (
                 self._build_team_rating_entries(
                     participants=participants,
                     team=MatchParticipantTeam.TEAM_B,
+                    match_format=active_state.match.match_format,
                 )
             )
 
@@ -1414,15 +1529,22 @@ class MatchFlowService:
         participants: Sequence[MatchParticipant],
         final_result: MatchResult,
         rating_snapshots: Sequence[RatingParticipantSnapshot],
+        match_format: MatchFormat,
+        player_format_stats_by_player_id: dict[int, PlayerFormatStats],
     ) -> None:
         rating_updates_by_player_id = calculate_rating_updates(rating_snapshots, final_result)
         for participant in participants:
             rating_update = rating_updates_by_player_id[participant.player_id]
-            participant.player.rating = rating_update.rating_after
-            participant.player.games_played = rating_update.games_played_after
-            participant.player.wins = rating_update.wins_after
-            participant.player.losses = rating_update.losses_after
-            participant.player.draws = rating_update.draws_after
+            format_stats = player_format_stats_by_player_id[participant.player_id]
+            if format_stats.match_format != match_format:
+                raise MatchFlowError(
+                    "試合フォーマットと更新対象のプレイヤー統計が一致していません。"
+                )
+            format_stats.rating = rating_update.rating_after
+            format_stats.games_played = rating_update.games_played_after
+            format_stats.wins = rating_update.wins_after
+            format_stats.losses = rating_update.losses_after
+            format_stats.draws = rating_update.draws_after
 
     def _ensure_active_player_states_for_finalization(
         self,
@@ -1577,9 +1699,10 @@ class MatchFlowService:
         participants: Sequence[MatchParticipant],
         latest_reports_by_player: dict[int, MatchReport],
         unresolved_tie: bool,
+        team_size: int,
     ) -> list[str]:
         reasons: list[str] = []
-        if len(latest_reports_by_player) <= 2:
+        if len(latest_reports_by_player) < team_size:
             reasons.append("low_report_count")
 
         teams_with_reports = {
@@ -1724,6 +1847,7 @@ class MatchFlowService:
         *,
         participants: Sequence[MatchParticipant],
         team: MatchParticipantTeam,
+        match_format: MatchFormat,
     ) -> list[TeamRatingEntryPayload]:
         return [
             {
@@ -1731,11 +1855,61 @@ class MatchFlowService:
                     participant.notification_mention_discord_user_id
                     or participant.player.discord_user_id
                 ),
-                "rating": participant.player.rating,
+                "rating": self._get_player_format_rating(
+                    participant.player,
+                    match_format=match_format,
+                ),
             }
             for participant in participants
             if participant.team == team
         ]
+
+    def _get_player_format_stats_by_player_id(
+        self,
+        session: Session,
+        *,
+        player_ids: Sequence[int],
+        match_format: MatchFormat,
+    ) -> dict[int, PlayerFormatStats]:
+        player_format_stats = session.scalars(
+            select(PlayerFormatStats).where(
+                PlayerFormatStats.player_id.in_(player_ids),
+                PlayerFormatStats.match_format == match_format,
+            )
+        ).all()
+        player_format_stats_by_player_id = {
+            format_stats.player_id: format_stats for format_stats in player_format_stats
+        }
+        missing_player_ids = sorted(set(player_ids) - set(player_format_stats_by_player_id))
+        if missing_player_ids:
+            raise MatchFlowError(
+                "プレイヤー統計が見つかりません。"
+                f" match_format={match_format.value} player_ids={missing_player_ids}"
+            )
+        return player_format_stats_by_player_id
+
+    def _get_player_format_rating(
+        self,
+        player: Player,
+        *,
+        match_format: MatchFormat,
+    ) -> float:
+        for format_stats in player.format_stats:
+            if format_stats.match_format == match_format:
+                return format_stats.rating
+        raise MatchFlowError(
+            "プレイヤー統計が見つかりません。"
+            f" player_id={player.id} match_format={match_format.value}"
+        )
+
+    def _require_match_format_definition(
+        self,
+        match_format: MatchFormat,
+    ) -> MatchFormatDefinition:
+        format_definition = get_match_format_definition(match_format)
+        if format_definition is None:
+            raise MatchFlowError(f"未対応の対戦フォーマットです: {match_format.value}")
+        return format_definition
 
     def _build_match_approval_requested_payload(
         self,
@@ -1814,6 +1988,18 @@ class MatchFlowService:
             ).all()
         )
 
+    def _get_match_participant_count(
+        self,
+        session: Session,
+        match_id: int,
+    ) -> int:
+        return (
+            session.scalar(
+                select(func.count(MatchParticipant.id)).where(MatchParticipant.match_id == match_id)
+            )
+            or 0
+        )
+
     def _get_match_participant_for_update(
         self,
         session: Session,
@@ -1827,6 +2013,61 @@ class MatchFlowService:
                 MatchParticipant.player_id == player_id,
             )
             .with_for_update()
+        )
+
+    def _get_active_match_spectator_for_update(
+        self,
+        session: Session,
+        match_id: int,
+        player_id: int,
+    ) -> MatchSpectator | None:
+        return session.scalar(
+            select(MatchSpectator)
+            .where(
+                MatchSpectator.match_id == match_id,
+                MatchSpectator.player_id == player_id,
+                MatchSpectator.status == MatchSpectatorStatus.ACTIVE,
+            )
+            .with_for_update()
+        )
+
+    def _count_active_match_spectators(
+        self,
+        session: Session,
+        match_id: int,
+    ) -> int:
+        return (
+            session.scalar(
+                select(func.count(MatchSpectator.id)).where(
+                    MatchSpectator.match_id == match_id,
+                    MatchSpectator.status == MatchSpectatorStatus.ACTIVE,
+                )
+            )
+            or 0
+        )
+
+    def _calculate_max_spectators(self, participant_count: int) -> int:
+        return max(0, _MAX_MATCH_ROOM_SIZE - participant_count)
+
+    def _close_active_match_spectators(
+        self,
+        session: Session,
+        *,
+        match_id: int,
+        removed_at: datetime,
+        removal_reason: str,
+    ) -> None:
+        session.execute(
+            update(MatchSpectator)
+            .where(
+                MatchSpectator.match_id == match_id,
+                MatchSpectator.status == MatchSpectatorStatus.ACTIVE,
+            )
+            .values(
+                status=MatchSpectatorStatus.CLOSED,
+                removed_at=removed_at,
+                removal_reason=removal_reason,
+            )
         )
 
     def _get_latest_report_for_update(

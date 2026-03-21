@@ -26,6 +26,10 @@ class InvalidQueueNameError(MatchingQueueError):
     pass
 
 
+class InvalidMatchFormatError(MatchingQueueError):
+    pass
+
+
 class QueueJoinNotAllowedError(MatchingQueueError):
     pass
 
@@ -71,4 +75,16 @@ class MatchApprovalNotRequiredError(MatchFlowError):
 
 
 class MatchAlreadyFinalizedError(MatchFlowError):
+    pass
+
+
+class MatchSpectatingClosedError(MatchFlowError):
+    pass
+
+
+class MatchSpectatorAlreadyRegisteredError(MatchFlowError):
+    pass
+
+
+class MatchSpectatorCapacityError(MatchFlowError):
     pass

@@ -11,7 +11,7 @@ from typing import Any, ParamSpec, Protocol, TypeVar
 from sqlalchemy.orm import Session, sessionmaker
 
 from bot.constants import MATCH_PARENT_SELECTION_WINDOW, PRESENCE_REMINDER_LEAD_TIME
-from bot.models import MatchReportInputResult, MatchResult, MatchState, PenaltyType
+from bot.models import MatchFormat, MatchReportInputResult, MatchResult, MatchState, PenaltyType
 from bot.runtime.outbox import retry_delay_for_failure_count
 from bot.services import (
     ActiveMatchTimerState,
@@ -27,6 +27,7 @@ from bot.services import (
     MatchingQueueService,
     MatchParentAssignmentResult,
     MatchReportSubmissionResult,
+    MatchSpectateResult,
     PlayerPenaltyAdjustmentResult,
     PresenceReminderResult,
     PresentQueueResult,
@@ -43,6 +44,7 @@ class MatchRuntimeService(Protocol):
     def join_queue(
         self,
         player_id: int,
+        match_format: MatchFormat | str,
         queue_name: str,
         *,
         notification_context: MatchingQueueNotificationContext | None = None,
@@ -90,6 +92,12 @@ class MatchFlowRuntimeService(Protocol):
         *,
         notification_context: MatchingQueueNotificationContext | None = None,
     ) -> MatchParentAssignmentResult: ...
+
+    def spectate_match(
+        self,
+        match_id: int,
+        player_id: int,
+    ) -> MatchSpectateResult: ...
 
     def submit_report(
         self,
@@ -227,6 +235,7 @@ class MatchRuntime:
     async def join_queue(
         self,
         player_id: int,
+        match_format: MatchFormat | str,
         queue_name: str,
         *,
         notification_context: MatchingQueueNotificationContext | None = None,
@@ -236,6 +245,7 @@ class MatchRuntime:
         result = await asyncio.to_thread(
             self.service.join_queue,
             player_id,
+            match_format,
             queue_name,
             notification_context=notification_context,
         )
@@ -349,6 +359,20 @@ class MatchRuntime:
                 report_deadline_at=result.report_deadline_at,
             )
         return result
+
+    async def spectate_match(
+        self,
+        match_id: int,
+        player_id: int,
+    ) -> MatchSpectateResult:
+        match_service = self._require_match_service()
+        self._ensure_open()
+        self._bind_current_loop_if_needed()
+        return await asyncio.to_thread(
+            match_service.spectate_match,
+            match_id,
+            player_id,
+        )
 
     async def submit_match_report(
         self,

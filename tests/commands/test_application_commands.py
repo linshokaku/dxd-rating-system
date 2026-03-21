@@ -9,12 +9,18 @@ import discord
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
-from bot.commands import BotCommandHandlers
+from bot.commands import BotCommandHandlers, register_app_commands
 from bot.config import Settings
-from bot.models import MatchQueueEntry, Player
+from bot.models import MatchFormat, MatchQueueEntry, MatchSpectator, Player, PlayerFormatStats
 from bot.runtime import MatchRuntime
-from bot.services import MatchingQueueNotificationContext, MatchingQueueService, register_player
+from bot.services import (
+    MatchFlowService,
+    MatchingQueueNotificationContext,
+    MatchingQueueService,
+    register_player,
+)
 
+DEFAULT_MATCH_FORMAT = MatchFormat.THREE_VS_THREE
 DEFAULT_QUEUE_NAME = "low"
 
 
@@ -60,7 +66,10 @@ def create_handlers(
 ) -> BotCommandHandlers:
     resolved_matching_queue_service = matching_queue_service
     if isinstance(matching_queue_service, MatchingQueueService):
-        resolved_matching_queue_service = MatchRuntime(service=matching_queue_service)
+        resolved_matching_queue_service = MatchRuntime(
+            service=matching_queue_service,
+            match_service=MatchFlowService(session_factory),
+        )
 
     return BotCommandHandlers(
         settings=create_settings(super_admin_user_ids=super_admin_user_ids),
@@ -75,6 +84,42 @@ def create_player(session: Session, discord_user_id: int) -> Player:
     return player
 
 
+def get_player_format_stats(
+    session: Session,
+    player_id: int,
+    match_format: MatchFormat = DEFAULT_MATCH_FORMAT,
+) -> PlayerFormatStats:
+    format_stats = session.get(
+        PlayerFormatStats,
+        {"player_id": player_id, "match_format": match_format},
+    )
+    assert format_stats is not None
+    return format_stats
+
+
+def format_player_info_message(
+    stats_by_format: dict[MatchFormat, tuple[float, int, int, int, int]],
+) -> str:
+    lines = ["プレイヤー情報"]
+    for match_format in (
+        MatchFormat.ONE_VS_ONE,
+        MatchFormat.TWO_VS_TWO,
+        MatchFormat.THREE_VS_THREE,
+    ):
+        rating, games_played, wins, losses, draws = stats_by_format[match_format]
+        lines.extend(
+            [
+                match_format.value,
+                f"rating: {rating:.2f}",
+                f"games_played: {games_played}",
+                f"wins: {wins}",
+                f"losses: {losses}",
+                f"draws: {draws}",
+            ]
+        )
+    return "\n".join(lines)
+
+
 def get_queue_entry(session: Session, player_id: int) -> MatchQueueEntry:
     session.expire_all()
     queue_entry = session.scalar(
@@ -82,6 +127,34 @@ def get_queue_entry(session: Session, player_id: int) -> MatchQueueEntry:
     )
     assert queue_entry is not None
     return queue_entry
+
+
+def create_match(
+    session: Session,
+    session_factory: sessionmaker[Session],
+    *,
+    start_discord_user_id: int,
+    channel_id: int,
+    guild_id: int,
+) -> tuple[int, list[Player]]:
+    players = [create_player(session, start_discord_user_id + offset) for offset in range(6)]
+    queue_service = MatchingQueueService(session_factory)
+    for player in players:
+        queue_service.join_queue(
+            player.id,
+            DEFAULT_MATCH_FORMAT,
+            DEFAULT_QUEUE_NAME,
+            notification_context=MatchingQueueNotificationContext(
+                channel_id=channel_id,
+                guild_id=guild_id,
+                mention_discord_user_id=player.discord_user_id,
+            ),
+        )
+
+    created_matches = queue_service.try_create_matches()
+
+    assert len(created_matches) == 1
+    return created_matches[0].match_id, players
 
 
 def test_register_command_registers_requesting_user(
@@ -131,7 +204,13 @@ def test_join_command_joins_requesting_player_and_stores_notification_context(
         guild_id=4_001,
     )
 
-    asyncio.run(handlers.join(as_interaction(interaction), DEFAULT_QUEUE_NAME))
+    asyncio.run(
+        handlers.join(
+            as_interaction(interaction),
+            DEFAULT_MATCH_FORMAT.value,
+            DEFAULT_QUEUE_NAME,
+        )
+    )
 
     queue_entry = get_queue_entry(session, player.id)
 
@@ -148,7 +227,13 @@ def test_join_command_requires_registered_player(session_factory: sessionmaker[S
     )
     interaction = FakeInteraction(user=FakeUser(id=123_456_789_012_345_681))
 
-    asyncio.run(handlers.join(as_interaction(interaction), DEFAULT_QUEUE_NAME))
+    asyncio.run(
+        handlers.join(
+            as_interaction(interaction),
+            DEFAULT_MATCH_FORMAT.value,
+            DEFAULT_QUEUE_NAME,
+        )
+    )
 
     assert interaction.response.messages == [
         "プレイヤー登録が必要です。先に /register を実行してください。"
@@ -164,6 +249,7 @@ def test_present_command_updates_waiting_entry_and_notification_context(
     matching_queue_service = MatchingQueueService(session_factory)
     matching_queue_service.join_queue(
         player.id,
+        DEFAULT_MATCH_FORMAT,
         DEFAULT_QUEUE_NAME,
         notification_context=MatchingQueueNotificationContext(
             channel_id=5_001,
@@ -231,11 +317,12 @@ def test_player_info_command_returns_requesting_player_stats(
 ) -> None:
     discord_user_id = 123_456_789_012_345_686
     player = create_player(session, discord_user_id)
-    player.rating = 1512.5
-    player.games_played = 8
-    player.wins = 5
-    player.losses = 2
-    player.draws = 1
+    three_vs_three_stats = get_player_format_stats(session, player.id)
+    three_vs_three_stats.rating = 1512.5
+    three_vs_three_stats.games_played = 8
+    three_vs_three_stats.wins = 5
+    three_vs_three_stats.losses = 2
+    three_vs_three_stats.draws = 1
     session.commit()
     handlers = create_handlers(session_factory)
     interaction = FakeInteraction(user=FakeUser(id=discord_user_id))
@@ -243,7 +330,13 @@ def test_player_info_command_returns_requesting_player_stats(
     asyncio.run(handlers.player_info(as_interaction(interaction)))
 
     assert interaction.response.messages == [
-        "プレイヤー情報\nrating: 1512.50\ngames_played: 8\nwins: 5\nlosses: 2\ndraws: 1"
+        format_player_info_message(
+            {
+                MatchFormat.ONE_VS_ONE: (1500.0, 0, 0, 0, 0),
+                MatchFormat.TWO_VS_TWO: (1500.0, 0, 0, 0, 0),
+                MatchFormat.THREE_VS_THREE: (1512.5, 8, 5, 2, 1),
+            }
+        )
     ]
 
 
@@ -258,6 +351,94 @@ def test_player_info_command_requires_registered_player(
     assert interaction.response.messages == [
         "プレイヤー登録が必要です。先に /register を実行してください。"
     ]
+
+
+def test_match_spectate_command_registers_requesting_player_as_spectator(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    match_id, _ = create_match(
+        session,
+        session_factory,
+        start_discord_user_id=123_456_789_012_345_700,
+        channel_id=13_001,
+        guild_id=14_001,
+    )
+    spectator_discord_user_id = 123_456_789_012_345_706
+    spectator = create_player(session, spectator_discord_user_id)
+    handlers = create_handlers(
+        session_factory,
+        matching_queue_service=MatchingQueueService(session_factory),
+    )
+    interaction = FakeInteraction(user=FakeUser(id=spectator_discord_user_id))
+
+    asyncio.run(handlers.match_spectate(as_interaction(interaction), match_id))
+
+    persisted_spectator = session.scalar(
+        select(MatchSpectator).where(
+            MatchSpectator.match_id == match_id,
+            MatchSpectator.player_id == spectator.id,
+        )
+    )
+
+    assert interaction.response.messages == ["観戦応募を受け付けました。現在 1 / 6 人です。"]
+    assert persisted_spectator is not None
+
+
+def test_match_spectate_command_requires_registered_player(
+    session_factory: sessionmaker[Session],
+) -> None:
+    handlers = create_handlers(
+        session_factory,
+        matching_queue_service=MatchingQueueService(session_factory),
+    )
+    interaction = FakeInteraction(user=FakeUser(id=123_456_789_012_345_707))
+
+    asyncio.run(handlers.match_spectate(as_interaction(interaction), 1))
+
+    assert interaction.response.messages == [
+        "プレイヤー登録が必要です。先に /register を実行してください。"
+    ]
+
+
+def test_dev_match_spectate_registers_target_dummy_user_as_spectator(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    executor_discord_user_id = 10
+    target_discord_user_id = 777
+    match_id, _ = create_match(
+        session,
+        session_factory,
+        start_discord_user_id=123_456_789_012_345_710,
+        channel_id=13_010,
+        guild_id=14_010,
+    )
+    spectator = create_player(session, target_discord_user_id)
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({executor_discord_user_id}),
+        matching_queue_service=MatchingQueueService(session_factory),
+    )
+    interaction = FakeInteraction(user=FakeUser(id=executor_discord_user_id))
+
+    asyncio.run(
+        handlers.dev_match_spectate(
+            as_interaction(interaction),
+            match_id,
+            str(target_discord_user_id),
+        )
+    )
+
+    persisted_spectator = session.scalar(
+        select(MatchSpectator).where(
+            MatchSpectator.match_id == match_id,
+            MatchSpectator.player_id == spectator.id,
+        )
+    )
+
+    assert interaction.response.messages == ["指定したユーザーの観戦応募を受け付けました。"]
+    assert persisted_spectator is not None
 
 
 def test_dev_register_requires_admin(
@@ -318,8 +499,9 @@ def test_dev_join_targets_provided_user_and_uses_target_for_notification_context
     asyncio.run(
         handlers.dev_join(
             as_interaction(interaction),
-            str(target_discord_user_id),
+            DEFAULT_MATCH_FORMAT.value,
             DEFAULT_QUEUE_NAME,
+            str(target_discord_user_id),
         )
     )
 
@@ -339,7 +521,7 @@ def test_dev_present_returns_expired_message_for_expired_target(
     target_discord_user_id = 123_456_789_012_345_687
     player = create_player(session, target_discord_user_id)
     matching_queue_service = MatchingQueueService(session_factory)
-    matching_queue_service.join_queue(player.id, DEFAULT_QUEUE_NAME)
+    matching_queue_service.join_queue(player.id, DEFAULT_MATCH_FORMAT, DEFAULT_QUEUE_NAME)
     queue_entry = get_queue_entry(session, player.id)
     queue_entry.expire_at = queue_entry.joined_at - timedelta(seconds=1)
     session.commit()
@@ -402,11 +584,12 @@ def test_dev_player_info_returns_target_player_stats(
     executor_discord_user_id = 10
     target_discord_user_id = 123_456_789_012_345_690
     player = create_player(session, target_discord_user_id)
-    player.rating = 1498.25
-    player.games_played = 3
-    player.wins = 1
-    player.losses = 1
-    player.draws = 1
+    three_vs_three_stats = get_player_format_stats(session, player.id)
+    three_vs_three_stats.rating = 1498.25
+    three_vs_three_stats.games_played = 3
+    three_vs_three_stats.wins = 1
+    three_vs_three_stats.losses = 1
+    three_vs_three_stats.draws = 1
     session.commit()
     handlers = create_handlers(
         session_factory,
@@ -417,7 +600,13 @@ def test_dev_player_info_returns_target_player_stats(
     asyncio.run(handlers.dev_player_info(as_interaction(interaction), str(target_discord_user_id)))
 
     assert interaction.response.messages == [
-        "プレイヤー情報\nrating: 1498.25\ngames_played: 3\nwins: 1\nlosses: 1\ndraws: 1"
+        format_player_info_message(
+            {
+                MatchFormat.ONE_VS_ONE: (1500.0, 0, 0, 0, 0),
+                MatchFormat.TWO_VS_TWO: (1500.0, 0, 0, 0, 0),
+                MatchFormat.THREE_VS_THREE: (1498.25, 3, 1, 1, 1),
+            }
+        )
     ]
 
 
@@ -442,3 +631,49 @@ def test_dev_is_admin_returns_yes_or_no(session_factory: sessionmaker[Session]) 
 
     assert admin_interaction.response.messages == ["はい"]
     assert non_admin_interaction.response.messages == ["いいえ"]
+
+
+def test_dev_commands_register_discord_user_id_as_last_option() -> None:
+    handlers = BotCommandHandlers(
+        settings=create_settings(),
+        session_factory=sessionmaker(),
+    )
+    client = discord.Client(intents=discord.Intents.none())
+    tree = discord.app_commands.CommandTree(client)
+
+    register_app_commands(tree, handlers)
+
+    expected_parameters = {
+        "dev_register": ["discord_user_id"],
+        "dev_join": ["match_format", "queue_name", "discord_user_id"],
+        "dev_present": ["discord_user_id"],
+        "dev_leave": ["discord_user_id"],
+        "dev_player_info": ["discord_user_id"],
+        "dev_match_parent": ["match_id", "discord_user_id"],
+        "dev_match_spectate": ["match_id", "discord_user_id"],
+        "dev_match_win": ["match_id", "discord_user_id"],
+        "dev_match_lose": ["match_id", "discord_user_id"],
+        "dev_match_draw": ["match_id", "discord_user_id"],
+        "dev_match_void": ["match_id", "discord_user_id"],
+        "dev_match_approve": ["match_id", "discord_user_id"],
+    }
+
+    for command_name, expected in expected_parameters.items():
+        command = tree.get_command(command_name)
+        assert command is not None
+        assert [parameter.name for parameter in command.parameters] == expected
+
+
+def test_match_spectate_command_is_registered_with_match_id_parameter() -> None:
+    handlers = BotCommandHandlers(
+        settings=create_settings(),
+        session_factory=sessionmaker(),
+    )
+    client = discord.Client(intents=discord.Intents.none())
+    tree = discord.app_commands.CommandTree(client)
+
+    register_app_commands(tree, handlers)
+
+    command = tree.get_command("match_spectate")
+    assert command is not None
+    assert [parameter.name for parameter in command.parameters] == ["match_id"]

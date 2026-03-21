@@ -1,22 +1,29 @@
 from dataclasses import dataclass
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import Session, selectinload, sessionmaker
 
+from bot.constants import get_match_format_definitions
 from bot.db.session import session_scope
-from bot.models import Player
+from bot.models import MatchFormat, Player, PlayerFormatStats
 from bot.services.errors import PlayerAlreadyRegisteredError, PlayerNotRegisteredError
+
+
+@dataclass(frozen=True, slots=True)
+class PlayerFormatInfo:
+    match_format: MatchFormat
+    rating: float
+    games_played: int
+    wins: int
+    losses: int
+    draws: int
 
 
 @dataclass(frozen=True, slots=True)
 class PlayerInfo:
     player_id: int
     discord_user_id: int
-    rating: float
-    games_played: int
-    wins: int
-    losses: int
-    draws: int
+    format_stats: tuple[PlayerFormatInfo, ...]
 
 
 def register_player(session: Session, discord_user_id: int) -> Player:
@@ -28,6 +35,13 @@ def register_player(session: Session, discord_user_id: int) -> Player:
 
     player = Player(discord_user_id=discord_user_id)
     session.add(player)
+    session.flush()
+    player.format_stats.extend(
+        [
+            PlayerFormatStats(match_format=format_definition.match_format)
+            for format_definition in get_match_format_definitions()
+        ]
+    )
     session.flush()
     return player
 
@@ -51,19 +65,34 @@ class PlayerLookupService:
 
     def get_player_info_by_discord_user_id(self, discord_user_id: int) -> PlayerInfo:
         with session_scope(self.session_factory) as session:
-            player = session.scalar(select(Player).where(Player.discord_user_id == discord_user_id))
+            player = session.scalar(
+                select(Player)
+                .options(selectinload(Player.format_stats))
+                .where(Player.discord_user_id == discord_user_id)
+            )
 
         if player is None:
             raise PlayerNotRegisteredError(
                 f"Player is not registered for discord_user_id: {discord_user_id}"
             )
 
+        format_stats_by_format = {
+            format_stats.match_format: format_stats for format_stats in player.format_stats
+        }
         return PlayerInfo(
             player_id=player.id,
             discord_user_id=player.discord_user_id,
-            rating=player.rating,
-            games_played=player.games_played,
-            wins=player.wins,
-            losses=player.losses,
-            draws=player.draws,
+            format_stats=tuple(
+                PlayerFormatInfo(
+                    match_format=format_definition.match_format,
+                    rating=format_stats_by_format[format_definition.match_format].rating,
+                    games_played=format_stats_by_format[
+                        format_definition.match_format
+                    ].games_played,
+                    wins=format_stats_by_format[format_definition.match_format].wins,
+                    losses=format_stats_by_format[format_definition.match_format].losses,
+                    draws=format_stats_by_format[format_definition.match_format].draws,
+                )
+                for format_definition in get_match_format_definitions()
+            ),
         )

@@ -9,16 +9,18 @@ from discord import app_commands
 from sqlalchemy.orm import Session, sessionmaker
 
 from bot.config import Settings
-from bot.constants import MATCH_QUEUE_NAME_CHOICES, is_dummy_discord_user_id
+from bot.constants import MATCH_FORMAT_CHOICES, MATCH_QUEUE_NAME_CHOICES, is_dummy_discord_user_id
 from bot.db.session import session_scope
-from bot.models import MatchReportInputResult, MatchResult, PenaltyType
+from bot.models import MatchFormat, MatchReportInputResult, MatchResult, PenaltyType
 from bot.services import (
+    InvalidMatchFormatError,
     InvalidQueueNameError,
     JoinQueueResult,
     LeaveQueueResult,
     MatchFlowError,
     MatchingQueueNotificationContext,
     MatchReportSubmissionResult,
+    MatchSpectateResult,
     PlayerAlreadyRegisteredError,
     PlayerInfo,
     PlayerLookupService,
@@ -48,6 +50,7 @@ LEAVE_FAILED_MESSAGE = "キュー退出に失敗しました。管理者に確�
 PLAYER_INFO_FAILED_MESSAGE = "プレイヤー情報の取得に失敗しました。管理者に確認してください。"
 
 MATCH_PARENT_SUCCESS_MESSAGE = "親に立候補しました。"
+MATCH_SPECTATE_FAILED_MESSAGE = "観戦応募に失敗しました。管理者に確認してください。"
 MATCH_REPORT_SUCCESS_MESSAGE = "勝敗報告を受け付けました。"
 MATCH_APPROVE_SUCCESS_MESSAGE = "仮決定結果を承認しました。"
 MATCH_ACTION_FAILED_MESSAGE = "試合操作に失敗しました。管理者に確認してください。"
@@ -87,6 +90,7 @@ DEV_PLAYER_INFO_FAILED_MESSAGE = (
 )
 
 DEV_MATCH_PARENT_SUCCESS_MESSAGE = "指定したユーザーを親に立候補させました。"
+DEV_MATCH_SPECTATE_SUCCESS_MESSAGE = "指定したユーザーの観戦応募を受け付けました。"
 DEV_MATCH_REPORT_SUCCESS_MESSAGE = "指定したユーザーの勝敗報告を受け付けました。"
 DEV_MATCH_APPROVE_SUCCESS_MESSAGE = "指定したユーザーが仮決定結果を承認しました。"
 DEV_MATCH_ACTION_FAILED_MESSAGE = (
@@ -104,6 +108,7 @@ class MatchingQueueCommandService(Protocol):
     async def join_queue(
         self,
         player_id: int,
+        match_format: MatchFormat | str,
         queue_name: str,
         *,
         notification_context: MatchingQueueNotificationContext | None = None,
@@ -127,6 +132,12 @@ class MatchCommandService(Protocol):
         *,
         notification_context: MatchingQueueNotificationContext | None = None,
     ) -> object: ...
+
+    async def spectate_match(
+        self,
+        match_id: int,
+        player_id: int,
+    ) -> MatchSpectateResult: ...
 
     async def submit_match_report(
         self,
@@ -224,18 +235,27 @@ class BotCommandHandlers:
 
         await self._send_message(interaction, REGISTER_SUCCESS_MESSAGE)
 
-    async def join(self, interaction: discord.Interaction[Any], queue_name: str) -> None:
+    async def join(
+        self,
+        interaction: discord.Interaction[Any],
+        match_format: str,
+        queue_name: str,
+    ) -> None:
         try:
             notification_context = self._build_notification_context(interaction)
             player_id = await asyncio.to_thread(self._lookup_player_id, interaction.user.id)
             service = self._require_matching_queue_service()
             result = await service.join_queue(
                 player_id,
+                match_format,
                 queue_name,
                 notification_context=notification_context,
             )
         except PlayerNotRegisteredError:
             await self._send_message(interaction, PLAYER_REGISTRATION_REQUIRED_MESSAGE)
+            return
+        except InvalidMatchFormatError:
+            await self._send_message(interaction, "指定したフォーマットは存在しません。")
             return
         except InvalidQueueNameError:
             await self._send_message(interaction, INVALID_QUEUE_NAME_MESSAGE)
@@ -248,9 +268,10 @@ class BotCommandHandlers:
             return
         except Exception:
             self.logger.exception(
-                "Failed to execute /join command discord_user_id=%s queue_name=%s "
+                "Failed to execute /join command discord_user_id=%s match_format=%s queue_name=%s "
                 "channel_id=%s guild_id=%s",
                 interaction.user.id,
+                match_format,
                 queue_name,
                 interaction.channel_id,
                 interaction.guild_id,
@@ -331,6 +352,15 @@ class BotCommandHandlers:
             executor_discord_user_id=interaction.user.id,
             success_message=MATCH_PARENT_SUCCESS_MESSAGE,
             failure_message=MATCH_ACTION_FAILED_MESSAGE,
+        )
+
+    async def match_spectate(self, interaction: discord.Interaction[Any], match_id: int) -> None:
+        await self._run_match_spectate(
+            interaction=interaction,
+            match_id=match_id,
+            executor_discord_user_id=interaction.user.id,
+            success_message=None,
+            failure_message=MATCH_SPECTATE_FAILED_MESSAGE,
         )
 
     async def match_win(self, interaction: discord.Interaction[Any], match_id: int) -> None:
@@ -495,8 +525,9 @@ class BotCommandHandlers:
     async def dev_join(
         self,
         interaction: discord.Interaction[Any],
-        discord_user_id: str,
+        match_format: str,
         queue_name: str,
+        discord_user_id: str,
     ) -> None:
         if not await self._ensure_admin(interaction):
             return
@@ -511,11 +542,15 @@ class BotCommandHandlers:
             service = self._require_matching_queue_service()
             await service.join_queue(
                 player_id,
+                match_format,
                 queue_name,
                 notification_context=notification_context,
             )
         except ValueError:
             await self._send_message(interaction, INVALID_DISCORD_USER_ID_MESSAGE)
+            return
+        except InvalidMatchFormatError:
+            await self._send_message(interaction, "指定したフォーマットは存在しません。")
             return
         except InvalidQueueNameError:
             await self._send_message(interaction, DEV_INVALID_QUEUE_NAME_MESSAGE)
@@ -532,10 +567,12 @@ class BotCommandHandlers:
         except Exception:
             self.logger.exception(
                 "Failed to execute /dev_join command "
-                "executor_discord_user_id=%s target_discord_user_id=%s queue_name=%s "
+                "executor_discord_user_id=%s target_discord_user_id=%s "
+                "match_format=%s queue_name=%s "
                 "channel_id=%s guild_id=%s",
                 interaction.user.id,
                 discord_user_id,
+                match_format,
                 queue_name,
                 interaction.channel_id,
                 interaction.guild_id,
@@ -663,8 +700,8 @@ class BotCommandHandlers:
     async def dev_match_parent(
         self,
         interaction: discord.Interaction[Any],
-        discord_user_id: str,
         match_id: int,
+        discord_user_id: str,
     ) -> None:
         if not await self._ensure_admin(interaction):
             return
@@ -681,63 +718,86 @@ class BotCommandHandlers:
             failure_message=DEV_MATCH_ACTION_FAILED_MESSAGE,
         )
 
+    async def dev_match_spectate(
+        self,
+        interaction: discord.Interaction[Any],
+        match_id: int,
+        discord_user_id: str,
+    ) -> None:
+        if not await self._ensure_admin(interaction):
+            return
+
+        try:
+            target_discord_user_id = self._parse_dummy_discord_user_id(discord_user_id)
+        except ValueError:
+            await self._send_message(interaction, INVALID_DISCORD_USER_ID_MESSAGE)
+            return
+
+        await self._run_match_spectate(
+            interaction=interaction,
+            match_id=match_id,
+            executor_discord_user_id=target_discord_user_id,
+            success_message=DEV_MATCH_SPECTATE_SUCCESS_MESSAGE,
+            failure_message=DEV_MATCH_ACTION_FAILED_MESSAGE,
+        )
+
     async def dev_match_win(
         self,
         interaction: discord.Interaction[Any],
-        discord_user_id: str,
         match_id: int,
+        discord_user_id: str,
     ) -> None:
         await self._run_dev_match_report(
             interaction=interaction,
-            discord_user_id=discord_user_id,
             match_id=match_id,
+            discord_user_id=discord_user_id,
             input_result=MatchReportInputResult.WIN,
         )
 
     async def dev_match_lose(
         self,
         interaction: discord.Interaction[Any],
-        discord_user_id: str,
         match_id: int,
+        discord_user_id: str,
     ) -> None:
         await self._run_dev_match_report(
             interaction=interaction,
-            discord_user_id=discord_user_id,
             match_id=match_id,
+            discord_user_id=discord_user_id,
             input_result=MatchReportInputResult.LOSE,
         )
 
     async def dev_match_draw(
         self,
         interaction: discord.Interaction[Any],
-        discord_user_id: str,
         match_id: int,
+        discord_user_id: str,
     ) -> None:
         await self._run_dev_match_report(
             interaction=interaction,
-            discord_user_id=discord_user_id,
             match_id=match_id,
+            discord_user_id=discord_user_id,
             input_result=MatchReportInputResult.DRAW,
         )
 
     async def dev_match_void(
         self,
         interaction: discord.Interaction[Any],
-        discord_user_id: str,
         match_id: int,
+        discord_user_id: str,
     ) -> None:
         await self._run_dev_match_report(
             interaction=interaction,
-            discord_user_id=discord_user_id,
             match_id=match_id,
+            discord_user_id=discord_user_id,
             input_result=MatchReportInputResult.VOID,
         )
 
     async def dev_match_approve(
         self,
         interaction: discord.Interaction[Any],
-        discord_user_id: str,
         match_id: int,
+        discord_user_id: str,
     ) -> None:
         if not await self._ensure_admin(interaction):
             return
@@ -835,6 +895,51 @@ class BotCommandHandlers:
             return
 
         await self._send_message(interaction, success_message)
+
+    async def _run_match_spectate(
+        self,
+        *,
+        interaction: discord.Interaction[Any],
+        match_id: int,
+        executor_discord_user_id: int,
+        success_message: str | None,
+        failure_message: str,
+    ) -> None:
+        try:
+            player_id = await asyncio.to_thread(self._lookup_player_id, executor_discord_user_id)
+            service = self._require_match_service()
+            result = await service.spectate_match(match_id, player_id)
+        except PlayerNotRegisteredError:
+            message = (
+                PLAYER_REGISTRATION_REQUIRED_MESSAGE
+                if executor_discord_user_id == interaction.user.id
+                else DEV_TARGET_NOT_REGISTERED_MESSAGE
+            )
+            await self._send_message(interaction, message)
+            return
+        except MatchFlowError as exc:
+            await self._send_message(interaction, str(exc))
+            return
+        except Exception:
+            self.logger.exception(
+                "Failed to execute match_spectate command executor_discord_user_id=%s match_id=%s",
+                executor_discord_user_id,
+                match_id,
+            )
+            await self._send_message(interaction, failure_message)
+            return
+
+        if success_message is not None:
+            await self._send_message(interaction, success_message)
+            return
+
+        await self._send_message(
+            interaction,
+            (
+                "観戦応募を受け付けました。"
+                f"現在 {result.active_spectator_count} / {result.max_spectators} 人です。"
+            ),
+        )
 
     async def _run_match_report(
         self,
@@ -1016,14 +1121,19 @@ class BotCommandHandlers:
         return MatchResult(value)
 
     def _format_player_info_message(self, player_info: PlayerInfo) -> str:
-        return (
-            "プレイヤー情報\n"
-            f"rating: {player_info.rating:.2f}\n"
-            f"games_played: {player_info.games_played}\n"
-            f"wins: {player_info.wins}\n"
-            f"losses: {player_info.losses}\n"
-            f"draws: {player_info.draws}"
-        )
+        lines = ["プレイヤー情報"]
+        for format_stats in player_info.format_stats:
+            lines.extend(
+                [
+                    format_stats.match_format.value,
+                    f"rating: {format_stats.rating:.2f}",
+                    f"games_played: {format_stats.games_played}",
+                    f"wins: {format_stats.wins}",
+                    f"losses: {format_stats.losses}",
+                    f"draws: {format_stats.draws}",
+                ]
+            )
+        return "\n".join(lines)
 
     async def _send_message(
         self,
@@ -1037,6 +1147,10 @@ def register_app_commands(
     tree: app_commands.CommandTree[Any],
     handlers: BotCommandHandlers,
 ) -> None:
+    match_format_choices = [
+        app_commands.Choice(name=match_format, value=match_format)
+        for match_format in MATCH_FORMAT_CHOICES
+    ]
     queue_name_choices = [
         app_commands.Choice(name=queue_name, value=queue_name)
         for queue_name in MATCH_QUEUE_NAME_CHOICES
@@ -1047,10 +1161,15 @@ def register_app_commands(
         await handlers.register(interaction)
 
     @tree.command(name="join", description="マッチングキューに参加します")
-    @app_commands.describe(queue_name="参加したいキュー名")
+    @app_commands.describe(match_format="参加したいフォーマット", queue_name="参加したいキュー名")
+    @app_commands.choices(match_format=match_format_choices)
     @app_commands.choices(queue_name=queue_name_choices)
-    async def join_command(interaction: discord.Interaction[Any], queue_name: str) -> None:
-        await handlers.join(interaction, queue_name)
+    async def join_command(
+        interaction: discord.Interaction[Any],
+        match_format: str,
+        queue_name: str,
+    ) -> None:
+        await handlers.join(interaction, match_format, queue_name)
 
     @tree.command(name="present", description="在席を更新して期限を延長します")
     async def present_command(interaction: discord.Interaction[Any]) -> None:
@@ -1071,6 +1190,14 @@ def register_app_commands(
         match_id: int,
     ) -> None:
         await handlers.match_parent(interaction, match_id)
+
+    @tree.command(name="match_spectate", description="試合の観戦応募を行います")
+    @app_commands.describe(match_id="対象の match_id")
+    async def match_spectate_command(
+        interaction: discord.Interaction[Any],
+        match_id: int,
+    ) -> None:
+        await handlers.match_spectate(interaction, match_id)
 
     @tree.command(name="match_win", description="自分視点で勝ちを報告します")
     @app_commands.describe(match_id="対象の match_id")
@@ -1189,16 +1316,19 @@ def register_app_commands(
 
     @tree.command(name="dev_join", description="任意の Discord user ID をキュー参加させます")
     @app_commands.describe(
-        discord_user_id="キュー参加させたい Discord user ID",
+        match_format="参加させたいフォーマット",
         queue_name="参加させたいキュー名",
+        discord_user_id="キュー参加させたい Discord user ID",
     )
+    @app_commands.choices(match_format=match_format_choices)
     @app_commands.choices(queue_name=queue_name_choices)
     async def dev_join_command(
         interaction: discord.Interaction[Any],
-        discord_user_id: str,
+        match_format: str,
         queue_name: str,
+        discord_user_id: str,
     ) -> None:
-        await handlers.dev_join(interaction, discord_user_id, queue_name)
+        await handlers.dev_join(interaction, match_format, queue_name, discord_user_id)
 
     @tree.command(name="dev_present", description="任意の Discord user ID の在席を更新します")
     @app_commands.describe(discord_user_id="在席を更新したい Discord user ID")
@@ -1228,61 +1358,70 @@ def register_app_commands(
         await handlers.dev_player_info(interaction, discord_user_id)
 
     @tree.command(name="dev_match_parent", description="ダミーユーザーを親に立候補させます")
-    @app_commands.describe(discord_user_id="対象の dummy_user_id", match_id="対象の match_id")
+    @app_commands.describe(match_id="対象の match_id", discord_user_id="対象の dummy_user_id")
     async def dev_match_parent_command(
         interaction: discord.Interaction[Any],
-        discord_user_id: str,
         match_id: int,
+        discord_user_id: str,
     ) -> None:
-        await handlers.dev_match_parent(interaction, discord_user_id, match_id)
+        await handlers.dev_match_parent(interaction, match_id, discord_user_id)
+
+    @tree.command(name="dev_match_spectate", description="ダミーユーザーに観戦応募させます")
+    @app_commands.describe(match_id="対象の match_id", discord_user_id="対象の dummy_user_id")
+    async def dev_match_spectate_command(
+        interaction: discord.Interaction[Any],
+        match_id: int,
+        discord_user_id: str,
+    ) -> None:
+        await handlers.dev_match_spectate(interaction, match_id, discord_user_id)
 
     @tree.command(name="dev_match_win", description="ダミーユーザーに勝ちを報告させます")
-    @app_commands.describe(discord_user_id="対象の dummy_user_id", match_id="対象の match_id")
+    @app_commands.describe(match_id="対象の match_id", discord_user_id="対象の dummy_user_id")
     async def dev_match_win_command(
         interaction: discord.Interaction[Any],
-        discord_user_id: str,
         match_id: int,
+        discord_user_id: str,
     ) -> None:
-        await handlers.dev_match_win(interaction, discord_user_id, match_id)
+        await handlers.dev_match_win(interaction, match_id, discord_user_id)
 
     @tree.command(name="dev_match_lose", description="ダミーユーザーに負けを報告させます")
-    @app_commands.describe(discord_user_id="対象の dummy_user_id", match_id="対象の match_id")
+    @app_commands.describe(match_id="対象の match_id", discord_user_id="対象の dummy_user_id")
     async def dev_match_lose_command(
         interaction: discord.Interaction[Any],
-        discord_user_id: str,
         match_id: int,
+        discord_user_id: str,
     ) -> None:
-        await handlers.dev_match_lose(interaction, discord_user_id, match_id)
+        await handlers.dev_match_lose(interaction, match_id, discord_user_id)
 
     @tree.command(name="dev_match_draw", description="ダミーユーザーに引き分けを報告させます")
-    @app_commands.describe(discord_user_id="対象の dummy_user_id", match_id="対象の match_id")
+    @app_commands.describe(match_id="対象の match_id", discord_user_id="対象の dummy_user_id")
     async def dev_match_draw_command(
         interaction: discord.Interaction[Any],
-        discord_user_id: str,
         match_id: int,
+        discord_user_id: str,
     ) -> None:
-        await handlers.dev_match_draw(interaction, discord_user_id, match_id)
+        await handlers.dev_match_draw(interaction, match_id, discord_user_id)
 
     @tree.command(name="dev_match_void", description="ダミーユーザーに無効試合を報告させます")
-    @app_commands.describe(discord_user_id="対象の dummy_user_id", match_id="対象の match_id")
+    @app_commands.describe(match_id="対象の match_id", discord_user_id="対象の dummy_user_id")
     async def dev_match_void_command(
         interaction: discord.Interaction[Any],
-        discord_user_id: str,
         match_id: int,
+        discord_user_id: str,
     ) -> None:
-        await handlers.dev_match_void(interaction, discord_user_id, match_id)
+        await handlers.dev_match_void(interaction, match_id, discord_user_id)
 
     @tree.command(
         name="dev_match_approve",
         description="ダミーユーザーに仮決定結果を承認させます",
     )
-    @app_commands.describe(discord_user_id="対象の dummy_user_id", match_id="対象の match_id")
+    @app_commands.describe(match_id="対象の match_id", discord_user_id="対象の dummy_user_id")
     async def dev_match_approve_command(
         interaction: discord.Interaction[Any],
-        discord_user_id: str,
         match_id: int,
+        discord_user_id: str,
     ) -> None:
-        await handlers.dev_match_approve(interaction, discord_user_id, match_id)
+        await handlers.dev_match_approve(interaction, match_id, discord_user_id)
 
     @tree.command(name="dev_is_admin", description="実行者が admin かどうかを確認します")
     async def dev_is_admin_command(interaction: discord.Interaction[Any]) -> None:

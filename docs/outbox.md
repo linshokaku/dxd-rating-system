@@ -61,7 +61,8 @@
 現時点では、後続通知の配送先は以下の方針とする。
 
 - 通知は、関連するマッチングキュー系コマンドを打った channel に送る
-- 通知メッセージの先頭には、そのコマンドを実行した人への mention を付ける
+- `presence_reminder` と `queue_expired` は、そのコマンドを実行した人への mention を付ける
+- `match_created` は特定プレイヤーへの mention を付けない
 - mention 形式は `<@discord_user_id>` を用いる
 
 補足:
@@ -135,19 +136,29 @@
 
 ### `match_created`
 
-- `match_created` は 1 件のマッチに複数のプレイヤーが含まれる
+- `match_created` は 1 件の `match_id` ごとに 1 event を作成する
+- `1v1` の 1 バッチ 2 試合は、2 件の `match_created` event として扱う
 - service 層は、参加した各 `queue_entry` の通知先コンテキストをもとに配送先を集約する
 - 実際の Discord 送信 1 件ごとに 1 outbox event を作成する
-- 各 event の payload には、送信先スナップショットと表示用チーム情報を含める
+- 各 event の payload には、送信先スナップショット、`match_format`、表示用チーム情報を含める
 
 現時点の配送方針:
 
 - 同じ match について、参加者ごとに「その人が最後にコマンドを打った channel」へ送ってよい
 - 同じ `channel_id` に重複する配送先があれば 1 回にまとめてよい
+- `match_created` のメッセージ先頭には mention を付けない
 
 メッセージ例:
 
-- `<@123456789012345678> マッチ成立です。対戦相手とチーム分けを確認してください。`
+```text
+マッチ成立です。
+Team A
+<@123456789012345678>
+<@234567890123456789>
+Team B
+<@345678901234567890>
+<@456789012345678901>
+```
 
 ## outbox payload の要件
 
@@ -178,6 +189,7 @@
   - `mention_discord_user_id`
 - `match_created`
   - `match_id`
+  - `match_format`
   - `queue_entry_ids`
   - `player_ids`
   - `destination`

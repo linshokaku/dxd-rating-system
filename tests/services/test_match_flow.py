@@ -30,16 +30,24 @@ from bot.models import (
     PenaltyAdjustmentSource,
     PenaltyType,
     Player,
+    PlayerAccessRestrictionType,
     PlayerFormatStats,
     PlayerPenalty,
     PlayerPenaltyAdjustment,
 )
-from bot.services import MatchFlowService, MatchingQueueNotificationContext, MatchingQueueService
+from bot.services import (
+    MatchFlowService,
+    MatchingQueueNotificationContext,
+    MatchingQueueService,
+    PlayerAccessRestrictionDuration,
+    PlayerAccessRestrictionService,
+)
 from bot.services.errors import (
     MatchNotFinalizedError,
     MatchParticipantError,
     MatchReportNotOpenError,
     MatchSpectatingClosedError,
+    MatchSpectatingRestrictedError,
     MatchSpectatorAlreadyRegisteredError,
     MatchSpectatorCapacityError,
 )
@@ -564,6 +572,32 @@ def test_spectate_match_rejects_matches_outside_accepting_states(
         MatchSpectatingClosedError,
         match="この試合は観戦受付を終了しています。",
     ):
+        match_service.spectate_match(match_id, spectator.id)
+
+
+def test_spectate_match_rejects_players_with_active_spectate_restriction(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    match_id, _ = create_first_match_for_format(
+        session,
+        session_factory,
+        match_format=MatchFormat.THREE_VS_THREE,
+        start_discord_user_id=60_124_1,
+        channel_id=91_001_6_1,
+        guild_id=92_001_6_1,
+    )
+    spectator = create_player(session, 60_224_1)
+    restriction_service = PlayerAccessRestrictionService(session_factory)
+    restriction_service.restrict_player_access(
+        spectator.id,
+        PlayerAccessRestrictionType.SPECTATE,
+        PlayerAccessRestrictionDuration.PERMANENT,
+        admin_discord_user_id=95_001,
+    )
+    match_service = MatchFlowService(session_factory)
+
+    with pytest.raises(MatchSpectatingRestrictedError, match="現在観戦を制限されています。"):
         match_service.spectate_match(match_id, spectator.id)
 
 

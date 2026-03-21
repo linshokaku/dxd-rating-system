@@ -4,6 +4,8 @@
 
 - [formats.md](formats.md)
   - 対応フォーマット、独立管理の範囲、基本データモデル方針
+- [players/access_restrictions.md](players/access_restrictions.md)
+  - admin によるプレイヤー利用制限
 - [matching/common.md](matching/common.md)
   - キュー参加、在席更新、退出、期限切れ、共通排他制御
 - [matching/queue_classes.md](matching/queue_classes.md)
@@ -44,8 +46,9 @@
 読み方の推奨順は以下とする。
 
 1. [formats.md](formats.md)
-2. [matching/common.md](matching/common.md)
-3. [matching/queue_classes.md](matching/queue_classes.md)
-4. 必要なフォーマット別仕様
-5. [matches/common.md](matches/common.md)
-6. [rating/common.md](rating/common.md)
+2. [players/access_restrictions.md](players/access_restrictions.md)
+3. [matching/common.md](matching/common.md)
+4. [matching/queue_classes.md](matching/queue_classes.md)
+5. 必要なフォーマット別仕様
+6. [matches/common.md](matches/common.md)
+7. [rating/common.md](rating/common.md)

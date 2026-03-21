@@ -39,14 +39,17 @@ from bot.models import (
     OutboxEvent,
     OutboxEventType,
     Player,
+    PlayerAccessRestrictionType,
     PlayerFormatStats,
 )
+from bot.services.access_restrictions import get_active_player_access_restriction
 from bot.services.errors import (
     InvalidMatchFormatError,
     InvalidQueueNameError,
     PlayerNotRegisteredError,
     QueueAlreadyJoinedError,
     QueueJoinNotAllowedError,
+    QueueJoinRestrictedError,
     QueueNotJoinedError,
     RetryableTaskError,
 )
@@ -58,6 +61,7 @@ JOIN_QUEUE_MESSAGE = "キューに参加しました。5分間マッチングし
 INVALID_MATCH_FORMAT_MESSAGE = "指定したフォーマットは存在しません。"
 INVALID_QUEUE_NAME_MESSAGE = "指定したキューは存在しません。"
 QUEUE_JOIN_NOT_ALLOWED_MESSAGE = "現在のレーティングではそのキューに参加できません。"
+QUEUE_JOIN_RESTRICTED_MESSAGE = "現在キュー参加を制限されています。"
 QUEUE_ALREADY_JOINED_MESSAGE = "すでにキュー参加中です。"
 QUEUE_PRESENT_UPDATED_MESSAGE = "在席を更新しました。次の期限は5分後です。"
 QUEUE_NOT_JOINED_MESSAGE = "キューに参加していません。"
@@ -230,6 +234,7 @@ class MatchingQueueService:
         with session_scope(self.session_factory) as session:
             player = self._ensure_player_exists(session, player_id)
             self._acquire_player_lock(session, player_id)
+            self._ensure_queue_join_not_restricted(session, player.id)
             resolved_match_format = self._resolve_match_format(match_format)
             queue_class_definition = self._resolve_queue_class_definition(
                 resolved_match_format,
@@ -945,6 +950,15 @@ class MatchingQueueService:
         if definition is None:
             raise InvalidQueueNameError(INVALID_QUEUE_NAME_MESSAGE)
         return definition
+
+    def _ensure_queue_join_not_restricted(self, session: Session, player_id: int) -> None:
+        restriction = get_active_player_access_restriction(
+            session,
+            player_id=player_id,
+            restriction_type=PlayerAccessRestrictionType.QUEUE_JOIN,
+        )
+        if restriction is not None:
+            raise QueueJoinRestrictedError(QUEUE_JOIN_RESTRICTED_MESSAGE)
 
     def _require_queue_class_definition_by_id(
         self,

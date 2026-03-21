@@ -11,12 +11,25 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from bot.commands import BotCommandHandlers, register_app_commands
 from bot.config import Settings
-from bot.models import MatchFormat, MatchQueueEntry, MatchSpectator, Player, PlayerFormatStats
+from bot.models import (
+    MatchFormat,
+    MatchQueueEntry,
+    MatchQueueEntryStatus,
+    MatchSpectator,
+    PenaltyType,
+    Player,
+    PlayerAccessRestriction,
+    PlayerAccessRestrictionType,
+    PlayerFormatStats,
+    PlayerPenalty,
+)
 from bot.runtime import MatchRuntime
 from bot.services import (
     MatchFlowService,
     MatchingQueueNotificationContext,
     MatchingQueueService,
+    PlayerAccessRestrictionDuration,
+    PlayerAccessRestrictionService,
     register_player,
 )
 
@@ -240,6 +253,36 @@ def test_join_command_requires_registered_player(session_factory: sessionmaker[S
     ]
 
 
+def test_join_command_returns_restricted_message_for_queue_join_restricted_player(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    discord_user_id = 123_456_789_012_345_681_1
+    player = create_player(session, discord_user_id)
+    restriction_service = PlayerAccessRestrictionService(session_factory)
+    restriction_service.restrict_player_access(
+        player.id,
+        PlayerAccessRestrictionType.QUEUE_JOIN,
+        PlayerAccessRestrictionDuration.PERMANENT,
+        admin_discord_user_id=99_001,
+    )
+    handlers = create_handlers(
+        session_factory,
+        matching_queue_service=MatchingQueueService(session_factory),
+    )
+    interaction = FakeInteraction(user=FakeUser(id=discord_user_id))
+
+    asyncio.run(
+        handlers.join(
+            as_interaction(interaction),
+            DEFAULT_MATCH_FORMAT.value,
+            DEFAULT_QUEUE_NAME,
+        )
+    )
+
+    assert interaction.response.messages == ["現在キュー参加を制限されています。"]
+
+
 def test_present_command_updates_waiting_entry_and_notification_context(
     session: Session,
     session_factory: sessionmaker[Session],
@@ -401,6 +444,37 @@ def test_match_spectate_command_requires_registered_player(
     ]
 
 
+def test_match_spectate_command_returns_restricted_message_for_restricted_player(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    match_id, _ = create_match(
+        session,
+        session_factory,
+        start_discord_user_id=123_456_789_012_345_707_1,
+        channel_id=13_002,
+        guild_id=14_002,
+    )
+    spectator_discord_user_id = 123_456_789_012_345_713
+    spectator = create_player(session, spectator_discord_user_id)
+    restriction_service = PlayerAccessRestrictionService(session_factory)
+    restriction_service.restrict_player_access(
+        spectator.id,
+        PlayerAccessRestrictionType.SPECTATE,
+        PlayerAccessRestrictionDuration.PERMANENT,
+        admin_discord_user_id=99_002,
+    )
+    handlers = create_handlers(
+        session_factory,
+        matching_queue_service=MatchingQueueService(session_factory),
+    )
+    interaction = FakeInteraction(user=FakeUser(id=spectator_discord_user_id))
+
+    asyncio.run(handlers.match_spectate(as_interaction(interaction), match_id))
+
+    assert interaction.response.messages == ["現在観戦を制限されています。"]
+
+
 def test_dev_match_spectate_registers_target_dummy_user_as_spectator(
     session: Session,
     session_factory: sessionmaker[Session],
@@ -439,6 +513,45 @@ def test_dev_match_spectate_registers_target_dummy_user_as_spectator(
 
     assert interaction.response.messages == ["指定したユーザーの観戦応募を受け付けました。"]
     assert persisted_spectator is not None
+
+
+def test_dev_match_spectate_returns_restricted_message_for_restricted_target(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    executor_discord_user_id = 10
+    target_discord_user_id = 778
+    match_id, _ = create_match(
+        session,
+        session_factory,
+        start_discord_user_id=123_456_789_012_345_711,
+        channel_id=13_011,
+        guild_id=14_011,
+    )
+    spectator = create_player(session, target_discord_user_id)
+    restriction_service = PlayerAccessRestrictionService(session_factory)
+    restriction_service.restrict_player_access(
+        spectator.id,
+        PlayerAccessRestrictionType.SPECTATE,
+        PlayerAccessRestrictionDuration.PERMANENT,
+        admin_discord_user_id=10,
+    )
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({executor_discord_user_id}),
+        matching_queue_service=MatchingQueueService(session_factory),
+    )
+    interaction = FakeInteraction(user=FakeUser(id=executor_discord_user_id))
+
+    asyncio.run(
+        handlers.dev_match_spectate(
+            as_interaction(interaction),
+            match_id,
+            str(target_discord_user_id),
+        )
+    )
+
+    assert interaction.response.messages == ["指定したユーザーは現在観戦を制限されています。"]
 
 
 def test_dev_register_requires_admin(
@@ -511,6 +624,39 @@ def test_dev_join_targets_provided_user_and_uses_target_for_notification_context
     assert queue_entry.notification_channel_id == 11_001
     assert queue_entry.notification_guild_id == 12_001
     assert queue_entry.notification_mention_discord_user_id == target_discord_user_id
+
+
+def test_dev_join_returns_restricted_message_for_restricted_target(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    executor_discord_user_id = 10
+    target_discord_user_id = 779
+    player = create_player(session, target_discord_user_id)
+    restriction_service = PlayerAccessRestrictionService(session_factory)
+    restriction_service.restrict_player_access(
+        player.id,
+        PlayerAccessRestrictionType.QUEUE_JOIN,
+        PlayerAccessRestrictionDuration.PERMANENT,
+        admin_discord_user_id=10,
+    )
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({executor_discord_user_id}),
+        matching_queue_service=MatchingQueueService(session_factory),
+    )
+    interaction = FakeInteraction(user=FakeUser(id=executor_discord_user_id))
+
+    asyncio.run(
+        handlers.dev_join(
+            as_interaction(interaction),
+            DEFAULT_MATCH_FORMAT.value,
+            DEFAULT_QUEUE_NAME,
+            str(target_discord_user_id),
+        )
+    )
+
+    assert interaction.response.messages == ["指定したユーザーは現在キュー参加を制限されています。"]
 
 
 def test_dev_present_returns_expired_message_for_expired_target(
@@ -633,6 +779,147 @@ def test_dev_is_admin_returns_yes_or_no(session_factory: sessionmaker[Session]) 
     assert non_admin_interaction.response.messages == ["いいえ"]
 
 
+def test_admin_restrict_and_unrestrict_user_commands_manage_restrictions(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    executor_discord_user_id = 10
+    target_discord_user_id = 123_456_789_012_345_695
+    player = create_player(session, target_discord_user_id)
+    matching_queue_service = MatchingQueueService(session_factory)
+    matching_queue_service.join_queue(player.id, DEFAULT_MATCH_FORMAT, DEFAULT_QUEUE_NAME)
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({executor_discord_user_id}),
+        matching_queue_service=matching_queue_service,
+    )
+    restrict_interaction = FakeInteraction(user=FakeUser(id=executor_discord_user_id))
+    unrestrict_interaction = FakeInteraction(user=FakeUser(id=executor_discord_user_id))
+
+    asyncio.run(
+        handlers.admin_restrict_user(
+            as_interaction(restrict_interaction),
+            PlayerAccessRestrictionType.QUEUE_JOIN.value,
+            PlayerAccessRestrictionDuration.SEVEN_DAYS.value,
+            target_user=FakeUser(id=target_discord_user_id),
+            reason="test reason",
+        )
+    )
+    asyncio.run(
+        handlers.admin_unrestrict_user(
+            as_interaction(unrestrict_interaction),
+            PlayerAccessRestrictionType.QUEUE_JOIN.value,
+            target_user=FakeUser(id=target_discord_user_id),
+        )
+    )
+
+    session.expire_all()
+    restriction = session.scalar(
+        select(PlayerAccessRestriction).where(PlayerAccessRestriction.player_id == player.id)
+    )
+    queue_entry = session.scalar(
+        select(MatchQueueEntry).where(MatchQueueEntry.player_id == player.id)
+    )
+
+    assert restrict_interaction.response.messages == [
+        "指定したユーザーのキュー参加を7日制限しました。"
+    ]
+    assert unrestrict_interaction.response.messages == [
+        "指定したユーザーのキュー参加制限を解除しました。"
+    ]
+    assert restriction is not None
+    assert restriction.restriction_type == PlayerAccessRestrictionType.QUEUE_JOIN
+    assert restriction.reason == "test reason"
+    assert restriction.revoked_at is not None
+    assert queue_entry is not None
+    assert queue_entry.status == MatchQueueEntryStatus.WAITING
+
+
+def test_admin_restrict_user_accepts_dummy_user_reference(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    executor_discord_user_id = 10
+    target_discord_user_id = 777
+    player = create_player(session, target_discord_user_id)
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({executor_discord_user_id}),
+    )
+    interaction = FakeInteraction(user=FakeUser(id=executor_discord_user_id))
+
+    asyncio.run(
+        handlers.admin_restrict_user(
+            as_interaction(interaction),
+            PlayerAccessRestrictionType.SPECTATE.value,
+            PlayerAccessRestrictionDuration.ONE_DAY.value,
+            dummy_user=f"<dummy_{target_discord_user_id}>",
+        )
+    )
+
+    session.expire_all()
+    restriction = session.scalar(
+        select(PlayerAccessRestriction).where(PlayerAccessRestriction.player_id == player.id)
+    )
+
+    assert interaction.response.messages == ["指定したユーザーの観戦を1日制限しました。"]
+    assert restriction is not None
+    assert restriction.restriction_type == PlayerAccessRestrictionType.SPECTATE
+
+
+def test_admin_restrict_user_requires_target_selection(
+    session_factory: sessionmaker[Session],
+) -> None:
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({10}),
+    )
+    interaction = FakeInteraction(user=FakeUser(id=10))
+
+    asyncio.run(
+        handlers.admin_restrict_user(
+            as_interaction(interaction),
+            PlayerAccessRestrictionType.QUEUE_JOIN.value,
+            PlayerAccessRestrictionDuration.SEVEN_DAYS.value,
+        )
+    )
+
+    assert interaction.response.messages == ["対象ユーザーの指定が不正です。"]
+
+
+def test_admin_add_penalty_accepts_dummy_user_reference(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    executor_discord_user_id = 10
+    target_discord_user_id = 778
+    player = create_player(session, target_discord_user_id)
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({executor_discord_user_id}),
+        matching_queue_service=MatchingQueueService(session_factory),
+    )
+    interaction = FakeInteraction(user=FakeUser(id=executor_discord_user_id))
+
+    asyncio.run(
+        handlers.admin_add_penalty(
+            as_interaction(interaction),
+            PenaltyType.LATE,
+            dummy_user=f"<dummy_{target_discord_user_id}>",
+        )
+    )
+
+    session.expire_all()
+    penalty = session.get(
+        PlayerPenalty,
+        {"player_id": player.id, "penalty_type": PenaltyType.LATE},
+    )
+
+    assert interaction.response.messages == ["ペナルティを加算しました。"]
+    assert penalty is not None
+    assert penalty.count == 1
+
+
 def test_dev_commands_register_discord_user_id_as_last_option() -> None:
     handlers = BotCommandHandlers(
         settings=create_settings(),
@@ -662,6 +949,54 @@ def test_dev_commands_register_discord_user_id_as_last_option() -> None:
         command = tree.get_command(command_name)
         assert command is not None
         assert [parameter.name for parameter in command.parameters] == expected
+
+
+def test_admin_restriction_commands_are_registered_with_expected_parameters() -> None:
+    handlers = BotCommandHandlers(
+        settings=create_settings(),
+        session_factory=sessionmaker(),
+    )
+    client = discord.Client(intents=discord.Intents.none())
+    tree = discord.app_commands.CommandTree(client)
+
+    register_app_commands(tree, handlers)
+
+    restrict_command = tree.get_command("admin_restrict_user")
+    unrestrict_command = tree.get_command("admin_unrestrict_user")
+
+    assert restrict_command is not None
+    assert unrestrict_command is not None
+    assert [parameter.name for parameter in restrict_command.parameters] == [
+        "restriction_type",
+        "duration",
+        "user",
+        "dummy_user",
+        "reason",
+    ]
+    assert [parameter.name for parameter in unrestrict_command.parameters] == [
+        "restriction_type",
+        "user",
+        "dummy_user",
+    ]
+
+
+def test_admin_penalty_commands_are_registered_with_expected_parameters() -> None:
+    handlers = BotCommandHandlers(
+        settings=create_settings(),
+        session_factory=sessionmaker(),
+    )
+    client = discord.Client(intents=discord.Intents.none())
+    tree = discord.app_commands.CommandTree(client)
+
+    register_app_commands(tree, handlers)
+
+    add_command = tree.get_command("admin_add_late")
+    sub_command = tree.get_command("admin_sub_late")
+
+    assert add_command is not None
+    assert sub_command is not None
+    assert [parameter.name for parameter in add_command.parameters] == ["user", "dummy_user"]
+    assert [parameter.name for parameter in sub_command.parameters] == ["user", "dummy_user"]
 
 
 def test_match_spectate_command_is_registered_with_match_id_parameter() -> None:

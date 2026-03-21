@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import Any, Protocol, cast
 
 import discord
@@ -11,9 +12,17 @@ from sqlalchemy.orm import Session, sessionmaker
 from bot.config import Settings
 from bot.constants import MATCH_FORMAT_CHOICES, MATCH_QUEUE_NAME_CHOICES, is_dummy_discord_user_id
 from bot.db.session import session_scope
-from bot.models import MatchFormat, MatchReportInputResult, MatchResult, PenaltyType
+from bot.models import (
+    MatchFormat,
+    MatchReportInputResult,
+    MatchResult,
+    PenaltyType,
+    PlayerAccessRestrictionType,
+)
 from bot.services import (
     InvalidMatchFormatError,
+    InvalidPlayerAccessRestrictionDurationError,
+    InvalidPlayerAccessRestrictionTypeError,
     InvalidQueueNameError,
     JoinQueueResult,
     LeaveQueueResult,
@@ -21,6 +30,10 @@ from bot.services import (
     MatchingQueueNotificationContext,
     MatchReportSubmissionResult,
     MatchSpectateResult,
+    MatchSpectatingRestrictedError,
+    PlayerAccessRestrictionAlreadyExistsError,
+    PlayerAccessRestrictionDuration,
+    PlayerAccessRestrictionService,
     PlayerAlreadyRegisteredError,
     PlayerInfo,
     PlayerLookupService,
@@ -29,6 +42,7 @@ from bot.services import (
     PresentQueueResult,
     QueueAlreadyJoinedError,
     QueueJoinNotAllowedError,
+    QueueJoinRestrictedError,
     QueueNotJoinedError,
     register_player,
 )
@@ -42,6 +56,7 @@ PLAYER_REGISTRATION_REQUIRED_MESSAGE = (
 )
 INVALID_QUEUE_NAME_MESSAGE = "指定したキューは存在しません。"
 QUEUE_JOIN_NOT_ALLOWED_MESSAGE = "現在のレーティングではそのキューに参加できません。"
+QUEUE_JOIN_RESTRICTED_MESSAGE = "現在キュー参加を制限されています。"
 JOIN_ALREADY_JOINED_MESSAGE = "すでにキュー参加中です。"
 PRESENT_NOT_JOINED_MESSAGE = "キューに参加していません。"
 JOIN_FAILED_MESSAGE = "キュー参加に失敗しました。管理者に確認してください。"
@@ -50,6 +65,7 @@ LEAVE_FAILED_MESSAGE = "キュー退出に失敗しました。管理者に確�
 PLAYER_INFO_FAILED_MESSAGE = "プレイヤー情報の取得に失敗しました。管理者に確認してください。"
 
 MATCH_PARENT_SUCCESS_MESSAGE = "親に立候補しました。"
+MATCH_SPECTATE_RESTRICTED_MESSAGE = "現在観戦を制限されています。"
 MATCH_SPECTATE_FAILED_MESSAGE = "観戦応募に失敗しました。管理者に確認してください。"
 MATCH_REPORT_SUCCESS_MESSAGE = "勝敗報告を受け付けました。"
 MATCH_APPROVE_SUCCESS_MESSAGE = "仮決定結果を承認しました。"
@@ -57,9 +73,15 @@ MATCH_ACTION_FAILED_MESSAGE = "試合操作に失敗しました。管理者に�
 
 ADMIN_ONLY_MESSAGE = "このコマンドは管理者のみ実行できます。"
 INVALID_DISCORD_USER_ID_MESSAGE = "discord_user_id が不正です。"
+INVALID_ADMIN_TARGET_USER_MESSAGE = "対象ユーザーの指定が不正です。"
 ADMIN_MATCH_RESULT_SUCCESS_MESSAGE = "試合結果を上書きしました。"
 ADMIN_MATCH_RESULT_FAILED_MESSAGE = "試合結果の上書きに失敗しました。管理者に確認してください。"
 ADMIN_TARGET_NOT_REGISTERED_MESSAGE = "指定したユーザーは未登録です。"
+ADMIN_RESTRICTION_FAILED_MESSAGE = "利用制限の設定に失敗しました。管理者に確認してください。"
+ADMIN_UNRESTRICTION_FAILED_MESSAGE = "利用制限の解除に失敗しました。管理者に確認してください。"
+ADMIN_RESTRICTION_ALREADY_EXISTS_MESSAGE = "指定したユーザーにはすでに同種別の制限が有効です。"
+INVALID_RESTRICTION_TYPE_MESSAGE = "restriction_type が不正です。"
+INVALID_RESTRICTION_DURATION_MESSAGE = "duration が不正です。"
 ADMIN_PENALTY_ADD_SUCCESS_MESSAGE = "ペナルティを加算しました。"
 ADMIN_PENALTY_SUB_SUCCESS_MESSAGE = "ペナルティを減算しました。"
 ADMIN_PENALTY_FAILED_MESSAGE = "ペナルティ操作に失敗しました。管理者に確認してください。"
@@ -75,6 +97,7 @@ DEV_JOIN_ALREADY_JOINED_MESSAGE = "指定したユーザーはすでにキュー
 DEV_JOIN_NOT_ALLOWED_MESSAGE = (
     "指定したユーザーは現在のレーティングではそのキューに参加できません。"
 )
+DEV_JOIN_RESTRICTED_MESSAGE = "指定したユーザーは現在キュー参加を制限されています。"
 DEV_JOIN_FAILED_MESSAGE = "ダミーユーザーのキュー参加に失敗しました。管理者に確認してください。"
 
 DEV_PRESENT_SUCCESS_MESSAGE = "指定したユーザーの在席を更新しました。"
@@ -91,6 +114,7 @@ DEV_PLAYER_INFO_FAILED_MESSAGE = (
 
 DEV_MATCH_PARENT_SUCCESS_MESSAGE = "指定したユーザーを親に立候補させました。"
 DEV_MATCH_SPECTATE_SUCCESS_MESSAGE = "指定したユーザーの観戦応募を受け付けました。"
+DEV_MATCH_SPECTATE_RESTRICTED_MESSAGE = "指定したユーザーは現在観戦を制限されています。"
 DEV_MATCH_REPORT_SUCCESS_MESSAGE = "指定したユーザーの勝敗報告を受け付けました。"
 DEV_MATCH_APPROVE_SUCCESS_MESSAGE = "指定したユーザーが仮決定結果を承認しました。"
 DEV_MATCH_ACTION_FAILED_MESSAGE = (
@@ -99,9 +123,30 @@ DEV_MATCH_ACTION_FAILED_MESSAGE = (
 
 DEV_IS_ADMIN_ERROR_MESSAGE = "エラーが発生しました。管理者に確認してください。"
 
+PLAYER_ACCESS_RESTRICTION_TYPE_LABELS = {
+    PlayerAccessRestrictionType.QUEUE_JOIN: "キュー参加",
+    PlayerAccessRestrictionType.SPECTATE: "観戦",
+}
+PLAYER_ACCESS_RESTRICTION_DURATION_LABELS = {
+    PlayerAccessRestrictionDuration.ONE_DAY: "1日",
+    PlayerAccessRestrictionDuration.THREE_DAYS: "3日",
+    PlayerAccessRestrictionDuration.SEVEN_DAYS: "7日",
+    PlayerAccessRestrictionDuration.FOURTEEN_DAYS: "14日",
+    PlayerAccessRestrictionDuration.TWENTY_EIGHT_DAYS: "28日",
+    PlayerAccessRestrictionDuration.FIFTY_SIX_DAYS: "56日",
+    PlayerAccessRestrictionDuration.EIGHTY_FOUR_DAYS: "84日",
+    PlayerAccessRestrictionDuration.PERMANENT: "永久",
+}
+
+DUMMY_USER_REFERENCE_PATTERN = re.compile(r"<dummy_(\d+)>")
+
 
 def is_super_admin(user_id: int, settings: Settings) -> bool:
     return user_id in settings.super_admin_user_ids
+
+
+class DiscordUserLike(Protocol):
+    id: int
 
 
 class MatchingQueueCommandService(Protocol):
@@ -174,6 +219,26 @@ class MatchCommandService(Protocol):
     ) -> PlayerPenaltyAdjustmentResult: ...
 
 
+class PlayerAccessRestrictionCommandService(Protocol):
+    def restrict_player_access(
+        self,
+        player_id: int,
+        restriction_type: PlayerAccessRestrictionType | str,
+        duration: PlayerAccessRestrictionDuration | str,
+        *,
+        admin_discord_user_id: int,
+        reason: str | None = None,
+    ) -> object: ...
+
+    def unrestrict_player_access(
+        self,
+        player_id: int,
+        restriction_type: PlayerAccessRestrictionType | str,
+        *,
+        admin_discord_user_id: int,
+    ) -> object: ...
+
+
 class BotCommandHandlers:
     def __init__(
         self,
@@ -182,6 +247,7 @@ class BotCommandHandlers:
         *,
         matching_queue_service: MatchingQueueCommandService | None = None,
         match_service: MatchCommandService | None = None,
+        player_access_restriction_service: PlayerAccessRestrictionCommandService | None = None,
         player_lookup_service: PlayerLookupService | None = None,
         logger: logging.Logger | None = None,
     ) -> None:
@@ -189,6 +255,9 @@ class BotCommandHandlers:
         self.session_factory = session_factory
         self._matching_queue_service = matching_queue_service
         self._match_service = match_service
+        self._player_access_restriction_service = (
+            player_access_restriction_service or PlayerAccessRestrictionService(session_factory)
+        )
         if (
             self._match_service is None
             and matching_queue_service is not None
@@ -262,6 +331,9 @@ class BotCommandHandlers:
             return
         except QueueJoinNotAllowedError:
             await self._send_message(interaction, QUEUE_JOIN_NOT_ALLOWED_MESSAGE)
+            return
+        except QueueJoinRestrictedError:
+            await self._send_message(interaction, QUEUE_JOIN_RESTRICTED_MESSAGE)
             return
         except QueueAlreadyJoinedError:
             await self._send_message(interaction, JOIN_ALREADY_JOINED_MESSAGE)
@@ -468,29 +540,155 @@ class BotCommandHandlers:
     async def admin_add_penalty(
         self,
         interaction: discord.Interaction[Any],
-        discord_user_id: str,
         penalty_type: PenaltyType,
+        *,
+        target_user: DiscordUserLike | None = None,
+        dummy_user: str | None = None,
     ) -> None:
         await self._run_admin_penalty(
             interaction=interaction,
-            discord_user_id=discord_user_id,
             penalty_type=penalty_type,
             delta=1,
             success_message=ADMIN_PENALTY_ADD_SUCCESS_MESSAGE,
+            target_user=target_user,
+            dummy_user=dummy_user,
         )
 
     async def admin_sub_penalty(
         self,
         interaction: discord.Interaction[Any],
-        discord_user_id: str,
         penalty_type: PenaltyType,
+        *,
+        target_user: DiscordUserLike | None = None,
+        dummy_user: str | None = None,
     ) -> None:
         await self._run_admin_penalty(
             interaction=interaction,
-            discord_user_id=discord_user_id,
             penalty_type=penalty_type,
             delta=-1,
             success_message=ADMIN_PENALTY_SUB_SUCCESS_MESSAGE,
+            target_user=target_user,
+            dummy_user=dummy_user,
+        )
+
+    async def admin_restrict_user(
+        self,
+        interaction: discord.Interaction[Any],
+        restriction_type: str,
+        duration: str,
+        *,
+        target_user: DiscordUserLike | None = None,
+        dummy_user: str | None = None,
+        reason: str | None = None,
+    ) -> None:
+        if not await self._ensure_admin(interaction):
+            return
+
+        try:
+            target_discord_user_id = self._resolve_admin_target_discord_user_id(
+                target_user=target_user,
+                dummy_user=dummy_user,
+            )
+            resolved_restriction_type = self._parse_restriction_type(restriction_type)
+            resolved_duration = self._parse_restriction_duration(duration)
+            player_id = await asyncio.to_thread(self._lookup_player_id, target_discord_user_id)
+            service = self._require_player_access_restriction_service()
+            await asyncio.to_thread(
+                service.restrict_player_access,
+                player_id,
+                resolved_restriction_type,
+                resolved_duration,
+                admin_discord_user_id=interaction.user.id,
+                reason=reason,
+            )
+        except ValueError:
+            await self._send_message(interaction, INVALID_ADMIN_TARGET_USER_MESSAGE)
+            return
+        except InvalidPlayerAccessRestrictionTypeError:
+            await self._send_message(interaction, INVALID_RESTRICTION_TYPE_MESSAGE)
+            return
+        except InvalidPlayerAccessRestrictionDurationError:
+            await self._send_message(interaction, INVALID_RESTRICTION_DURATION_MESSAGE)
+            return
+        except PlayerNotRegisteredError:
+            await self._send_message(interaction, ADMIN_TARGET_NOT_REGISTERED_MESSAGE)
+            return
+        except PlayerAccessRestrictionAlreadyExistsError:
+            await self._send_message(interaction, ADMIN_RESTRICTION_ALREADY_EXISTS_MESSAGE)
+            return
+        except Exception:
+            self.logger.exception(
+                "Failed to execute /admin_restrict_user command "
+                "executor_discord_user_id=%s target_discord_user_id=%s "
+                "restriction_type=%s duration=%s",
+                interaction.user.id,
+                self._format_admin_target_for_log(target_user=target_user, dummy_user=dummy_user),
+                restriction_type,
+                duration,
+            )
+            await self._send_message(interaction, ADMIN_RESTRICTION_FAILED_MESSAGE)
+            return
+
+        await self._send_message(
+            interaction,
+            (
+                f"指定したユーザーの"
+                f"{PLAYER_ACCESS_RESTRICTION_TYPE_LABELS[resolved_restriction_type]}を"
+                f"{PLAYER_ACCESS_RESTRICTION_DURATION_LABELS[resolved_duration]}制限しました。"
+            ),
+        )
+
+    async def admin_unrestrict_user(
+        self,
+        interaction: discord.Interaction[Any],
+        restriction_type: str,
+        *,
+        target_user: DiscordUserLike | None = None,
+        dummy_user: str | None = None,
+    ) -> None:
+        if not await self._ensure_admin(interaction):
+            return
+
+        try:
+            target_discord_user_id = self._resolve_admin_target_discord_user_id(
+                target_user=target_user,
+                dummy_user=dummy_user,
+            )
+            resolved_restriction_type = self._parse_restriction_type(restriction_type)
+            player_id = await asyncio.to_thread(self._lookup_player_id, target_discord_user_id)
+            service = self._require_player_access_restriction_service()
+            await asyncio.to_thread(
+                service.unrestrict_player_access,
+                player_id,
+                resolved_restriction_type,
+                admin_discord_user_id=interaction.user.id,
+            )
+        except ValueError:
+            await self._send_message(interaction, INVALID_ADMIN_TARGET_USER_MESSAGE)
+            return
+        except InvalidPlayerAccessRestrictionTypeError:
+            await self._send_message(interaction, INVALID_RESTRICTION_TYPE_MESSAGE)
+            return
+        except PlayerNotRegisteredError:
+            await self._send_message(interaction, ADMIN_TARGET_NOT_REGISTERED_MESSAGE)
+            return
+        except Exception:
+            self.logger.exception(
+                "Failed to execute /admin_unrestrict_user command "
+                "executor_discord_user_id=%s target_discord_user_id=%s restriction_type=%s",
+                interaction.user.id,
+                self._format_admin_target_for_log(target_user=target_user, dummy_user=dummy_user),
+                restriction_type,
+            )
+            await self._send_message(interaction, ADMIN_UNRESTRICTION_FAILED_MESSAGE)
+            return
+
+        await self._send_message(
+            interaction,
+            (
+                f"指定したユーザーの"
+                f"{PLAYER_ACCESS_RESTRICTION_TYPE_LABELS[resolved_restriction_type]}制限を解除しました。"
+            ),
         )
 
     async def dev_register(
@@ -560,6 +758,9 @@ class BotCommandHandlers:
             return
         except QueueJoinNotAllowedError:
             await self._send_message(interaction, DEV_JOIN_NOT_ALLOWED_MESSAGE)
+            return
+        except QueueJoinRestrictedError:
+            await self._send_message(interaction, DEV_JOIN_RESTRICTED_MESSAGE)
             return
         except QueueAlreadyJoinedError:
             await self._send_message(interaction, DEV_JOIN_ALREADY_JOINED_MESSAGE)
@@ -917,6 +1118,14 @@ class BotCommandHandlers:
             )
             await self._send_message(interaction, message)
             return
+        except MatchSpectatingRestrictedError:
+            message = (
+                MATCH_SPECTATE_RESTRICTED_MESSAGE
+                if executor_discord_user_id == interaction.user.id
+                else DEV_MATCH_SPECTATE_RESTRICTED_MESSAGE
+            )
+            await self._send_message(interaction, message)
+            return
         except MatchFlowError as exc:
             await self._send_message(interaction, str(exc))
             return
@@ -1018,16 +1227,20 @@ class BotCommandHandlers:
         self,
         *,
         interaction: discord.Interaction[Any],
-        discord_user_id: str,
         penalty_type: PenaltyType,
         delta: int,
         success_message: str,
+        target_user: DiscordUserLike | None = None,
+        dummy_user: str | None = None,
     ) -> None:
         if not await self._ensure_admin(interaction):
             return
 
         try:
-            target_discord_user_id = self._parse_discord_user_id(discord_user_id)
+            target_discord_user_id = self._resolve_admin_target_discord_user_id(
+                target_user=target_user,
+                dummy_user=dummy_user,
+            )
             player_id = await asyncio.to_thread(self._lookup_player_id, target_discord_user_id)
             service = self._require_match_service()
             await service.adjust_penalty(
@@ -1037,7 +1250,7 @@ class BotCommandHandlers:
                 admin_discord_user_id=interaction.user.id,
             )
         except ValueError:
-            await self._send_message(interaction, INVALID_DISCORD_USER_ID_MESSAGE)
+            await self._send_message(interaction, INVALID_ADMIN_TARGET_USER_MESSAGE)
             return
         except PlayerNotRegisteredError:
             await self._send_message(interaction, ADMIN_TARGET_NOT_REGISTERED_MESSAGE)
@@ -1047,7 +1260,7 @@ class BotCommandHandlers:
                 "Failed to execute admin penalty command executor_discord_user_id=%s "
                 "target_discord_user_id=%s penalty_type=%s delta=%s",
                 interaction.user.id,
-                discord_user_id,
+                self._format_admin_target_for_log(target_user=target_user, dummy_user=dummy_user),
                 penalty_type.value,
                 delta,
             )
@@ -1075,6 +1288,11 @@ class BotCommandHandlers:
         if self._match_service is None:
             raise RuntimeError("MatchService is not configured")
         return self._match_service
+
+    def _require_player_access_restriction_service(
+        self,
+    ) -> PlayerAccessRestrictionCommandService:
+        return self._player_access_restriction_service
 
     def _build_notification_context(
         self,
@@ -1117,8 +1335,57 @@ class BotCommandHandlers:
             raise ValueError("dummy discord_user_id must be between 1 and 1000")
         return discord_user_id
 
+    def _parse_dummy_user_reference(self, value: str) -> int:
+        match = DUMMY_USER_REFERENCE_PATTERN.fullmatch(value.strip())
+        if match is None:
+            raise ValueError("dummy_user must be in <dummy_{dummy user id}> format")
+
+        return self._parse_dummy_discord_user_id(match.group(1))
+
+    def _resolve_admin_target_discord_user_id(
+        self,
+        *,
+        target_user: DiscordUserLike | None,
+        dummy_user: str | None,
+    ) -> int:
+        has_target_user = target_user is not None
+        has_dummy_user = dummy_user is not None and dummy_user.strip() != ""
+        if has_target_user == has_dummy_user:
+            raise ValueError("exactly one of target_user or dummy_user must be provided")
+
+        if target_user is not None:
+            return target_user.id
+
+        assert dummy_user is not None
+        return self._parse_dummy_user_reference(dummy_user)
+
+    def _format_admin_target_for_log(
+        self,
+        *,
+        target_user: DiscordUserLike | None,
+        dummy_user: str | None,
+    ) -> str:
+        if target_user is not None:
+            return str(target_user.id)
+
+        return repr(dummy_user)
+
     def _parse_match_result(self, value: str) -> MatchResult:
         return MatchResult(value)
+
+    def _parse_restriction_type(self, value: str) -> PlayerAccessRestrictionType:
+        try:
+            return PlayerAccessRestrictionType(value)
+        except ValueError as exc:
+            raise InvalidPlayerAccessRestrictionTypeError(
+                f"Invalid restriction_type: {value}"
+            ) from exc
+
+    def _parse_restriction_duration(self, value: str) -> PlayerAccessRestrictionDuration:
+        try:
+            return PlayerAccessRestrictionDuration(value)
+        except ValueError as exc:
+            raise InvalidPlayerAccessRestrictionDurationError(f"Invalid duration: {value}") from exc
 
     def _format_player_info_message(self, player_info: PlayerInfo) -> str:
         lines = ["プレイヤー情報"]
@@ -1154,6 +1421,32 @@ def register_app_commands(
     queue_name_choices = [
         app_commands.Choice(name=queue_name, value=queue_name)
         for queue_name in MATCH_QUEUE_NAME_CHOICES
+    ]
+    restriction_type_choices = [
+        app_commands.Choice(
+            name=PLAYER_ACCESS_RESTRICTION_TYPE_LABELS[restriction_type],
+            value=restriction_type.value,
+        )
+        for restriction_type in (
+            PlayerAccessRestrictionType.QUEUE_JOIN,
+            PlayerAccessRestrictionType.SPECTATE,
+        )
+    ]
+    restriction_duration_choices = [
+        app_commands.Choice(
+            name=PLAYER_ACCESS_RESTRICTION_DURATION_LABELS[duration],
+            value=duration.value,
+        )
+        for duration in (
+            PlayerAccessRestrictionDuration.ONE_DAY,
+            PlayerAccessRestrictionDuration.THREE_DAYS,
+            PlayerAccessRestrictionDuration.SEVEN_DAYS,
+            PlayerAccessRestrictionDuration.FOURTEEN_DAYS,
+            PlayerAccessRestrictionDuration.TWENTY_EIGHT_DAYS,
+            PlayerAccessRestrictionDuration.FIFTY_SIX_DAYS,
+            PlayerAccessRestrictionDuration.EIGHTY_FOUR_DAYS,
+            PlayerAccessRestrictionDuration.PERMANENT,
+        )
     ]
 
     @tree.command(name="register", description="プレイヤー登録を行います")
@@ -1244,6 +1537,53 @@ def register_app_commands(
     ) -> None:
         await handlers.admin_match_result(interaction, match_id, result)
 
+    @tree.command(name="admin_restrict_user", description="ユーザーの利用権限を制限します")
+    @app_commands.describe(
+        restriction_type="制限したい権限",
+        duration="制限期間",
+        user="対象の Discord ユーザー",
+        dummy_user="対象のダミーユーザー。<dummy_123> 形式",
+        reason="制限理由",
+    )
+    @app_commands.choices(restriction_type=restriction_type_choices)
+    @app_commands.choices(duration=restriction_duration_choices)
+    async def admin_restrict_user_command(
+        interaction: discord.Interaction[Any],
+        restriction_type: str,
+        duration: str,
+        user: discord.Member | discord.User | None = None,
+        dummy_user: str | None = None,
+        reason: str | None = None,
+    ) -> None:
+        await handlers.admin_restrict_user(
+            interaction,
+            restriction_type,
+            duration,
+            target_user=user,
+            dummy_user=dummy_user,
+            reason=reason,
+        )
+
+    @tree.command(name="admin_unrestrict_user", description="ユーザーの利用権限制限を解除します")
+    @app_commands.describe(
+        restriction_type="解除したい制限種別",
+        user="対象の Discord ユーザー",
+        dummy_user="対象のダミーユーザー。<dummy_123> 形式",
+    )
+    @app_commands.choices(restriction_type=restriction_type_choices)
+    async def admin_unrestrict_user_command(
+        interaction: discord.Interaction[Any],
+        restriction_type: str,
+        user: discord.Member | discord.User | None = None,
+        dummy_user: str | None = None,
+    ) -> None:
+        await handlers.admin_unrestrict_user(
+            interaction,
+            restriction_type,
+            target_user=user,
+            dummy_user=dummy_user,
+        )
+
     def register_penalty_commands(
         *,
         add_name: str,
@@ -1252,20 +1592,38 @@ def register_app_commands(
         penalty_type: PenaltyType,
     ) -> None:
         @tree.command(name=add_name, description=f"{description} を +1 します")
-        @app_commands.describe(discord_user_id="対象の Discord user ID")
+        @app_commands.describe(
+            user="対象の Discord ユーザー",
+            dummy_user="対象のダミーユーザー。<dummy_123> 形式",
+        )
         async def add_command(
             interaction: discord.Interaction[Any],
-            discord_user_id: str,
+            user: discord.Member | discord.User | None = None,
+            dummy_user: str | None = None,
         ) -> None:
-            await handlers.admin_add_penalty(interaction, discord_user_id, penalty_type)
+            await handlers.admin_add_penalty(
+                interaction,
+                penalty_type,
+                target_user=user,
+                dummy_user=dummy_user,
+            )
 
         @tree.command(name=sub_name, description=f"{description} を -1 します")
-        @app_commands.describe(discord_user_id="対象の Discord user ID")
+        @app_commands.describe(
+            user="対象の Discord ユーザー",
+            dummy_user="対象のダミーユーザー。<dummy_123> 形式",
+        )
         async def sub_command(
             interaction: discord.Interaction[Any],
-            discord_user_id: str,
+            user: discord.Member | discord.User | None = None,
+            dummy_user: str | None = None,
         ) -> None:
-            await handlers.admin_sub_penalty(interaction, discord_user_id, penalty_type)
+            await handlers.admin_sub_penalty(
+                interaction,
+                penalty_type,
+                target_user=user,
+                dummy_user=dummy_user,
+            )
 
         del add_command, sub_command
 

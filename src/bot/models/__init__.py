@@ -25,6 +25,10 @@ from bot.models.match_result_enums import (
 from bot.models.match_spectator import MatchSpectator, MatchSpectatorStatus
 from bot.models.outbox_event import OutboxEvent, OutboxEventType
 from bot.models.player import Player
+from bot.models.player_access_restriction import (
+    PlayerAccessRestriction,
+    PlayerAccessRestrictionType,
+)
 from bot.models.player_format_stats import INITIAL_RATING, PlayerFormatStats
 from bot.models.player_penalty import PlayerPenalty
 from bot.models.player_penalty_adjustment import PlayerPenaltyAdjustment
@@ -57,6 +61,8 @@ __all__ = [
     "PenaltyAdjustmentSource",
     "PenaltyType",
     "Player",
+    "PlayerAccessRestriction",
+    "PlayerAccessRestrictionType",
     "PlayerFormatStats",
     "PlayerPenalty",
     "PlayerPenaltyAdjustment",

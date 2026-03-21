@@ -46,10 +46,12 @@ from bot.models import (
     PenaltyAdjustmentSource,
     PenaltyType,
     Player,
+    PlayerAccessRestrictionType,
     PlayerFormatStats,
     PlayerPenalty,
     PlayerPenaltyAdjustment,
 )
+from bot.services.access_restrictions import get_active_player_access_restriction
 from bot.services.errors import (
     MatchAlreadyFinalizedError,
     MatchApprovalNotAvailableError,
@@ -62,6 +64,7 @@ from bot.services.errors import (
     MatchReportingClosedError,
     MatchReportNotOpenError,
     MatchSpectatingClosedError,
+    MatchSpectatingRestrictedError,
     MatchSpectatorAlreadyRegisteredError,
     MatchSpectatorCapacityError,
     RetryableTaskError,
@@ -80,6 +83,7 @@ _MATCH_ADVISORY_LOCK_NAMESPACE = 20_260_319
 _PLAYER_ADVISORY_LOCK_NAMESPACE = 20_260_320
 _MAX_MATCH_ROOM_SIZE = 12
 _MATCH_SPECTATOR_REMOVAL_REASON_FINALIZED = "match_finalized"
+_MATCH_SPECTATE_RESTRICTED_MESSAGE = "現在観戦を制限されています。"
 
 
 def _is_transient_task_db_error(exc: Exception) -> bool:
@@ -246,6 +250,7 @@ class MatchFlowService:
             self._acquire_match_lock(session, match_id)
             current_time = self._get_database_now(session)
             self._ensure_player_exists(session, player_id)
+            self._acquire_access_restriction_player_lock(session, player_id)
 
             active_state = self._get_active_match_state_for_update(session, match_id)
             if active_state is None:
@@ -257,6 +262,9 @@ class MatchFlowService:
                 MatchState.WAITING_FOR_RESULT_REPORTS,
             }:
                 raise MatchSpectatingClosedError("この試合は観戦受付を終了しています。")
+
+            if self._is_spectate_restricted(session, player_id):
+                raise MatchSpectatingRestrictedError(_MATCH_SPECTATE_RESTRICTED_MESSAGE)
 
             participant_count = self._get_match_participant_count(session, match_id)
             max_spectators = self._calculate_max_spectators(participant_count)
@@ -2155,6 +2163,17 @@ class MatchFlowService:
         session.execute(
             select(func.pg_advisory_xact_lock(_PLAYER_ADVISORY_LOCK_NAMESPACE, player_id))
         )
+
+    def _acquire_access_restriction_player_lock(self, session: Session, player_id: int) -> None:
+        session.execute(select(func.pg_advisory_xact_lock(player_id)))
+
+    def _is_spectate_restricted(self, session: Session, player_id: int) -> bool:
+        restriction = get_active_player_access_restriction(
+            session,
+            player_id=player_id,
+            restriction_type=PlayerAccessRestrictionType.SPECTATE,
+        )
+        return restriction is not None
 
     def _enqueue_outbox_event(
         self,

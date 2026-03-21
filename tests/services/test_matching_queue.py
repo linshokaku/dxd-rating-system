@@ -26,6 +26,7 @@ from bot.models import (
     OutboxEvent,
     OutboxEventType,
     Player,
+    PlayerAccessRestrictionType,
     PlayerFormatStats,
 )
 from bot.services import (
@@ -33,9 +34,12 @@ from bot.services import (
     InvalidQueueNameError,
     MatchingQueueNotificationContext,
     MatchingQueueService,
+    PlayerAccessRestrictionDuration,
+    PlayerAccessRestrictionService,
     PlayerNotRegisteredError,
     QueueAlreadyJoinedError,
     QueueJoinNotAllowedError,
+    QueueJoinRestrictedError,
     QueueNotJoinedError,
     RetryableTaskError,
     register_player,
@@ -271,6 +275,24 @@ def test_join_queue_rejects_player_when_rating_is_outside_allowed_range(
 
     with pytest.raises(QueueJoinNotAllowedError):
         service.join_queue(player.id, DEFAULT_MATCH_FORMAT, "mid")
+
+
+def test_join_queue_raises_when_player_has_active_queue_join_restriction(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    player = create_player(session, 10_000_2)
+    restriction_service = PlayerAccessRestrictionService(session_factory)
+    restriction_service.restrict_player_access(
+        player.id,
+        PlayerAccessRestrictionType.QUEUE_JOIN,
+        PlayerAccessRestrictionDuration.PERMANENT,
+        admin_discord_user_id=50_001,
+    )
+    service = create_matching_queue_service(session_factory)
+
+    with pytest.raises(QueueJoinRestrictedError, match="現在キュー参加を制限されています。"):
+        service.join_queue(player.id, DEFAULT_MATCH_FORMAT, DEFAULT_QUEUE_NAME)
 
 
 # 初回 `join` で `waiting` 行が作成され、`joined_at`、`last_present_at`、

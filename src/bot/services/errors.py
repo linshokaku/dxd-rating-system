@@ -34,6 +34,10 @@ class QueueJoinNotAllowedError(MatchingQueueError):
     pass
 
 
+class QueueJoinRestrictedError(MatchingQueueError):
+    pass
+
+
 class RetryableTaskError(Exception):
     pass
 
@@ -87,4 +91,24 @@ class MatchSpectatorAlreadyRegisteredError(MatchFlowError):
 
 
 class MatchSpectatorCapacityError(MatchFlowError):
+    pass
+
+
+class MatchSpectatingRestrictedError(MatchFlowError):
+    pass
+
+
+class PlayerAccessRestrictionError(Exception):
+    pass
+
+
+class InvalidPlayerAccessRestrictionTypeError(PlayerAccessRestrictionError):
+    pass
+
+
+class InvalidPlayerAccessRestrictionDurationError(PlayerAccessRestrictionError):
+    pass
+
+
+class PlayerAccessRestrictionAlreadyExistsError(PlayerAccessRestrictionError):
     pass

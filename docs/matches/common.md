@@ -207,6 +207,11 @@ participant_count(match_format) = team_size * 2
 
 これらは運用で判断し、admin が手動で加算、減算する。
 
+手動ペナルティの対象指定:
+
+- 実ユーザーは Discord の `user` 指定で選ぶ
+- ダミーユーザーは `<dummy_{dummy_user_id}>` 形式の `dummy_user` を指定する
+
 ## 運用上の違反種別
 
 - 部屋立て遅延

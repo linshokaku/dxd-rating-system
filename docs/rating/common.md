@@ -6,23 +6,27 @@
 
 ## 共通方針
 
-- 各プレイヤーはフォーマットごとに独立したレートと戦績を持つ
+- 各プレイヤーは `season_id` と `match_format` ごとに独立したレートと戦績を持つ
 - レート更新は結果確定時にのみ行う
 - 無効試合はレート対象外とする
 - 計算は内部では浮動小数で持ち、表示時だけ丸めてよい
+- シーズン開始時の初期レートは carryover により遅延確定してよい
+- carryover の詳細は [../seasons.md](../seasons.md) に従う
 
 ## 保持データ
 
-フォーマット別の保持値は `player_format_stats` に持たせる。
+シーズン別かつフォーマット別の保持値は `player_format_stats` に持たせる。
 
 最低限:
 
+- `season_id`
 - `rating`
 - `games_played`
 - `wins`
 - `losses`
 - `draws`
 - `last_played_at`
+- `carryover_status`
 
 ## 試合履歴
 
@@ -39,13 +43,19 @@
 
 ## 初期値
 
-新規プレイヤーの各フォーマットの初期値は以下とする。
+新しい `player_format_stats` 行を作る時点の初期値は以下とする。
 
 - `rating = 1500`
 - `games_played = 0`
 - `wins = 0`
 - `losses = 0`
 - `draws = 0`
+- `carryover_status = 'pending'`
+
+補足:
+
+- carryover を適用しないと確定した行は、`rating = 1500` のまま `carryover_status = 'not_applied'` とする
+- carryover を適用した行は、算出結果を `rating` に保存し、以後はその値を固定する
 
 ## 試合結果の表現
 

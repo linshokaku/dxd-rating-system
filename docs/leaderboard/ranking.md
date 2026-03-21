@@ -22,7 +22,7 @@
 ## 基本方針
 
 - ランキングは `match_format` ごとに独立して持つ
-- 現在ランキングの真実のソースは `player_format_stats` とする
+- 現在ランキングの真実のソースは、稼働中シーズンの `player_format_stats` とする
 - 表示名は Bot が保持する `players` の表示名キャッシュを利用してよい
 - ランキング表示のために Discord API を直接参照することは必須としない
 - レート値は内部では浮動小数のまま扱い、表示時だけ丸めてよい
@@ -94,6 +94,7 @@
 
 - `24時間前` や `168時間前` のような時刻単位比較は行わない
 - 日次 snapshot だけを使うことで、実装を単純に保つ
+- 比較対象 snapshot の `season_id` が現在ランキングの `season_id` と一致しない場合、その比較は行わない
 
 ## 順位変化量
 
@@ -120,6 +121,7 @@ rank_change = past_rank - current_rank
 
 - 対象日の snapshot が存在しない
 - 対象日の snapshot にそのプレイヤーが含まれていない
+- 対象日の snapshot は存在するが `season_id` が現在ランキングと一致しない
 
 補足:
 
@@ -128,7 +130,7 @@ rank_change = past_rank - current_rank
 
 ## 参照先
 
-- 現在ランキング: `player_format_stats`
+- 現在ランキング: 稼働中シーズンの `player_format_stats`
 - 過去比較: `leaderboard_snapshots`
 
 snapshot の詳細仕様は [snapshots.md](snapshots.md) を参照する。

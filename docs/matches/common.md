@@ -52,11 +52,19 @@ participant_count(match_format) = team_size * 2
 最後の置き換えは必須である。  
 `1v1` で旧条件の `2 人以下` をそのまま使うと、両者が報告していても常に admin 通知対象になってしまうためである。
 
+## シーズン所属
+
+- `started_at` は `matches.created_at` とみなす
+- 試合の所属シーズンは、`started_at` を含むシーズンで決める
+- `matches` には `started_season_id` を保存する
+- シーズン切替後に結果確定や admin 修正が行われても、レート更新先は `started_season_id` の `player_format_stats` とする
+
 ## 試合フロー
 
 ### 1. マッチ成立
 
 - マッチングキューで十分人数がそろった時点でマッチを作成する
+- その時点の `created_at` から `started_season_id` を決定する
 - Bot は Team A / Team B の組み分けを通知する
 
 ### 2. 親募集
@@ -234,6 +242,7 @@ participant_count(match_format) = team_size * 2
 - `match_id`
 - `match_format`
 - `queue_class_id`
+- `started_season_id`
 - `created_at`
 
 ### `active_match_states`

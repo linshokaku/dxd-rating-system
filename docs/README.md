@@ -4,6 +4,8 @@
 
 - [formats.md](formats.md)
   - 対応フォーマット、独立管理の範囲、基本データモデル方針
+- [seasons.md](seasons.md)
+  - シーズン期間、事前作成、carryover、シーズン別レート管理
 - [players/identity.md](players/identity.md)
   - プレイヤー識別子と Bot が保持する表示名キャッシュ
 - [players/access_restrictions.md](players/access_restrictions.md)
@@ -52,12 +54,13 @@
 読み方の推奨順は以下とする。
 
 1. [formats.md](formats.md)
-2. [players/identity.md](players/identity.md)
-3. [players/access_restrictions.md](players/access_restrictions.md)
-4. [matching/common.md](matching/common.md)
-5. [matching/queue_classes.md](matching/queue_classes.md)
-6. 必要なフォーマット別仕様
-7. [matches/common.md](matches/common.md)
-8. [rating/common.md](rating/common.md)
-9. [leaderboard/ranking.md](leaderboard/ranking.md)
-10. [leaderboard/snapshots.md](leaderboard/snapshots.md)
+2. [seasons.md](seasons.md)
+3. [players/identity.md](players/identity.md)
+4. [players/access_restrictions.md](players/access_restrictions.md)
+5. [matching/common.md](matching/common.md)
+6. [matching/queue_classes.md](matching/queue_classes.md)
+7. 必要なフォーマット別仕様
+8. [matches/common.md](matches/common.md)
+9. [rating/common.md](rating/common.md)
+10. [leaderboard/ranking.md](leaderboard/ranking.md)
+11. [leaderboard/snapshots.md](leaderboard/snapshots.md)

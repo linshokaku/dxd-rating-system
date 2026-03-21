@@ -9,6 +9,14 @@
 - pydantic-settings
 - uv
 
+## レーティング仕様
+- 初期レートは全フォーマット共通で `1500`
+- 基本 K は `games_played` に応じて `40 / 32 / 24` を使う
+- 実効 K は `基本 K x 対戦人数係数` とし、`1v1=1`、`2v2=2`、`3v3=3`
+- この補正により、等レート同士では各フォーマットの 1 人あたり変動幅が近くなる
+
+詳細仕様は [docs/README.md](docs/README.md) と [docs/rating/common.md](docs/rating/common.md) を参照してください。
+
 ## ディレクトリ構成
 ```text
 src/

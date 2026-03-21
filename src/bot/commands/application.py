@@ -507,9 +507,9 @@ class BotCommandHandlers:
     async def dev_join(
         self,
         interaction: discord.Interaction[Any],
-        discord_user_id: str,
         match_format: str,
         queue_name: str,
+        discord_user_id: str,
     ) -> None:
         if not await self._ensure_admin(interaction):
             return
@@ -682,8 +682,8 @@ class BotCommandHandlers:
     async def dev_match_parent(
         self,
         interaction: discord.Interaction[Any],
-        discord_user_id: str,
         match_id: int,
+        discord_user_id: str,
     ) -> None:
         if not await self._ensure_admin(interaction):
             return
@@ -703,60 +703,60 @@ class BotCommandHandlers:
     async def dev_match_win(
         self,
         interaction: discord.Interaction[Any],
-        discord_user_id: str,
         match_id: int,
+        discord_user_id: str,
     ) -> None:
         await self._run_dev_match_report(
             interaction=interaction,
-            discord_user_id=discord_user_id,
             match_id=match_id,
+            discord_user_id=discord_user_id,
             input_result=MatchReportInputResult.WIN,
         )
 
     async def dev_match_lose(
         self,
         interaction: discord.Interaction[Any],
-        discord_user_id: str,
         match_id: int,
+        discord_user_id: str,
     ) -> None:
         await self._run_dev_match_report(
             interaction=interaction,
-            discord_user_id=discord_user_id,
             match_id=match_id,
+            discord_user_id=discord_user_id,
             input_result=MatchReportInputResult.LOSE,
         )
 
     async def dev_match_draw(
         self,
         interaction: discord.Interaction[Any],
-        discord_user_id: str,
         match_id: int,
+        discord_user_id: str,
     ) -> None:
         await self._run_dev_match_report(
             interaction=interaction,
-            discord_user_id=discord_user_id,
             match_id=match_id,
+            discord_user_id=discord_user_id,
             input_result=MatchReportInputResult.DRAW,
         )
 
     async def dev_match_void(
         self,
         interaction: discord.Interaction[Any],
-        discord_user_id: str,
         match_id: int,
+        discord_user_id: str,
     ) -> None:
         await self._run_dev_match_report(
             interaction=interaction,
-            discord_user_id=discord_user_id,
             match_id=match_id,
+            discord_user_id=discord_user_id,
             input_result=MatchReportInputResult.VOID,
         )
 
     async def dev_match_approve(
         self,
         interaction: discord.Interaction[Any],
-        discord_user_id: str,
         match_id: int,
+        discord_user_id: str,
     ) -> None:
         if not await self._ensure_admin(interaction):
             return
@@ -1222,19 +1222,19 @@ def register_app_commands(
 
     @tree.command(name="dev_join", description="任意の Discord user ID をキュー参加させます")
     @app_commands.describe(
-        discord_user_id="キュー参加させたい Discord user ID",
         match_format="参加させたいフォーマット",
         queue_name="参加させたいキュー名",
+        discord_user_id="キュー参加させたい Discord user ID",
     )
     @app_commands.choices(match_format=match_format_choices)
     @app_commands.choices(queue_name=queue_name_choices)
     async def dev_join_command(
         interaction: discord.Interaction[Any],
-        discord_user_id: str,
         match_format: str,
         queue_name: str,
+        discord_user_id: str,
     ) -> None:
-        await handlers.dev_join(interaction, discord_user_id, match_format, queue_name)
+        await handlers.dev_join(interaction, match_format, queue_name, discord_user_id)
 
     @tree.command(name="dev_present", description="任意の Discord user ID の在席を更新します")
     @app_commands.describe(discord_user_id="在席を更新したい Discord user ID")
@@ -1264,61 +1264,61 @@ def register_app_commands(
         await handlers.dev_player_info(interaction, discord_user_id)
 
     @tree.command(name="dev_match_parent", description="ダミーユーザーを親に立候補させます")
-    @app_commands.describe(discord_user_id="対象の dummy_user_id", match_id="対象の match_id")
+    @app_commands.describe(match_id="対象の match_id", discord_user_id="対象の dummy_user_id")
     async def dev_match_parent_command(
         interaction: discord.Interaction[Any],
-        discord_user_id: str,
         match_id: int,
+        discord_user_id: str,
     ) -> None:
-        await handlers.dev_match_parent(interaction, discord_user_id, match_id)
+        await handlers.dev_match_parent(interaction, match_id, discord_user_id)
 
     @tree.command(name="dev_match_win", description="ダミーユーザーに勝ちを報告させます")
-    @app_commands.describe(discord_user_id="対象の dummy_user_id", match_id="対象の match_id")
+    @app_commands.describe(match_id="対象の match_id", discord_user_id="対象の dummy_user_id")
     async def dev_match_win_command(
         interaction: discord.Interaction[Any],
-        discord_user_id: str,
         match_id: int,
+        discord_user_id: str,
     ) -> None:
-        await handlers.dev_match_win(interaction, discord_user_id, match_id)
+        await handlers.dev_match_win(interaction, match_id, discord_user_id)
 
     @tree.command(name="dev_match_lose", description="ダミーユーザーに負けを報告させます")
-    @app_commands.describe(discord_user_id="対象の dummy_user_id", match_id="対象の match_id")
+    @app_commands.describe(match_id="対象の match_id", discord_user_id="対象の dummy_user_id")
     async def dev_match_lose_command(
         interaction: discord.Interaction[Any],
-        discord_user_id: str,
         match_id: int,
+        discord_user_id: str,
     ) -> None:
-        await handlers.dev_match_lose(interaction, discord_user_id, match_id)
+        await handlers.dev_match_lose(interaction, match_id, discord_user_id)
 
     @tree.command(name="dev_match_draw", description="ダミーユーザーに引き分けを報告させます")
-    @app_commands.describe(discord_user_id="対象の dummy_user_id", match_id="対象の match_id")
+    @app_commands.describe(match_id="対象の match_id", discord_user_id="対象の dummy_user_id")
     async def dev_match_draw_command(
         interaction: discord.Interaction[Any],
-        discord_user_id: str,
         match_id: int,
+        discord_user_id: str,
     ) -> None:
-        await handlers.dev_match_draw(interaction, discord_user_id, match_id)
+        await handlers.dev_match_draw(interaction, match_id, discord_user_id)
 
     @tree.command(name="dev_match_void", description="ダミーユーザーに無効試合を報告させます")
-    @app_commands.describe(discord_user_id="対象の dummy_user_id", match_id="対象の match_id")
+    @app_commands.describe(match_id="対象の match_id", discord_user_id="対象の dummy_user_id")
     async def dev_match_void_command(
         interaction: discord.Interaction[Any],
-        discord_user_id: str,
         match_id: int,
+        discord_user_id: str,
     ) -> None:
-        await handlers.dev_match_void(interaction, discord_user_id, match_id)
+        await handlers.dev_match_void(interaction, match_id, discord_user_id)
 
     @tree.command(
         name="dev_match_approve",
         description="ダミーユーザーに仮決定結果を承認させます",
     )
-    @app_commands.describe(discord_user_id="対象の dummy_user_id", match_id="対象の match_id")
+    @app_commands.describe(match_id="対象の match_id", discord_user_id="対象の dummy_user_id")
     async def dev_match_approve_command(
         interaction: discord.Interaction[Any],
-        discord_user_id: str,
         match_id: int,
+        discord_user_id: str,
     ) -> None:
-        await handlers.dev_match_approve(interaction, discord_user_id, match_id)
+        await handlers.dev_match_approve(interaction, match_id, discord_user_id)
 
     @tree.command(name="dev_is_admin", description="実行者が admin かどうかを確認します")
     async def dev_is_admin_command(interaction: discord.Interaction[Any]) -> None:

@@ -433,7 +433,7 @@ def test_submit_reports_finalizes_immediately_when_no_approval_targets(
     finalized_player_results_by_id = {
         player_result.player_id: player_result for player_result in finalized_player_results
     }
-    expected_delta = 20.0 / 3.0
+    expected_delta = 20.0
 
     assert last_result is not None
     assert last_result.finalized is True

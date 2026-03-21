@@ -74,6 +74,10 @@ def calculate_rating_updates(
     ]
     if not team_a or not team_b:
         raise ValueError("Both teams must have at least one participant to calculate ratings")
+    if len(team_a) != len(team_b):
+        raise ValueError(
+            "Both teams must have the same number of participants to calculate ratings"
+        )
 
     q_by_player_id = {
         participant.player_id: pow(10.0, participant.rating / RATING_DIVISOR)
@@ -83,6 +87,7 @@ def calculate_rating_updates(
     team_b_strength = sum(q_by_player_id[participant.player_id] for participant in team_b)
     team_a_expected_score = team_a_strength / (team_a_strength + team_b_strength)
     team_a_actual_score = _get_team_a_score(final_result)
+    team_size_multiplier = len(team_a)
 
     updates_by_player_id: dict[int, RatingUpdate] = {}
     for participant in participants:
@@ -92,7 +97,10 @@ def calculate_rating_updates(
         q_value = q_by_player_id[participant.player_id]
         k_value = _get_k_value(participant.games_played)
         rating_delta = (
-            k_value * (q_value / team_strength) * (team_a_actual_score - team_a_expected_score)
+            k_value
+            * team_size_multiplier
+            * (q_value / team_strength)
+            * (team_a_actual_score - team_a_expected_score)
         )
         if participant.team == MatchParticipantTeam.TEAM_B:
             rating_delta *= -1

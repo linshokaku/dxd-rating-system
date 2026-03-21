@@ -19,6 +19,7 @@ from bot.constants import (
     MATCH_REPORT_DEADLINE_DELAY,
     MATCH_REPORT_OPEN_DELAY,
     OUTBOX_NOTIFY_CHANNEL,
+    MatchFormatDefinition,
     get_match_format_definition,
 )
 from bot.db.session import session_scope
@@ -1824,7 +1825,10 @@ class MatchFlowService:
             f" player_id={player.id} match_format={match_format.value}"
         )
 
-    def _require_match_format_definition(self, match_format: MatchFormat):
+    def _require_match_format_definition(
+        self,
+        match_format: MatchFormat,
+    ) -> MatchFormatDefinition:
         format_definition = get_match_format_definition(match_format)
         if format_definition is None:
             raise MatchFlowError(f"未対応の対戦フォーマットです: {match_format.value}")

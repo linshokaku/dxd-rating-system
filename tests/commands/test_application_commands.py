@@ -9,7 +9,7 @@ import discord
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
-from bot.commands import BotCommandHandlers
+from bot.commands import BotCommandHandlers, register_app_commands
 from bot.config import Settings
 from bot.models import MatchFormat, MatchQueueEntry, Player, PlayerFormatStats
 from bot.runtime import MatchRuntime
@@ -375,9 +375,9 @@ def test_dev_join_targets_provided_user_and_uses_target_for_notification_context
     asyncio.run(
         handlers.dev_join(
             as_interaction(interaction),
-            str(target_discord_user_id),
             DEFAULT_MATCH_FORMAT.value,
             DEFAULT_QUEUE_NAME,
+            str(target_discord_user_id),
         )
     )
 
@@ -507,3 +507,33 @@ def test_dev_is_admin_returns_yes_or_no(session_factory: sessionmaker[Session]) 
 
     assert admin_interaction.response.messages == ["はい"]
     assert non_admin_interaction.response.messages == ["いいえ"]
+
+
+def test_dev_commands_register_discord_user_id_as_last_option() -> None:
+    handlers = BotCommandHandlers(
+        settings=create_settings(),
+        session_factory=sessionmaker(),
+    )
+    client = discord.Client(intents=discord.Intents.none())
+    tree = discord.app_commands.CommandTree(client)
+
+    register_app_commands(tree, handlers)
+
+    expected_parameters = {
+        "dev_register": ["discord_user_id"],
+        "dev_join": ["match_format", "queue_name", "discord_user_id"],
+        "dev_present": ["discord_user_id"],
+        "dev_leave": ["discord_user_id"],
+        "dev_player_info": ["discord_user_id"],
+        "dev_match_parent": ["match_id", "discord_user_id"],
+        "dev_match_win": ["match_id", "discord_user_id"],
+        "dev_match_lose": ["match_id", "discord_user_id"],
+        "dev_match_draw": ["match_id", "discord_user_id"],
+        "dev_match_void": ["match_id", "discord_user_id"],
+        "dev_match_approve": ["match_id", "discord_user_id"],
+    }
+
+    for command_name, expected in expected_parameters.items():
+        command = tree.get_command(command_name)
+        assert command is not None
+        assert [parameter.name for parameter in command.parameters] == expected

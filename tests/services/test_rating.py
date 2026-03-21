@@ -32,8 +32,8 @@ def build_equal_rating_snapshots(
     ("team_size", "expected_delta"),
     [
         pytest.param(1, 20.0, id="1v1"),
-        pytest.param(2, 10.0, id="2v2"),
-        pytest.param(3, 20.0 / 3.0, id="3v3"),
+        pytest.param(2, 20.0, id="2v2"),
+        pytest.param(3, 20.0, id="3v3"),
     ],
 )
 def test_calculate_rating_updates_team_a_win_by_format(
@@ -101,3 +101,38 @@ def test_calculate_rating_updates_void_by_format(team_size: int) -> None:
         assert update.wins_after == 0
         assert update.losses_after == 0
         assert update.draws_after == 0
+
+
+def test_calculate_rating_updates_rejects_mismatched_team_sizes() -> None:
+    participants = (
+        RatingParticipantSnapshot(
+            player_id=1,
+            team=MatchParticipantTeam.TEAM_A,
+            rating=1500.0,
+            games_played=0,
+            wins=0,
+            losses=0,
+            draws=0,
+        ),
+        RatingParticipantSnapshot(
+            player_id=2,
+            team=MatchParticipantTeam.TEAM_A,
+            rating=1500.0,
+            games_played=0,
+            wins=0,
+            losses=0,
+            draws=0,
+        ),
+        RatingParticipantSnapshot(
+            player_id=3,
+            team=MatchParticipantTeam.TEAM_B,
+            rating=1500.0,
+            games_played=0,
+            wins=0,
+            losses=0,
+            draws=0,
+        ),
+    )
+
+    with pytest.raises(ValueError, match="same number of participants"):
+        calculate_rating_updates(participants, MatchResult.TEAM_A_WIN)

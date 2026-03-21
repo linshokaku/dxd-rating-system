@@ -54,9 +54,9 @@
 - `admin` 権限を持つユーザーのみ。
 
 ### 入力
-- `discord_user_id` (必須): キューへ参加させたい Discord user ID。
 - `match_format` (必須): 参加させたいフォーマット。
 - `queue_name` (必須): 参加させたいキュー名。
+- `discord_user_id` (必須): キューへ参加させたい Discord user ID。
 
 初期状態では、`match_format` は以下を受け付ける。
 

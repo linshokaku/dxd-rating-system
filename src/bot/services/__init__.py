@@ -19,6 +19,9 @@ from bot.services.errors import (
     MatchParticipantError,
     MatchReportingClosedError,
     MatchReportNotOpenError,
+    MatchSpectatingClosedError,
+    MatchSpectatorAlreadyRegisteredError,
+    MatchSpectatorCapacityError,
     PlayerAlreadyRegisteredError,
     PlayerNotRegisteredError,
     QueueAlreadyJoinedError,
@@ -41,6 +44,7 @@ from bot.services.match_flow import (
     MatchFlowService,
     MatchParentAssignmentResult,
     MatchReportSubmissionResult,
+    MatchSpectateResult,
     PlayerPenaltyAdjustmentResult,
 )
 from bot.services.matching_queue import (
@@ -101,6 +105,10 @@ __all__ = [
     "MatchReportNotOpenError",
     "MatchReportSubmissionResult",
     "MatchReportingClosedError",
+    "MatchSpectatingClosedError",
+    "MatchSpectateResult",
+    "MatchSpectatorAlreadyRegisteredError",
+    "MatchSpectatorCapacityError",
     "MatchingQueueError",
     "MatchingQueueNotificationContext",
     "MatchingQueueService",

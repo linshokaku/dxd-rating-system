@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from bot.models.match_participant import MatchParticipant
     from bot.models.match_queue_entry import MatchQueueEntry
     from bot.models.match_report import MatchReport
+    from bot.models.match_spectator import MatchSpectator
     from bot.models.player_format_stats import PlayerFormatStats
     from bot.models.player_penalty import PlayerPenalty
     from bot.models.player_penalty_adjustment import PlayerPenaltyAdjustment
@@ -35,6 +36,7 @@ class Player(Base):
     match_queue_entries: Mapped[list[MatchQueueEntry]] = relationship(back_populates="player")
     match_participants: Mapped[list[MatchParticipant]] = relationship(back_populates="player")
     match_reports: Mapped[list[MatchReport]] = relationship(back_populates="player")
+    match_spectators: Mapped[list[MatchSpectator]] = relationship(back_populates="player")
     active_match_player_states: Mapped[list[ActiveMatchPlayerState]] = relationship(
         back_populates="player"
     )

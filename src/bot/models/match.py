@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from bot.models.match_admin_override import MatchAdminOverride
     from bot.models.match_participant import MatchParticipant
     from bot.models.match_report import MatchReport
+    from bot.models.match_spectator import MatchSpectator
     from bot.models.player_penalty_adjustment import PlayerPenaltyAdjustment
 
 
@@ -53,6 +54,10 @@ class Match(Base):
         uselist=False,
     )
     reports: Mapped[list[MatchReport]] = relationship(
+        back_populates="match",
+        cascade="all, delete-orphan",
+    )
+    spectators: Mapped[list[MatchSpectator]] = relationship(
         back_populates="match",
         cascade="all, delete-orphan",
     )

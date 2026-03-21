@@ -76,3 +76,15 @@ class MatchApprovalNotRequiredError(MatchFlowError):
 
 class MatchAlreadyFinalizedError(MatchFlowError):
     pass
+
+
+class MatchSpectatingClosedError(MatchFlowError):
+    pass
+
+
+class MatchSpectatorAlreadyRegisteredError(MatchFlowError):
+    pass
+
+
+class MatchSpectatorCapacityError(MatchFlowError):
+    pass

@@ -22,6 +22,7 @@ from bot.models.match_result_enums import (
     PenaltyAdjustmentSource,
     PenaltyType,
 )
+from bot.models.match_spectator import MatchSpectator, MatchSpectatorStatus
 from bot.models.outbox_event import OutboxEvent, OutboxEventType
 from bot.models.player import Player
 from bot.models.player_format_stats import INITIAL_RATING, PlayerFormatStats
@@ -45,6 +46,8 @@ __all__ = [
     "MatchQueueEntryStatus",
     "MatchQueueRemovalReason",
     "MatchReport",
+    "MatchSpectator",
+    "MatchSpectatorStatus",
     "MatchReportInputResult",
     "MatchReportStatus",
     "MatchResult",

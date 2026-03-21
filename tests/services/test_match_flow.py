@@ -22,6 +22,8 @@ from bot.models import (
     MatchReportInputResult,
     MatchReportStatus,
     MatchResult,
+    MatchSpectator,
+    MatchSpectatorStatus,
     MatchState,
     OutboxEvent,
     OutboxEventType,
@@ -33,7 +35,14 @@ from bot.models import (
     PlayerPenaltyAdjustment,
 )
 from bot.services import MatchFlowService, MatchingQueueNotificationContext, MatchingQueueService
-from bot.services.errors import MatchNotFinalizedError, MatchReportNotOpenError
+from bot.services.errors import (
+    MatchNotFinalizedError,
+    MatchParticipantError,
+    MatchReportNotOpenError,
+    MatchSpectatingClosedError,
+    MatchSpectatorAlreadyRegisteredError,
+    MatchSpectatorCapacityError,
+)
 from bot.services.rating import RatingParticipantSnapshot, calculate_rating_updates
 from bot.services.registration import register_player
 
@@ -436,6 +445,165 @@ def test_try_create_matches_initializes_active_match_state_and_notification_cont
         assert participant.notification_guild_id == 92_001
         assert participant.notification_mention_discord_user_id == player.discord_user_id
         assert participant.notification_recorded_at is not None
+
+
+@pytest.mark.parametrize(
+    (
+        "match_format",
+        "start_discord_user_id",
+        "channel_id",
+        "guild_id",
+        "expected_max_spectators",
+    ),
+    [
+        (MatchFormat.ONE_VS_ONE, 60_120, 91_001_2, 92_001_2, 10),
+        (MatchFormat.TWO_VS_TWO, 60_121, 91_001_3, 92_001_3, 8),
+        (MatchFormat.THREE_VS_THREE, 60_122, 91_001_4, 92_001_4, 6),
+    ],
+)
+def test_spectate_match_registers_spectator_and_tracks_capacity_for_all_formats(
+    session: Session,
+    session_factory: sessionmaker[Session],
+    match_format: MatchFormat,
+    start_discord_user_id: int,
+    channel_id: int,
+    guild_id: int,
+    expected_max_spectators: int,
+) -> None:
+    match_id, _ = create_first_match_for_format(
+        session,
+        session_factory,
+        match_format=match_format,
+        start_discord_user_id=start_discord_user_id,
+        channel_id=channel_id,
+        guild_id=guild_id,
+    )
+    spectator = create_player(session, start_discord_user_id + 100)
+    match_service = MatchFlowService(session_factory)
+
+    result = match_service.spectate_match(match_id, spectator.id)
+
+    session.expire_all()
+    persisted_spectator = session.scalar(
+        select(MatchSpectator).where(
+            MatchSpectator.match_id == match_id,
+            MatchSpectator.player_id == spectator.id,
+        )
+    )
+
+    assert result.match_id == match_id
+    assert result.active_spectator_count == 1
+    assert result.max_spectators == expected_max_spectators
+    assert persisted_spectator is not None
+    assert persisted_spectator.status == MatchSpectatorStatus.ACTIVE
+    assert persisted_spectator.removed_at is None
+    assert persisted_spectator.removal_reason is None
+
+
+def test_spectate_match_rejects_participants_duplicates_and_full_capacity(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    match_id, participants = create_first_match_for_format(
+        session,
+        session_factory,
+        match_format=MatchFormat.THREE_VS_THREE,
+        start_discord_user_id=60_123,
+        channel_id=91_001_5,
+        guild_id=92_001_5,
+    )
+    match_service = MatchFlowService(session_factory)
+
+    with pytest.raises(MatchParticipantError, match="この試合の参加者は観戦応募できません。"):
+        match_service.spectate_match(match_id, participants[0].player_id)
+
+    spectator_players = create_players(
+        session,
+        7,
+        start_discord_user_id=60_223,
+    )
+
+    first_result = match_service.spectate_match(match_id, spectator_players[0].id)
+    assert first_result.active_spectator_count == 1
+    assert first_result.max_spectators == 6
+
+    with pytest.raises(
+        MatchSpectatorAlreadyRegisteredError,
+        match="すでにこの試合へ観戦応募済みです。",
+    ):
+        match_service.spectate_match(match_id, spectator_players[0].id)
+
+    for spectator in spectator_players[1:6]:
+        match_service.spectate_match(match_id, spectator.id)
+
+    with pytest.raises(MatchSpectatorCapacityError, match="この試合の観戦枠は埋まっています。"):
+        match_service.spectate_match(match_id, spectator_players[6].id)
+
+
+def test_spectate_match_rejects_matches_outside_accepting_states(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    match_id, _ = create_first_match_for_format(
+        session,
+        session_factory,
+        match_format=MatchFormat.THREE_VS_THREE,
+        start_discord_user_id=60_124,
+        channel_id=91_001_6,
+        guild_id=92_001_6,
+    )
+    spectator = create_player(session, 60_224)
+    match_service = MatchFlowService(session_factory)
+
+    active_state = session.get(ActiveMatchState, match_id)
+    assert active_state is not None
+    active_state.state = MatchState.AWAITING_RESULT_APPROVALS
+    session.commit()
+
+    with pytest.raises(
+        MatchSpectatingClosedError,
+        match="この試合は観戦受付を終了しています。",
+    ):
+        match_service.spectate_match(match_id, spectator.id)
+
+
+def test_finalizing_match_closes_active_spectators(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    match_id, _, participants = create_match(
+        session,
+        session_factory,
+        start_discord_user_id=60_125,
+        channel_id=91_001_7,
+        guild_id=92_001_7,
+    )
+    spectator = create_player(session, 60_225)
+    match_service = MatchFlowService(session_factory)
+
+    match_service.spectate_match(match_id, spectator.id)
+    finalize_match_with_result(
+        session,
+        match_service,
+        match_id=match_id,
+        participants=participants,
+        final_result=MatchResult.TEAM_A_WIN,
+    )
+
+    session.expire_all()
+    persisted_spectator = session.scalar(
+        select(MatchSpectator).where(
+            MatchSpectator.match_id == match_id,
+            MatchSpectator.player_id == spectator.id,
+        )
+    )
+    finalized_result = session.get(FinalizedMatchResult, match_id)
+
+    assert persisted_spectator is not None
+    assert finalized_result is not None
+    assert persisted_spectator.status == MatchSpectatorStatus.CLOSED
+    assert persisted_spectator.removed_at == finalized_result.finalized_at
+    assert persisted_spectator.removal_reason == "match_finalized"
 
 
 def test_submit_reports_finalizes_immediately_when_no_approval_targets(

@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Any, TypedDict
 
 import psycopg
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import DBAPIError, InterfaceError, OperationalError
 from sqlalchemy.orm import Session, selectinload, sessionmaker
@@ -38,6 +38,8 @@ from bot.models import (
     MatchReportInputResult,
     MatchReportStatus,
     MatchResult,
+    MatchSpectator,
+    MatchSpectatorStatus,
     MatchState,
     OutboxEvent,
     OutboxEventType,
@@ -59,6 +61,9 @@ from bot.services.errors import (
     MatchParticipantError,
     MatchReportingClosedError,
     MatchReportNotOpenError,
+    MatchSpectatingClosedError,
+    MatchSpectatorAlreadyRegisteredError,
+    MatchSpectatorCapacityError,
     RetryableTaskError,
 )
 from bot.services.matching_queue import MatchingQueueNotificationContext
@@ -73,6 +78,8 @@ MATCH_ADMIN_REVIEW_REQUIRED_NOTIFICATION_MESSAGE = "admin による確認が必�
 
 _MATCH_ADVISORY_LOCK_NAMESPACE = 20_260_319
 _PLAYER_ADVISORY_LOCK_NAMESPACE = 20_260_320
+_MAX_MATCH_ROOM_SIZE = 12
+_MATCH_SPECTATOR_REMOVAL_REASON_FINALIZED = "match_finalized"
 
 
 def _is_transient_task_db_error(exc: Exception) -> bool:
@@ -114,6 +121,13 @@ class MatchReportSubmissionResult:
 class MatchApprovalResult:
     match_id: int
     approval_status: MatchApprovalStatus
+
+
+@dataclass(frozen=True, slots=True)
+class MatchSpectateResult:
+    match_id: int
+    active_spectator_count: int
+    max_spectators: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -221,6 +235,57 @@ class MatchFlowService:
                 parent_player_id=player_id,
                 decided_at=current_time,
                 event_dedupe_suffix="manual",
+            )
+
+    def spectate_match(
+        self,
+        match_id: int,
+        player_id: int,
+    ) -> MatchSpectateResult:
+        with session_scope(self.session_factory) as session:
+            self._acquire_match_lock(session, match_id)
+            current_time = self._get_database_now(session)
+            self._ensure_player_exists(session, player_id)
+
+            active_state = self._get_active_match_state_for_update(session, match_id)
+            if active_state is None:
+                self._raise_missing_match(match_id)
+            assert active_state is not None
+
+            if active_state.state not in {
+                MatchState.WAITING_FOR_PARENT,
+                MatchState.WAITING_FOR_RESULT_REPORTS,
+            }:
+                raise MatchSpectatingClosedError("この試合は観戦受付を終了しています。")
+
+            participant_count = self._get_match_participant_count(session, match_id)
+            max_spectators = self._calculate_max_spectators(participant_count)
+            participant = self._get_match_participant_for_update(session, match_id, player_id)
+            if participant is not None:
+                raise MatchParticipantError("この試合の参加者は観戦応募できません。")
+
+            spectator = self._get_active_match_spectator_for_update(session, match_id, player_id)
+            if spectator is not None:
+                raise MatchSpectatorAlreadyRegisteredError("すでにこの試合へ観戦応募済みです。")
+
+            active_spectator_count = self._count_active_match_spectators(session, match_id)
+            if active_spectator_count >= max_spectators:
+                raise MatchSpectatorCapacityError("この試合の観戦枠は埋まっています。")
+
+            session.add(
+                MatchSpectator(
+                    match_id=match_id,
+                    player_id=player_id,
+                    status=MatchSpectatorStatus.ACTIVE,
+                    created_at=current_time,
+                )
+            )
+            session.flush()
+
+            return MatchSpectateResult(
+                match_id=match_id,
+                active_spectator_count=active_spectator_count + 1,
+                max_spectators=max_spectators,
             )
 
     def process_parent_deadline(self, match_id: int) -> MatchParentAssignmentResult:
@@ -1014,6 +1079,12 @@ class MatchFlowService:
         active_state.state = MatchState.FINALIZED
         active_state.finalized_at = finalized_at
         active_state.finalized_by_admin = finalized_by_admin
+        self._close_active_match_spectators(
+            session,
+            match_id=active_state.match_id,
+            removed_at=finalized_at,
+            removal_reason=_MATCH_SPECTATOR_REMOVAL_REASON_FINALIZED,
+        )
 
         self._enqueue_finalization_notifications_locked(
             session,
@@ -1173,6 +1244,12 @@ class MatchFlowService:
         active_state.state = MatchState.FINALIZED
         active_state.finalized_at = finalized_at
         active_state.finalized_by_admin = True
+        self._close_active_match_spectators(
+            session,
+            match_id=active_state.match_id,
+            removed_at=finalized_at,
+            removal_reason=_MATCH_SPECTATOR_REMOVAL_REASON_FINALIZED,
+        )
 
         self._recalculate_ratings_after_match_correction_locked(
             session,
@@ -1911,6 +1988,18 @@ class MatchFlowService:
             ).all()
         )
 
+    def _get_match_participant_count(
+        self,
+        session: Session,
+        match_id: int,
+    ) -> int:
+        return (
+            session.scalar(
+                select(func.count(MatchParticipant.id)).where(MatchParticipant.match_id == match_id)
+            )
+            or 0
+        )
+
     def _get_match_participant_for_update(
         self,
         session: Session,
@@ -1924,6 +2013,61 @@ class MatchFlowService:
                 MatchParticipant.player_id == player_id,
             )
             .with_for_update()
+        )
+
+    def _get_active_match_spectator_for_update(
+        self,
+        session: Session,
+        match_id: int,
+        player_id: int,
+    ) -> MatchSpectator | None:
+        return session.scalar(
+            select(MatchSpectator)
+            .where(
+                MatchSpectator.match_id == match_id,
+                MatchSpectator.player_id == player_id,
+                MatchSpectator.status == MatchSpectatorStatus.ACTIVE,
+            )
+            .with_for_update()
+        )
+
+    def _count_active_match_spectators(
+        self,
+        session: Session,
+        match_id: int,
+    ) -> int:
+        return (
+            session.scalar(
+                select(func.count(MatchSpectator.id)).where(
+                    MatchSpectator.match_id == match_id,
+                    MatchSpectator.status == MatchSpectatorStatus.ACTIVE,
+                )
+            )
+            or 0
+        )
+
+    def _calculate_max_spectators(self, participant_count: int) -> int:
+        return max(0, _MAX_MATCH_ROOM_SIZE - participant_count)
+
+    def _close_active_match_spectators(
+        self,
+        session: Session,
+        *,
+        match_id: int,
+        removed_at: datetime,
+        removal_reason: str,
+    ) -> None:
+        session.execute(
+            update(MatchSpectator)
+            .where(
+                MatchSpectator.match_id == match_id,
+                MatchSpectator.status == MatchSpectatorStatus.ACTIVE,
+            )
+            .values(
+                status=MatchSpectatorStatus.CLOSED,
+                removed_at=removed_at,
+                removal_reason=removal_reason,
+            )
         )
 
     def _get_latest_report_for_update(

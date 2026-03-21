@@ -4,6 +4,8 @@
 
 - [formats.md](formats.md)
   - 対応フォーマット、独立管理の範囲、基本データモデル方針
+- [players/identity.md](players/identity.md)
+  - プレイヤー識別子と Bot が保持する表示名キャッシュ
 - [players/access_restrictions.md](players/access_restrictions.md)
   - admin によるプレイヤー利用制限
 - [matching/common.md](matching/common.md)
@@ -36,6 +38,10 @@
   - 2v2 レート計算
 - [rating/3v3.md](rating/3v3.md)
   - 3v3 レート計算
+- [leaderboard/ranking.md](leaderboard/ranking.md)
+  - ランキング表示と順位変化量の仕様
+- [leaderboard/snapshots.md](leaderboard/snapshots.md)
+  - 日次ランキング snapshot の生成、保持、運用方針
 - [outbox.md](outbox.md)
   - 非同期通知配送
 - [commands/user-commands.md](commands/user-commands.md)
@@ -46,9 +52,12 @@
 読み方の推奨順は以下とする。
 
 1. [formats.md](formats.md)
-2. [players/access_restrictions.md](players/access_restrictions.md)
-3. [matching/common.md](matching/common.md)
-4. [matching/queue_classes.md](matching/queue_classes.md)
-5. 必要なフォーマット別仕様
-6. [matches/common.md](matches/common.md)
-7. [rating/common.md](rating/common.md)
+2. [players/identity.md](players/identity.md)
+3. [players/access_restrictions.md](players/access_restrictions.md)
+4. [matching/common.md](matching/common.md)
+5. [matching/queue_classes.md](matching/queue_classes.md)
+6. 必要なフォーマット別仕様
+7. [matches/common.md](matches/common.md)
+8. [rating/common.md](rating/common.md)
+9. [leaderboard/ranking.md](leaderboard/ranking.md)
+10. [leaderboard/snapshots.md](leaderboard/snapshots.md)

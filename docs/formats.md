@@ -83,13 +83,18 @@ players_per_batch = team_size * 2 * batch_size
 
 ### `players`
 
-`players` はプレイヤー登録の基底情報のみを持つ。
+`players` はプレイヤー登録の基底情報を持つ。
+表示用途の軽量な補助情報は、必要に応じて同じテーブルへ持たせてよい。
 
 最低限:
 
 - `id`
 - `discord_user_id`
 - `created_at`
+
+補足:
+
+- Bot が保持する表示名キャッシュの詳細は [players/identity.md](players/identity.md) を参照する
 
 ### `player_format_stats`
 

@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from datetime import datetime
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload, sessionmaker
@@ -17,6 +18,7 @@ class PlayerFormatInfo:
     wins: int
     losses: int
     draws: int
+    last_played_at: datetime | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,6 +94,9 @@ class PlayerLookupService:
                     wins=format_stats_by_format[format_definition.match_format].wins,
                     losses=format_stats_by_format[format_definition.match_format].losses,
                     draws=format_stats_by_format[format_definition.match_format].draws,
+                    last_played_at=format_stats_by_format[
+                        format_definition.match_format
+                    ].last_played_at,
                 )
                 for format_definition in get_match_format_definitions()
             ),

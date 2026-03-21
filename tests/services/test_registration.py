@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
@@ -39,6 +41,7 @@ def test_register_player_creates_player_with_initial_rating(session: Session) ->
     assert all(format_stats.wins == 0 for format_stats in persisted_format_stats)
     assert all(format_stats.losses == 0 for format_stats in persisted_format_stats)
     assert all(format_stats.draws == 0 for format_stats in persisted_format_stats)
+    assert all(format_stats.last_played_at is None for format_stats in persisted_format_stats)
 
 
 def test_register_player_raises_for_duplicate_discord_user_id(session: Session) -> None:
@@ -84,6 +87,7 @@ def test_player_lookup_service_returns_player_info_for_registered_discord_user_i
     three_vs_three_stats.wins = 7
     three_vs_three_stats.losses = 4
     three_vs_three_stats.draws = 1
+    three_vs_three_stats.last_played_at = datetime(2026, 3, 20, 12, 34, 56, tzinfo=timezone.utc)
     session.commit()
     service = PlayerLookupService(session_factory)
 
@@ -101,6 +105,15 @@ def test_player_lookup_service_returns_player_info_for_registered_discord_user_i
     assert format_stats_by_format[MatchFormat.THREE_VS_THREE].wins == 7
     assert format_stats_by_format[MatchFormat.THREE_VS_THREE].losses == 4
     assert format_stats_by_format[MatchFormat.THREE_VS_THREE].draws == 1
+    assert format_stats_by_format[MatchFormat.THREE_VS_THREE].last_played_at == datetime(
+        2026,
+        3,
+        20,
+        12,
+        34,
+        56,
+        tzinfo=timezone.utc,
+    )
 
 
 def test_player_lookup_service_raises_for_unregistered_discord_user_id(

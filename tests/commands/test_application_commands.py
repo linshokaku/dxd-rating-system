@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from typing import cast
 
 import discord
@@ -111,7 +111,7 @@ def get_player_format_stats(
 
 
 def format_player_info_message(
-    stats_by_format: dict[MatchFormat, tuple[float, int, int, int, int]],
+    stats_by_format: dict[MatchFormat, tuple[float, int, int, int, int, datetime | None]],
 ) -> str:
     lines = ["プレイヤー情報"]
     for match_format in (
@@ -119,7 +119,7 @@ def format_player_info_message(
         MatchFormat.TWO_VS_TWO,
         MatchFormat.THREE_VS_THREE,
     ):
-        rating, games_played, wins, losses, draws = stats_by_format[match_format]
+        rating, games_played, wins, losses, draws, last_played_at = stats_by_format[match_format]
         lines.extend(
             [
                 match_format.value,
@@ -128,6 +128,7 @@ def format_player_info_message(
                 f"wins: {wins}",
                 f"losses: {losses}",
                 f"draws: {draws}",
+                f"last_played_at: {'-' if last_played_at is None else last_played_at.isoformat()}",
             ]
         )
     return "\n".join(lines)
@@ -366,6 +367,7 @@ def test_player_info_command_returns_requesting_player_stats(
     three_vs_three_stats.wins = 5
     three_vs_three_stats.losses = 2
     three_vs_three_stats.draws = 1
+    three_vs_three_stats.last_played_at = datetime(2026, 3, 20, 12, 34, 56, tzinfo=timezone.utc)
     session.commit()
     handlers = create_handlers(session_factory)
     interaction = FakeInteraction(user=FakeUser(id=discord_user_id))
@@ -375,9 +377,16 @@ def test_player_info_command_returns_requesting_player_stats(
     assert interaction.response.messages == [
         format_player_info_message(
             {
-                MatchFormat.ONE_VS_ONE: (1500.0, 0, 0, 0, 0),
-                MatchFormat.TWO_VS_TWO: (1500.0, 0, 0, 0, 0),
-                MatchFormat.THREE_VS_THREE: (1512.5, 8, 5, 2, 1),
+                MatchFormat.ONE_VS_ONE: (1500.0, 0, 0, 0, 0, None),
+                MatchFormat.TWO_VS_TWO: (1500.0, 0, 0, 0, 0, None),
+                MatchFormat.THREE_VS_THREE: (
+                    1512.5,
+                    8,
+                    5,
+                    2,
+                    1,
+                    datetime(2026, 3, 20, 12, 34, 56, tzinfo=timezone.utc),
+                ),
             }
         )
     ]
@@ -736,6 +745,7 @@ def test_dev_player_info_returns_target_player_stats(
     three_vs_three_stats.wins = 1
     three_vs_three_stats.losses = 1
     three_vs_three_stats.draws = 1
+    three_vs_three_stats.last_played_at = datetime(2026, 3, 20, 14, 0, 0, tzinfo=timezone.utc)
     session.commit()
     handlers = create_handlers(
         session_factory,
@@ -748,9 +758,16 @@ def test_dev_player_info_returns_target_player_stats(
     assert interaction.response.messages == [
         format_player_info_message(
             {
-                MatchFormat.ONE_VS_ONE: (1500.0, 0, 0, 0, 0),
-                MatchFormat.TWO_VS_TWO: (1500.0, 0, 0, 0, 0),
-                MatchFormat.THREE_VS_THREE: (1498.25, 3, 1, 1, 1),
+                MatchFormat.ONE_VS_ONE: (1500.0, 0, 0, 0, 0, None),
+                MatchFormat.TWO_VS_TWO: (1500.0, 0, 0, 0, 0, None),
+                MatchFormat.THREE_VS_THREE: (
+                    1498.25,
+                    3,
+                    1,
+                    1,
+                    1,
+                    datetime(2026, 3, 20, 14, 0, 0, tzinfo=timezone.utc),
+                ),
             }
         )
     ]

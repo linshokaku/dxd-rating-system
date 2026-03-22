@@ -19,6 +19,7 @@
 - Hosting: Railway
 - Database: Railway Postgres
 - App: Discord Bot
+- Scheduled jobs: Railway Cron Job
 - Environment variables で設定を注入する
 - Bot token や DB 接続情報をコードに埋め込まない
 - 本番では PostgreSQL を前提とする
@@ -57,6 +58,7 @@ src/
     models/
     config.py
     main.py
+  jobs/
 tests/
 alembic/
 README.md
@@ -110,9 +112,15 @@ AGENTS.md
 
 ## Environment Variables
 
-最低限、以下を利用する想定です。
+サービスごとに最低限、以下を利用する想定です。
 
+Bot service:
 * `DISCORD_BOT_TOKEN`
+* `DATABASE_URL`
+* `SUPER_ADMIN_USER_IDS` (optional)
+* `LOG_LEVEL`
+
+Cron Job:
 * `DATABASE_URL`
 * `LOG_LEVEL`
 
@@ -123,7 +131,9 @@ AGENTS.md
 ## Railway Deployment Guidelines
 
 * Railway 上でそのまま起動できる構成を維持する
-* 起動コマンドを README.md に明記する
+* Bot 本体とは別に、定期実行処理は `src/jobs/` 配下のモジュールとして実装する
+* 定期実行は Railway Cron Job を利用し、スケジュールは Railway 側で管理する
+* Bot と Cron Job の起動コマンドを README.md に明記する
 * DB 接続先は Railway Postgres を前提とする
 * 環境変数未設定時は起動時に明確に失敗させる
 * 本番で必要な migration 実行手順を明記する

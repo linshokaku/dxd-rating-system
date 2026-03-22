@@ -28,16 +28,23 @@ src/
     models/
     config.py
     main.py
+  jobs/
+    daily.py
 tests/
 alembic/
 README.md
 AGENTS.md
 ```
 
-## 必須環境変数
+## 環境変数
+Bot service:
 - `DISCORD_BOT_TOKEN`
 - `DATABASE_URL`
 - `SUPER_ADMIN_USER_IDS` (任意。カンマ区切りの Discord user ID。例: `123456789012345678,234567890123456789`)
+- `LOG_LEVEL` (任意。未指定時は `INFO`)
+
+Cron Job:
+- `DATABASE_URL`
 - `LOG_LEVEL` (任意。未指定時は `INFO`)
 
 ローカルでは `.env.example` をコピーして `.env` を作成してください。
@@ -65,6 +72,17 @@ uv sync
 uv run alembic upgrade head
 uv run python -m bot.main
 ```
+
+## Cron Job
+定期実行処理は `src/jobs/` 配下に置き、Railway の Cron Job からコマンド実行する想定です。
+現時点の日次エントリーポイントは次のとおりです。
+
+```bash
+uv run python -m jobs.daily
+```
+
+このジョブは Bot 本体とは別プロセスで動作し、現在は DB 接続確認と今後の定期処理を追加するための雛形を提供します。
+Railway ではこのコマンドを Cron Job に設定し、スケジュール自体は Railway 側で管理してください。
 
 ## モデル更新
 ```bash

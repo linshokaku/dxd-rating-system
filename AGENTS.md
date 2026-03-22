@@ -54,18 +54,13 @@ src/
     apps/
       bot/
       worker/
-    commands/
-    config.py
-    constants.py
-    db/
-    models/
-    notifications/
-    runtime/
-    services/
     contexts/
     platform/
     shared/
 tests/
+  apps/
+  contexts/
+  platform/
 alembic/
 README.md
 AGENTS.md
@@ -75,8 +70,9 @@ AGENTS.md
 
 * 責務の分離はする
 * 既存の `dxd_rating` パッケージ境界は尊重する
-* `dxd_rating.services` / `dxd_rating.models` / `dxd_rating.db` / `dxd_rating.runtime` は公開 import 面として扱う
 * 業務ロジックは `contexts/`、インフラや Discord 接続は `platform/` に寄せる
+* Bot の entrypoint は `apps/bot/`、定期実行の entrypoint は `apps/worker/` に置く
+* `tests/` も `apps/` / `contexts/` / `platform/` の境界に合わせる
 * ただし現在の構成以上に不要な抽象レイヤは増やさない
 * 1ファイルが巨大化しすぎたら分割する
 

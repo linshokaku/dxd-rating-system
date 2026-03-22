@@ -10,12 +10,26 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
-from dxd_rating.constants import (
-    MatchQueueClassDefinition,
-    get_match_queue_class_definition_by_id,
-    get_match_queue_class_definition_by_name,
+from dxd_rating.contexts.common.application import (
+    InvalidQueueNameError,
+    PlayerNotRegisteredError,
+    QueueAlreadyJoinedError,
+    QueueJoinNotAllowedError,
+    QueueJoinRestrictedError,
+    QueueNotJoinedError,
+    RetryableTaskError,
 )
-from dxd_rating.models import (
+from dxd_rating.contexts.matchmaking.application import (
+    MATCH_QUEUE_TTL,
+    MatchingQueueNotificationContext,
+    MatchingQueueService,
+)
+from dxd_rating.contexts.players.application import register_player
+from dxd_rating.contexts.restrictions.application import (
+    PlayerAccessRestrictionDuration,
+    PlayerAccessRestrictionService,
+)
+from dxd_rating.platform.db.models import (
     Match,
     MatchFormat,
     MatchParticipant,
@@ -29,20 +43,10 @@ from dxd_rating.models import (
     PlayerAccessRestrictionType,
     PlayerFormatStats,
 )
-from dxd_rating.services import (
-    MATCH_QUEUE_TTL,
-    InvalidQueueNameError,
-    MatchingQueueNotificationContext,
-    MatchingQueueService,
-    PlayerAccessRestrictionDuration,
-    PlayerAccessRestrictionService,
-    PlayerNotRegisteredError,
-    QueueAlreadyJoinedError,
-    QueueJoinNotAllowedError,
-    QueueJoinRestrictedError,
-    QueueNotJoinedError,
-    RetryableTaskError,
-    register_player,
+from dxd_rating.shared.constants import (
+    MatchQueueClassDefinition,
+    get_match_queue_class_definition_by_id,
+    get_match_queue_class_definition_by_name,
 )
 
 DEFAULT_MATCH_FORMAT = MatchFormat.THREE_VS_THREE
@@ -749,7 +753,10 @@ def test_process_expire_marks_waiting_entry_expired_creates_outbox_and_logs(
     )
     service = create_matching_queue_service(session_factory)
 
-    with caplog.at_level(logging.INFO, logger="dxd_rating.services.matching_queue"):
+    with caplog.at_level(
+        logging.INFO,
+        logger="dxd_rating.contexts.matchmaking.application.matching_queue",
+    ):
         first_result = service.process_expire(entry.id, expected_revision=1)
         second_result = service.process_expire(entry.id, expected_revision=1)
 

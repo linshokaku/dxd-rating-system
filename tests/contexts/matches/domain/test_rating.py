@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from dxd_rating.models import MatchParticipantTeam, MatchResult
-from dxd_rating.services.rating import RatingParticipantSnapshot, calculate_rating_updates
+from dxd_rating.contexts.matches.domain import RatingParticipantSnapshot, calculate_rating_updates
+from dxd_rating.platform.db.models import MatchParticipantTeam, MatchResult
 
 
 def build_equal_rating_snapshots(

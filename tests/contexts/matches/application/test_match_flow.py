@@ -6,9 +6,28 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
-import dxd_rating.services.match_flow as match_flow_module
-from dxd_rating.constants import MATCH_PARENT_SELECTION_WINDOW, get_match_format_definition
-from dxd_rating.models import (
+import dxd_rating.contexts.matches.application.match_flow as match_flow_module
+from dxd_rating.contexts.common.application import (
+    MatchNotFinalizedError,
+    MatchParticipantError,
+    MatchReportNotOpenError,
+    MatchSpectatingClosedError,
+    MatchSpectatingRestrictedError,
+    MatchSpectatorAlreadyRegisteredError,
+    MatchSpectatorCapacityError,
+)
+from dxd_rating.contexts.matches.application import MatchFlowService
+from dxd_rating.contexts.matches.domain import RatingParticipantSnapshot, calculate_rating_updates
+from dxd_rating.contexts.matchmaking.application import (
+    MatchingQueueNotificationContext,
+    MatchingQueueService,
+)
+from dxd_rating.contexts.players.application import register_player
+from dxd_rating.contexts.restrictions.application import (
+    PlayerAccessRestrictionDuration,
+    PlayerAccessRestrictionService,
+)
+from dxd_rating.platform.db.models import (
     INITIAL_RATING,
     ActiveMatchPlayerState,
     ActiveMatchState,
@@ -35,24 +54,7 @@ from dxd_rating.models import (
     PlayerPenalty,
     PlayerPenaltyAdjustment,
 )
-from dxd_rating.services import (
-    MatchFlowService,
-    MatchingQueueNotificationContext,
-    MatchingQueueService,
-    PlayerAccessRestrictionDuration,
-    PlayerAccessRestrictionService,
-)
-from dxd_rating.services.errors import (
-    MatchNotFinalizedError,
-    MatchParticipantError,
-    MatchReportNotOpenError,
-    MatchSpectatingClosedError,
-    MatchSpectatingRestrictedError,
-    MatchSpectatorAlreadyRegisteredError,
-    MatchSpectatorCapacityError,
-)
-from dxd_rating.services.rating import RatingParticipantSnapshot, calculate_rating_updates
-from dxd_rating.services.registration import register_player
+from dxd_rating.shared.constants import MATCH_PARENT_SELECTION_WINDOW, get_match_format_definition
 
 DEFAULT_MATCH_FORMAT = MatchFormat.THREE_VS_THREE
 DEFAULT_QUEUE_NAME = "low"

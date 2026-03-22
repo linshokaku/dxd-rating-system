@@ -13,13 +13,34 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
-import dxd_rating.runtime.match_runtime as match_runtime_module
-import dxd_rating.runtime.outbox as outbox_runtime
-from dxd_rating.constants import (
-    PRESENCE_REMINDER_LEAD_TIME,
-    get_match_queue_class_definition_by_name,
+import dxd_rating.platform.runtime.match_runtime as match_runtime_module
+import dxd_rating.platform.runtime.outbox as outbox_runtime
+from dxd_rating.contexts.common.application import RetryableTaskError
+from dxd_rating.contexts.matches.application import (
+    MATCH_APPROVAL_REQUESTED_NOTIFICATION_MESSAGE,
+    MATCH_APPROVAL_STARTED_NOTIFICATION_MESSAGE,
+    MATCH_AUTO_PENALTY_APPLIED_NOTIFICATION_MESSAGE,
+    MATCH_FINALIZED_NOTIFICATION_MESSAGE,
+    ActiveMatchTimerState,
+    MatchFinalizationResult,
+    MatchReportSubmissionResult,
 )
-from dxd_rating.models import (
+from dxd_rating.contexts.matchmaking.application import (
+    MATCH_CREATED_NOTIFICATION_MESSAGE,
+    PRESENCE_REMINDER_NOTIFICATION_MESSAGE,
+    QUEUE_EXPIRED_NOTIFICATION_MESSAGE,
+    CreatedMatchResult,
+    ExpireQueueEntryResult,
+    JoinQueueResult,
+    LeaveQueueResult,
+    MatchingQueueNotificationContext,
+    MatchingQueueService,
+    PresenceReminderResult,
+    PresentQueueResult,
+    WaitingEntryTimerState,
+)
+from dxd_rating.contexts.players.application import register_player
+from dxd_rating.platform.db.models import (
     Match,
     MatchFormat,
     MatchQueueEntry,
@@ -30,8 +51,8 @@ from dxd_rating.models import (
     OutboxEvent,
     OutboxEventType,
 )
-from dxd_rating.notifications import DiscordOutboxEventPublisher
-from dxd_rating.runtime import (
+from dxd_rating.platform.discord.rest import DiscordOutboxEventPublisher
+from dxd_rating.platform.runtime import (
     BotRuntime,
     BotRuntimeStartResult,
     MatchRuntime,
@@ -41,28 +62,9 @@ from dxd_rating.runtime import (
     OutboxStartupResult,
     PendingOutboxEvent,
 )
-from dxd_rating.services import (
-    MATCH_APPROVAL_REQUESTED_NOTIFICATION_MESSAGE,
-    MATCH_APPROVAL_STARTED_NOTIFICATION_MESSAGE,
-    MATCH_AUTO_PENALTY_APPLIED_NOTIFICATION_MESSAGE,
-    MATCH_CREATED_NOTIFICATION_MESSAGE,
-    MATCH_FINALIZED_NOTIFICATION_MESSAGE,
-    PRESENCE_REMINDER_NOTIFICATION_MESSAGE,
-    QUEUE_EXPIRED_NOTIFICATION_MESSAGE,
-    ActiveMatchTimerState,
-    CreatedMatchResult,
-    ExpireQueueEntryResult,
-    JoinQueueResult,
-    LeaveQueueResult,
-    MatchFinalizationResult,
-    MatchingQueueNotificationContext,
-    MatchingQueueService,
-    MatchReportSubmissionResult,
-    PresenceReminderResult,
-    PresentQueueResult,
-    RetryableTaskError,
-    WaitingEntryTimerState,
-    register_player,
+from dxd_rating.shared.constants import (
+    PRESENCE_REMINDER_LEAD_TIME,
+    get_match_queue_class_definition_by_name,
 )
 
 DEFAULT_MATCH_FORMAT = MatchFormat.THREE_VS_THREE
@@ -1457,7 +1459,7 @@ def test_outbox_dispatcher_fallback_poll_logs_warning_when_it_publishes(
         finally:
             await dispatcher.stop()
 
-    with caplog.at_level(logging.WARNING, logger="dxd_rating.runtime.outbox"):
+    with caplog.at_level(logging.WARNING, logger="dxd_rating.platform.runtime.outbox"):
         asyncio.run(scenario())
 
     assert "Fallback outbox poll published events" in caplog.text

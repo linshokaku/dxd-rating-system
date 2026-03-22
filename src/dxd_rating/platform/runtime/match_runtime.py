@@ -10,6 +10,29 @@ from typing import Any, ParamSpec, Protocol, TypeVar
 
 from sqlalchemy.orm import Session, sessionmaker
 
+from dxd_rating.contexts.common.application import RetryableTaskError
+from dxd_rating.contexts.matches.application import (
+    ActiveMatchTimerState,
+    MatchAdminOverrideResult,
+    MatchApprovalResult,
+    MatchFinalizationResult,
+    MatchFlowService,
+    MatchParentAssignmentResult,
+    MatchReportSubmissionResult,
+    MatchSpectateResult,
+    PlayerPenaltyAdjustmentResult,
+)
+from dxd_rating.contexts.matchmaking.application import (
+    CreatedMatchResult,
+    ExpireQueueEntryResult,
+    JoinQueueResult,
+    LeaveQueueResult,
+    MatchingQueueNotificationContext,
+    MatchingQueueService,
+    PresenceReminderResult,
+    PresentQueueResult,
+    WaitingEntryTimerState,
+)
 from dxd_rating.platform.db.models import (
     MatchFormat,
     MatchReportInputResult,
@@ -18,27 +41,6 @@ from dxd_rating.platform.db.models import (
     PenaltyType,
 )
 from dxd_rating.platform.runtime.outbox import retry_delay_for_failure_count
-from dxd_rating.services import (
-    ActiveMatchTimerState,
-    CreatedMatchResult,
-    ExpireQueueEntryResult,
-    JoinQueueResult,
-    LeaveQueueResult,
-    MatchAdminOverrideResult,
-    MatchApprovalResult,
-    MatchFinalizationResult,
-    MatchFlowService,
-    MatchingQueueNotificationContext,
-    MatchingQueueService,
-    MatchParentAssignmentResult,
-    MatchReportSubmissionResult,
-    MatchSpectateResult,
-    PlayerPenaltyAdjustmentResult,
-    PresenceReminderResult,
-    PresentQueueResult,
-    RetryableTaskError,
-    WaitingEntryTimerState,
-)
 from dxd_rating.shared.constants import MATCH_PARENT_SELECTION_WINDOW, PRESENCE_REMINDER_LEAD_TIME
 
 DEFAULT_RECONCILE_INTERVAL = timedelta(minutes=5)

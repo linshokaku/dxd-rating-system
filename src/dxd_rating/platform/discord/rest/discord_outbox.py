@@ -7,19 +7,21 @@ from typing import NoReturn, Protocol, cast
 
 import discord
 
-from dxd_rating.platform.db.models import OutboxEventType
-from dxd_rating.platform.runtime.outbox import PendingOutboxEvent
-from dxd_rating.services import (
+from dxd_rating.contexts.matches.application import (
     MATCH_ADMIN_REVIEW_REQUIRED_NOTIFICATION_MESSAGE,
     MATCH_APPROVAL_REQUESTED_NOTIFICATION_MESSAGE,
     MATCH_APPROVAL_STARTED_NOTIFICATION_MESSAGE,
     MATCH_AUTO_PENALTY_APPLIED_NOTIFICATION_MESSAGE,
-    MATCH_CREATED_NOTIFICATION_MESSAGE,
     MATCH_FINALIZED_NOTIFICATION_MESSAGE,
     MATCH_PARENT_ASSIGNED_NOTIFICATION_MESSAGE,
+)
+from dxd_rating.contexts.matchmaking.application import (
+    MATCH_CREATED_NOTIFICATION_MESSAGE,
     PRESENCE_REMINDER_NOTIFICATION_MESSAGE,
     QUEUE_EXPIRED_NOTIFICATION_MESSAGE,
 )
+from dxd_rating.platform.db.models import OutboxEventType
+from dxd_rating.platform.runtime.outbox import PendingOutboxEvent
 from dxd_rating.shared.constants import format_discord_user_mention
 
 

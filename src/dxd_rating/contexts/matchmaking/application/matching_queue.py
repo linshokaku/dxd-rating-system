@@ -184,7 +184,7 @@ class MatchingQueueService:
         random_generator: RandomLike | None = None,
     ) -> None:
         self.session_factory = session_factory
-        self.logger = logger or logging.getLogger("dxd_rating.services.matching_queue")
+        self.logger = logger or logging.getLogger(__name__)
         self._match_format_definitions_by_format = {
             definition.match_format: definition
             for definition in (

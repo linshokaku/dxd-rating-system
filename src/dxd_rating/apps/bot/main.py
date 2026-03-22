@@ -5,12 +5,12 @@ from discord import app_commands
 from pydantic import ValidationError
 from sqlalchemy.orm import Session, sessionmaker
 
-from dxd_rating.commands import BotCommandHandlers, register_app_commands
-from dxd_rating.notifications import DiscordOutboxEventPublisher
 from dxd_rating.platform.config.bot import BotSettings
 from dxd_rating.platform.config.common import configure_logging, raise_settings_load_error
 from dxd_rating.platform.db.session import create_db_engine, create_session_factory
-from dxd_rating.runtime import BotRuntime, MatchRuntime, OutboxDispatcher
+from dxd_rating.platform.discord.gateway.commands import BotCommandHandlers, register_app_commands
+from dxd_rating.platform.discord.rest import DiscordOutboxEventPublisher
+from dxd_rating.platform.runtime import BotRuntime, MatchRuntime, OutboxDispatcher
 
 logger = logging.getLogger(__name__)
 

@@ -9,9 +9,18 @@ import discord
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
-from dxd_rating.commands import BotCommandHandlers, register_app_commands
-from dxd_rating.config import Settings
-from dxd_rating.models import (
+from dxd_rating.contexts.matches.application import MatchFlowService
+from dxd_rating.contexts.matchmaking.application import (
+    MatchingQueueNotificationContext,
+    MatchingQueueService,
+)
+from dxd_rating.contexts.players.application import register_player
+from dxd_rating.contexts.restrictions.application import (
+    PlayerAccessRestrictionDuration,
+    PlayerAccessRestrictionService,
+)
+from dxd_rating.platform.config.bot import BotSettings
+from dxd_rating.platform.db.models import (
     MatchFormat,
     MatchQueueEntry,
     MatchQueueEntryStatus,
@@ -23,15 +32,8 @@ from dxd_rating.models import (
     PlayerFormatStats,
     PlayerPenalty,
 )
-from dxd_rating.runtime import MatchRuntime
-from dxd_rating.services import (
-    MatchFlowService,
-    MatchingQueueNotificationContext,
-    MatchingQueueService,
-    PlayerAccessRestrictionDuration,
-    PlayerAccessRestrictionService,
-    register_player,
-)
+from dxd_rating.platform.discord.gateway.commands import BotCommandHandlers, register_app_commands
+from dxd_rating.platform.runtime import MatchRuntime
 
 DEFAULT_MATCH_FORMAT = MatchFormat.THREE_VS_THREE
 DEFAULT_QUEUE_NAME = "low"
@@ -69,8 +71,8 @@ def as_interaction(fake_interaction: FakeInteraction) -> discord.Interaction[dis
     return cast(discord.Interaction[discord.Client], fake_interaction)
 
 
-def create_settings(*, super_admin_user_ids: frozenset[int] = frozenset()) -> Settings:
-    return Settings.model_construct(
+def create_settings(*, super_admin_user_ids: frozenset[int] = frozenset()) -> BotSettings:
+    return BotSettings.model_construct(
         discord_bot_token="discord-token",
         database_url="postgresql+psycopg://user:password@localhost:5432/dxd_rating",
         log_level="INFO",

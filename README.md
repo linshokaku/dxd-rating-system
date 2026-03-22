@@ -26,14 +26,6 @@ src/
         main.py
       worker/
         daily.py
-    commands/
-    config.py
-    constants.py
-    db/
-    models/
-    notifications/
-    runtime/
-    services/
     contexts/
       common/
       players/
@@ -47,13 +39,14 @@ src/
       runtime/
     shared/
 tests/
+  apps/
+  contexts/
+  platform/
 alembic/
 README.md
 AGENTS.md
 ```
-
-`dxd_rating.services` / `dxd_rating.models` / `dxd_rating.db` / `dxd_rating.runtime` などは公開 import 面です。
-実装の詳細は `contexts/` と `platform/` 以下に分けています。
+実装は `contexts/` と `platform/` に分け、`tests/` も同じ責務境界に合わせています。
 
 ## 環境変数
 Bot service:
@@ -89,7 +82,7 @@ cp .env.example .env
 docker compose up -d db
 uv sync
 uv run alembic upgrade head
-uv run python -m dxd_rating.main
+uv run python -m dxd_rating.apps.bot.main
 ```
 
 ## Cron Job

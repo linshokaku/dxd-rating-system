@@ -3,8 +3,8 @@ from logging.config import fileConfig
 from sqlalchemy import engine_from_config, pool
 
 from alembic import context
-from dxd_rating.models import Base
 from dxd_rating.platform.config.common import DatabaseSettings
+from dxd_rating.platform.db.models import Base
 
 config = context.config
 

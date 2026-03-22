@@ -111,7 +111,7 @@ class PostgresOutboxNotificationListener:
         self.on_notification = on_notification
         self.on_reconnected = on_reconnected
         self.channel = channel
-        self.logger = logger or logging.getLogger("dxd_rating.runtime.outbox")
+        self.logger = logger or logging.getLogger(__name__)
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._ready_event = threading.Event()
@@ -229,7 +229,7 @@ class OutboxDispatcher:
         self.publisher = publisher
         self.batch_size = batch_size
         self.poll_interval = poll_interval
-        self.logger = logger or logging.getLogger("dxd_rating.runtime.outbox")
+        self.logger = logger or logging.getLogger(__name__)
         self.notification_listener_factory = notification_listener_factory
         self._loop: asyncio.AbstractEventLoop | None = None
         self._notification_listener: OutboxNotificationListener | None = None

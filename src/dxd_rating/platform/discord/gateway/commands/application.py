@@ -9,7 +9,43 @@ import discord
 from discord import app_commands
 from sqlalchemy.orm import Session, sessionmaker
 
-from dxd_rating.config import Settings
+from dxd_rating.contexts.common.application import (
+    InvalidMatchFormatError,
+    InvalidPlayerAccessRestrictionDurationError,
+    InvalidPlayerAccessRestrictionTypeError,
+    InvalidQueueNameError,
+    MatchFlowError,
+    MatchSpectatingRestrictedError,
+    PlayerAccessRestrictionAlreadyExistsError,
+    PlayerAlreadyRegisteredError,
+    PlayerNotRegisteredError,
+    QueueAlreadyJoinedError,
+    QueueJoinNotAllowedError,
+    QueueJoinRestrictedError,
+    QueueNotJoinedError,
+)
+from dxd_rating.contexts.matches.application import (
+    MatchReportSubmissionResult,
+    MatchSpectateResult,
+    PlayerPenaltyAdjustmentResult,
+)
+from dxd_rating.contexts.matchmaking.application import (
+    JoinQueueResult,
+    LeaveQueueResult,
+    MatchingQueueNotificationContext,
+    PresentQueueResult,
+)
+from dxd_rating.contexts.players.application import (
+    PlayerIdentityService,
+    PlayerInfo,
+    PlayerLookupService,
+    register_player,
+)
+from dxd_rating.contexts.restrictions.application import (
+    PlayerAccessRestrictionDuration,
+    PlayerAccessRestrictionService,
+)
+from dxd_rating.platform.config.bot import BotSettings
 from dxd_rating.platform.db.models import (
     MatchFormat,
     MatchReportInputResult,
@@ -18,34 +54,6 @@ from dxd_rating.platform.db.models import (
     PlayerAccessRestrictionType,
 )
 from dxd_rating.platform.db.session import session_scope
-from dxd_rating.services import (
-    InvalidMatchFormatError,
-    InvalidPlayerAccessRestrictionDurationError,
-    InvalidPlayerAccessRestrictionTypeError,
-    InvalidQueueNameError,
-    JoinQueueResult,
-    LeaveQueueResult,
-    MatchFlowError,
-    MatchingQueueNotificationContext,
-    MatchReportSubmissionResult,
-    MatchSpectateResult,
-    MatchSpectatingRestrictedError,
-    PlayerAccessRestrictionAlreadyExistsError,
-    PlayerAccessRestrictionDuration,
-    PlayerAccessRestrictionService,
-    PlayerAlreadyRegisteredError,
-    PlayerIdentityService,
-    PlayerInfo,
-    PlayerLookupService,
-    PlayerNotRegisteredError,
-    PlayerPenaltyAdjustmentResult,
-    PresentQueueResult,
-    QueueAlreadyJoinedError,
-    QueueJoinNotAllowedError,
-    QueueJoinRestrictedError,
-    QueueNotJoinedError,
-    register_player,
-)
 from dxd_rating.shared.constants import (
     MATCH_FORMAT_CHOICES,
     MATCH_QUEUE_NAME_CHOICES,
@@ -146,7 +154,7 @@ PLAYER_ACCESS_RESTRICTION_DURATION_LABELS = {
 DUMMY_USER_REFERENCE_PATTERN = re.compile(r"<dummy_(\d+)>")
 
 
-def is_super_admin(user_id: int, settings: Settings) -> bool:
+def is_super_admin(user_id: int, settings: BotSettings) -> bool:
     return user_id in settings.super_admin_user_ids
 
 
@@ -247,7 +255,7 @@ class PlayerAccessRestrictionCommandService(Protocol):
 class BotCommandHandlers:
     def __init__(
         self,
-        settings: Settings,
+        settings: BotSettings,
         session_factory: sessionmaker[Session],
         *,
         matching_queue_service: MatchingQueueCommandService | None = None,

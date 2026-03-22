@@ -5,15 +5,17 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
-from dxd_rating.models import INITIAL_RATING, MatchFormat, Player, PlayerFormatStats
-from dxd_rating.services import (
+from dxd_rating.contexts.common.application import (
     PlayerAlreadyRegisteredError,
+    PlayerNotRegisteredError,
+)
+from dxd_rating.contexts.players.application import (
     PlayerIdentityService,
     PlayerLookupService,
-    PlayerNotRegisteredError,
     register_player,
     resolve_player_display_name,
 )
+from dxd_rating.platform.db.models import INITIAL_RATING, MatchFormat, Player, PlayerFormatStats
 
 
 @dataclass(frozen=True)

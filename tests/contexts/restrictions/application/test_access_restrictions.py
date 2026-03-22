@@ -6,7 +6,18 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from dxd_rating.models import (
+from dxd_rating.contexts.common.application import PlayerAccessRestrictionAlreadyExistsError
+from dxd_rating.contexts.matches.application import MatchFlowService
+from dxd_rating.contexts.matchmaking.application import (
+    MatchingQueueNotificationContext,
+    MatchingQueueService,
+)
+from dxd_rating.contexts.players.application import register_player
+from dxd_rating.contexts.restrictions.application import (
+    PlayerAccessRestrictionDuration,
+    PlayerAccessRestrictionService,
+)
+from dxd_rating.platform.db.models import (
     MatchFormat,
     MatchQueueEntry,
     MatchQueueEntryStatus,
@@ -15,15 +26,6 @@ from dxd_rating.models import (
     Player,
     PlayerAccessRestriction,
     PlayerAccessRestrictionType,
-)
-from dxd_rating.services import (
-    MatchFlowService,
-    MatchingQueueNotificationContext,
-    MatchingQueueService,
-    PlayerAccessRestrictionAlreadyExistsError,
-    PlayerAccessRestrictionDuration,
-    PlayerAccessRestrictionService,
-    register_player,
 )
 
 DEFAULT_MATCH_FORMAT = MatchFormat.THREE_VS_THREE

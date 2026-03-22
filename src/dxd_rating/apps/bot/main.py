@@ -5,9 +5,10 @@ from discord import app_commands
 from pydantic import ValidationError
 from sqlalchemy.orm import Session, sessionmaker
 
+from dxd_rating.contexts.seasons.application import ensure_active_and_upcoming_seasons
 from dxd_rating.platform.config.bot import BotSettings
 from dxd_rating.platform.config.common import configure_logging, raise_settings_load_error
-from dxd_rating.platform.db.session import create_db_engine, create_session_factory
+from dxd_rating.platform.db.session import create_db_engine, create_session_factory, session_scope
 from dxd_rating.platform.discord.gateway.commands import BotCommandHandlers, register_app_commands
 from dxd_rating.platform.discord.rest import DiscordOutboxEventPublisher
 from dxd_rating.platform.runtime import BotRuntime, MatchRuntime, OutboxDispatcher
@@ -91,12 +92,23 @@ def load_settings() -> BotSettings:
         raise_settings_load_error(exc)
 
 
+def initialize_seasons(session_factory: sessionmaker[Session]) -> None:
+    with session_scope(session_factory) as session:
+        season_pair = ensure_active_and_upcoming_seasons(session)
+        logger.info(
+            "Prepared seasons on bot startup active_season_id=%s upcoming_season_id=%s",
+            season_pair.active.id,
+            season_pair.upcoming.id,
+        )
+
+
 def main() -> None:
     settings = load_settings()
     configure_logging(settings.log_level)
 
     engine = create_db_engine(settings.database_url)
     session_factory = create_session_factory(engine)
+    initialize_seasons(session_factory)
     client = create_client(settings, session_factory)
     outbox_publisher = DiscordOutboxEventPublisher(
         client=client,

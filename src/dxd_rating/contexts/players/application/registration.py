@@ -1,51 +1,28 @@
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, cast
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session, selectinload, sessionmaker
+from sqlalchemy.orm import Session, sessionmaker
 
 from dxd_rating.contexts.common.application.errors import (
     PlayerAlreadyRegisteredError,
     PlayerNotRegisteredError,
 )
 from dxd_rating.contexts.players.domain import (
-    build_dummy_player_display_name,
-    format_player_display_name,
     resolve_player_display_name,
     resolve_registered_display_name,
 )
-from dxd_rating.platform.db.models import MatchFormat, Player, PlayerFormatStats
+from dxd_rating.contexts.seasons.application import (
+    PlayerSeasonInfo as PlayerInfo,
+)
+from dxd_rating.contexts.seasons.application import (
+    ensure_player_stats_for_current_and_future_seasons,
+    get_current_player_season_info_by_discord_user_id,
+    get_player_season_info_by_discord_user_id,
+)
+from dxd_rating.platform.db.models import Player
 from dxd_rating.platform.db.session import session_scope
-from dxd_rating.shared.constants import get_match_format_definitions
 
-
-@dataclass(frozen=True, slots=True)
-class PlayerFormatInfo:
-    match_format: MatchFormat
-    rating: float
-    games_played: int
-    wins: int
-    losses: int
-    draws: int
-    last_played_at: datetime | None
-
-
-@dataclass(frozen=True, slots=True)
-class PlayerInfo:
-    player_id: int
-    discord_user_id: int
-    display_name: str | None
-    display_name_updated_at: datetime | None
-    last_seen_at: datetime | None
-    format_stats: tuple[PlayerFormatInfo, ...]
-
-    @property
-    def resolved_display_name(self) -> str:
-        return format_player_display_name(
-            discord_user_id=self.discord_user_id,
-            display_name=self.display_name,
-        )
 
 def register_player(
     session: Session,
@@ -75,12 +52,7 @@ def register_player(
         player.display_name_updated_at = resolved_observed_at
         player.last_seen_at = resolved_observed_at
 
-    player.format_stats.extend(
-        [
-            PlayerFormatStats(match_format=format_definition.match_format)
-            for format_definition in get_match_format_definitions()
-        ]
-    )
+    ensure_player_stats_for_current_and_future_seasons(session, player_id=player.id)
     session.flush()
     return player
 
@@ -146,43 +118,23 @@ class PlayerLookupService:
 
     def get_player_info_by_discord_user_id(self, discord_user_id: int) -> PlayerInfo:
         with session_scope(self.session_factory) as session:
-            player = session.scalar(
-                select(Player)
-                .options(selectinload(Player.format_stats))
-                .where(Player.discord_user_id == discord_user_id)
+            return get_current_player_season_info_by_discord_user_id(
+                session,
+                discord_user_id=discord_user_id,
             )
 
-        if player is None:
-            raise PlayerNotRegisteredError(
-                f"Player is not registered for discord_user_id: {discord_user_id}"
+    def get_player_info_by_discord_user_id_and_season_id(
+        self,
+        discord_user_id: int,
+        season_id: int,
+    ) -> PlayerInfo:
+        with session_scope(self.session_factory) as session:
+            return get_player_season_info_by_discord_user_id(
+                session,
+                discord_user_id=discord_user_id,
+                season_id=season_id,
             )
 
-        format_stats_by_format = {
-            format_stats.match_format: format_stats for format_stats in player.format_stats
-        }
-        return PlayerInfo(
-            player_id=player.id,
-            discord_user_id=player.discord_user_id,
-            display_name=player.display_name,
-            display_name_updated_at=player.display_name_updated_at,
-            last_seen_at=player.last_seen_at,
-            format_stats=tuple(
-                PlayerFormatInfo(
-                    match_format=format_definition.match_format,
-                    rating=format_stats_by_format[format_definition.match_format].rating,
-                    games_played=format_stats_by_format[
-                        format_definition.match_format
-                    ].games_played,
-                    wins=format_stats_by_format[format_definition.match_format].wins,
-                    losses=format_stats_by_format[format_definition.match_format].losses,
-                    draws=format_stats_by_format[format_definition.match_format].draws,
-                    last_played_at=format_stats_by_format[
-                        format_definition.match_format
-                    ].last_played_at,
-                )
-                for format_definition in get_match_format_definitions()
-            ),
-        )
 
 def _resolve_discord_user_identity(discord_user: Any) -> tuple[int, str | None]:
     discord_user_id = getattr(discord_user, "id", None)

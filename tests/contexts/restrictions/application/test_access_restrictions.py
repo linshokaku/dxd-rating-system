@@ -17,6 +17,7 @@ from dxd_rating.contexts.restrictions.application import (
     PlayerAccessRestrictionDuration,
     PlayerAccessRestrictionService,
 )
+from dxd_rating.contexts.seasons.application import ensure_active_and_upcoming_seasons
 from dxd_rating.platform.db.models import (
     MatchFormat,
     MatchQueueEntry,
@@ -34,6 +35,12 @@ DEFAULT_QUEUE_NAME = "low"
 
 def get_database_now(session: Session) -> datetime:
     return session.execute(select(func.now())).scalar_one()
+
+
+@pytest.fixture(autouse=True)
+def prepared_seasons(session: Session) -> None:
+    ensure_active_and_upcoming_seasons(session)
+    session.commit()
 
 
 def create_player(session: Session, discord_user_id: int) -> Player:

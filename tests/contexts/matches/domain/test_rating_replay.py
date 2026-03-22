@@ -133,5 +133,9 @@ def test_replay_rating_history_rebuilds_before_state_chain() -> None:
     assert replayed_results_by_key[(10, 2)].rating_before == 1500.0
     assert replayed_results_by_key[(11, 1)].rating_before == first_match_updates[1].rating_after
     assert replayed_results_by_key[(11, 2)].rating_before == first_match_updates[2].rating_after
-    assert replay_result.player_states_by_player_id[1].rating == second_match_updates[1].rating_after
-    assert replay_result.player_states_by_player_id[2].rating == second_match_updates[2].rating_after
+    assert (
+        replay_result.player_states_by_player_id[1].rating == second_match_updates[1].rating_after
+    )
+    assert (
+        replay_result.player_states_by_player_id[2].rating == second_match_updates[2].rating_after
+    )

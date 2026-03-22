@@ -41,6 +41,7 @@ from dxd_rating.contexts.matchmaking.application import (
     WaitingEntryTimerState,
 )
 from dxd_rating.contexts.players.application import register_player
+from dxd_rating.contexts.seasons.application import ensure_active_and_upcoming_seasons
 from dxd_rating.platform.db.models import (
     Match,
     MatchApprovalStatus,
@@ -74,6 +75,12 @@ DEFAULT_QUEUE_DEFINITION = get_match_queue_class_definition_by_name(DEFAULT_MATC
 assert DEFAULT_QUEUE_DEFINITION is not None
 DEFAULT_QUEUE_NAME = DEFAULT_QUEUE_DEFINITION.queue_name
 DEFAULT_QUEUE_CLASS_ID = DEFAULT_QUEUE_DEFINITION.queue_class_id
+
+
+@pytest.fixture(autouse=True)
+def prepared_seasons(session: Session) -> None:
+    ensure_active_and_upcoming_seasons(session)
+    session.commit()
 
 
 @dataclass

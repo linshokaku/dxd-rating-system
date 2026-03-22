@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, String
+from sqlalchemy import DateTime, ForeignKey, String
 from sqlalchemy import Enum as SQLAlchemyEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from dxd_rating.platform.db.models.match_report import MatchReport
     from dxd_rating.platform.db.models.match_spectator import MatchSpectator
     from dxd_rating.platform.db.models.player_penalty_adjustment import PlayerPenaltyAdjustment
+    from dxd_rating.platform.db.models.season import Season
 
 
 class Match(Base):
@@ -43,6 +44,11 @@ class Match(Base):
         index=True,
     )
     queue_class_id: Mapped[str] = mapped_column(String(length=64), nullable=False, index=True)
+    started_season_id: Mapped[int] = mapped_column(
+        ForeignKey("seasons.id"),
+        nullable=False,
+        index=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -85,3 +91,4 @@ class Match(Base):
         back_populates="match",
         cascade="all, delete-orphan",
     )
+    started_season: Mapped[Season] = relationship(back_populates="started_matches")

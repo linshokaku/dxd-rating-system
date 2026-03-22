@@ -6,7 +6,8 @@ from datetime import datetime, timedelta, timezone
 from typing import cast
 
 import discord
-from sqlalchemy import select
+import pytest
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from dxd_rating.contexts.matches.application import MatchFlowService
@@ -19,6 +20,7 @@ from dxd_rating.contexts.restrictions.application import (
     PlayerAccessRestrictionDuration,
     PlayerAccessRestrictionService,
 )
+from dxd_rating.contexts.seasons.application import ensure_active_and_upcoming_seasons
 from dxd_rating.platform.config.bot import BotSettings
 from dxd_rating.platform.db.models import (
     MatchFormat,
@@ -31,6 +33,7 @@ from dxd_rating.platform.db.models import (
     PlayerAccessRestrictionType,
     PlayerFormatStats,
     PlayerPenalty,
+    Season,
 )
 from dxd_rating.platform.discord.gateway.commands import BotCommandHandlers, register_app_commands
 from dxd_rating.platform.runtime import MatchRuntime
@@ -71,6 +74,12 @@ def as_interaction(fake_interaction: FakeInteraction) -> discord.Interaction[dis
     return cast(discord.Interaction[discord.Client], fake_interaction)
 
 
+@pytest.fixture(autouse=True)
+def prepared_seasons(session: Session) -> None:
+    ensure_active_and_upcoming_seasons(session)
+    session.commit()
+
+
 def create_settings(*, super_admin_user_ids: frozenset[int] = frozenset()) -> BotSettings:
     return BotSettings.model_construct(
         discord_bot_token="discord-token",
@@ -106,14 +115,22 @@ def create_player(session: Session, discord_user_id: int) -> Player:
     return player
 
 
+def get_active_season_id(session: Session) -> int:
+    return ensure_active_and_upcoming_seasons(session).active.id
+
+
 def get_player_format_stats(
     session: Session,
     player_id: int,
     match_format: MatchFormat = DEFAULT_MATCH_FORMAT,
 ) -> PlayerFormatStats:
-    format_stats = session.get(
-        PlayerFormatStats,
-        {"player_id": player_id, "match_format": match_format},
+    season_id = get_active_season_id(session)
+    format_stats = session.scalar(
+        select(PlayerFormatStats).where(
+            PlayerFormatStats.player_id == player_id,
+            PlayerFormatStats.season_id == season_id,
+            PlayerFormatStats.match_format == match_format,
+        )
     )
     assert format_stats is not None
     return format_stats
@@ -121,8 +138,18 @@ def get_player_format_stats(
 
 def format_player_info_message(
     stats_by_format: dict[MatchFormat, tuple[float, int, int, int, int, datetime | None]],
+    *,
+    season_id: int | None = None,
+    season_name: str | None = None,
 ) -> str:
     lines = ["プレイヤー情報"]
+    if season_id is not None:
+        lines.extend(
+            [
+                f"season_id: {season_id}",
+                f"season_name: {season_name}",
+            ]
+        )
     for match_format in (
         MatchFormat.ONE_VS_ONE,
         MatchFormat.TWO_VS_TWO,
@@ -223,6 +250,20 @@ def test_register_command_returns_duplicate_message_for_registered_user(
     assert persisted_player.last_seen_at == persisted_player.display_name_updated_at
 
 
+def test_register_command_returns_internal_error_message_when_seasons_are_missing(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    session.execute(delete(Season))
+    session.commit()
+    handlers = create_handlers(session_factory)
+    interaction = FakeInteraction(user=FakeUser(id=123_456_789_012_345_679_1))
+
+    asyncio.run(handlers.register(as_interaction(interaction)))
+
+    assert interaction.response.messages == ["登録に失敗しました。管理者に確認してください。"]
+
+
 def test_join_command_joins_requesting_player_and_stores_notification_context(
     session: Session,
     session_factory: sessionmaker[Session],
@@ -286,6 +327,32 @@ def test_join_command_requires_registered_player(session_factory: sessionmaker[S
     assert interaction.response.messages == [
         "プレイヤー登録が必要です。先に /register を実行してください。"
     ]
+
+
+def test_join_command_returns_internal_error_message_when_seasons_are_missing(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    discord_user_id = 123_456_789_012_345_681_2
+    create_player(session, discord_user_id)
+    session.execute(delete(PlayerFormatStats))
+    session.execute(delete(Season))
+    session.commit()
+    handlers = create_handlers(
+        session_factory,
+        matching_queue_service=MatchingQueueService(session_factory),
+    )
+    interaction = FakeInteraction(user=FakeUser(id=discord_user_id))
+
+    asyncio.run(
+        handlers.join(
+            as_interaction(interaction),
+            DEFAULT_MATCH_FORMAT.value,
+            DEFAULT_QUEUE_NAME,
+        )
+    )
+
+    assert interaction.response.messages == ["キュー参加に失敗しました。管理者に確認してください。"]
 
 
 def test_join_command_returns_restricted_message_for_queue_join_restricted_player(
@@ -426,6 +493,45 @@ def test_player_info_command_returns_requesting_player_stats(
     ]
 
 
+def test_player_info_season_command_returns_requested_season_stats(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    discord_user_id = 123_456_789_012_345_686_1
+    player = create_player(session, discord_user_id)
+    season_pair = ensure_active_and_upcoming_seasons(session)
+    season_pair.upcoming.name = "next-spring"
+    upcoming_three_vs_three_stats = session.scalar(
+        select(PlayerFormatStats).where(
+            PlayerFormatStats.player_id == player.id,
+            PlayerFormatStats.season_id == season_pair.upcoming.id,
+            PlayerFormatStats.match_format == MatchFormat.THREE_VS_THREE,
+        )
+    )
+    assert upcoming_three_vs_three_stats is not None
+    upcoming_three_vs_three_stats.rating = 1601.0
+    upcoming_three_vs_three_stats.games_played = 4
+    upcoming_three_vs_three_stats.wins = 3
+    upcoming_three_vs_three_stats.losses = 1
+    session.commit()
+    handlers = create_handlers(session_factory)
+    interaction = FakeInteraction(user=FakeUser(id=discord_user_id))
+
+    asyncio.run(handlers.player_info_season(as_interaction(interaction), season_pair.upcoming.id))
+
+    assert interaction.response.messages == [
+        format_player_info_message(
+            {
+                MatchFormat.ONE_VS_ONE: (1500.0, 0, 0, 0, 0, None),
+                MatchFormat.TWO_VS_TWO: (1500.0, 0, 0, 0, 0, None),
+                MatchFormat.THREE_VS_THREE: (1601.0, 4, 3, 1, 0, None),
+            },
+            season_id=season_pair.upcoming.id,
+            season_name="next-spring",
+        )
+    ]
+
+
 def test_player_info_command_requires_registered_player(
     session_factory: sessionmaker[Session],
 ) -> None:
@@ -436,6 +542,25 @@ def test_player_info_command_requires_registered_player(
 
     assert interaction.response.messages == [
         "プレイヤー登録が必要です。先に /register を実行してください。"
+    ]
+
+
+def test_player_info_command_returns_internal_error_message_when_seasons_are_missing(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    discord_user_id = 123_456_789_012_345_687_1
+    create_player(session, discord_user_id)
+    session.execute(delete(PlayerFormatStats))
+    session.execute(delete(Season))
+    session.commit()
+    handlers = create_handlers(session_factory)
+    interaction = FakeInteraction(user=FakeUser(id=discord_user_id))
+
+    asyncio.run(handlers.player_info(as_interaction(interaction)))
+
+    assert interaction.response.messages == [
+        "プレイヤー情報の取得に失敗しました。管理者に確認してください。"
     ]
 
 
@@ -825,6 +950,52 @@ def test_dev_player_info_returns_target_player_stats(
     ]
 
 
+def test_dev_player_info_season_returns_target_player_stats(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    executor_discord_user_id = 10
+    target_discord_user_id = 123_456_789_012_345_690_1
+    player = create_player(session, target_discord_user_id)
+    season_pair = ensure_active_and_upcoming_seasons(session)
+    season_pair.upcoming.name = "next-summer"
+    upcoming_three_vs_three_stats = session.scalar(
+        select(PlayerFormatStats).where(
+            PlayerFormatStats.player_id == player.id,
+            PlayerFormatStats.season_id == season_pair.upcoming.id,
+            PlayerFormatStats.match_format == MatchFormat.THREE_VS_THREE,
+        )
+    )
+    assert upcoming_three_vs_three_stats is not None
+    upcoming_three_vs_three_stats.rating = 1488.0
+    session.commit()
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({executor_discord_user_id}),
+    )
+    interaction = FakeInteraction(user=FakeUser(id=executor_discord_user_id))
+
+    asyncio.run(
+        handlers.dev_player_info_season(
+            as_interaction(interaction),
+            season_pair.upcoming.id,
+            str(target_discord_user_id),
+        )
+    )
+
+    assert interaction.response.messages == [
+        format_player_info_message(
+            {
+                MatchFormat.ONE_VS_ONE: (1500.0, 0, 0, 0, 0, None),
+                MatchFormat.TWO_VS_TWO: (1500.0, 0, 0, 0, 0, None),
+                MatchFormat.THREE_VS_THREE: (1488.0, 0, 0, 0, 0, None),
+            },
+            season_id=season_pair.upcoming.id,
+            season_name="next-summer",
+        )
+    ]
+
+
 def test_dev_player_info_returns_target_not_registered_message(
     session_factory: sessionmaker[Session],
 ) -> None:
@@ -846,6 +1017,35 @@ def test_dev_is_admin_returns_yes_or_no(session_factory: sessionmaker[Session]) 
 
     assert admin_interaction.response.messages == ["はい"]
     assert non_admin_interaction.response.messages == ["いいえ"]
+
+
+def test_admin_rename_season_updates_target_season_name(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    executor_discord_user_id = 10
+    create_player(session, 123_456_789_012_345_695)
+    season_pair = ensure_active_and_upcoming_seasons(session)
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({executor_discord_user_id}),
+    )
+    interaction = FakeInteraction(user=FakeUser(id=executor_discord_user_id))
+
+    asyncio.run(
+        handlers.admin_rename_season(
+            as_interaction(interaction),
+            season_pair.upcoming.id,
+            "spring-cup",
+        )
+    )
+
+    session.expire_all()
+    refreshed_pair = ensure_active_and_upcoming_seasons(session)
+
+    assert interaction.response.messages == ["シーズン名を変更しました。"]
+    assert refreshed_pair.upcoming.id == season_pair.upcoming.id
+    assert refreshed_pair.upcoming.name == "spring-cup"
 
 
 def test_admin_restrict_and_unrestrict_user_commands_manage_restrictions(
@@ -1020,6 +1220,7 @@ def test_dev_commands_register_discord_user_id_as_last_option() -> None:
         "dev_present": ["discord_user_id"],
         "dev_leave": ["discord_user_id"],
         "dev_player_info": ["discord_user_id"],
+        "dev_player_info_season": ["season_id", "discord_user_id"],
         "dev_match_parent": ["match_id", "discord_user_id"],
         "dev_match_spectate": ["match_id", "discord_user_id"],
         "dev_match_win": ["match_id", "discord_user_id"],

@@ -29,7 +29,9 @@ from dxd_rating.contexts.restrictions.application import (
     PlayerAccessRestrictionDuration,
     PlayerAccessRestrictionService,
 )
+from dxd_rating.contexts.seasons.application import ensure_active_and_upcoming_seasons
 from dxd_rating.platform.db.models import (
+    CarryoverStatus,
     Match,
     MatchFormat,
     MatchParticipant,
@@ -76,10 +78,20 @@ def get_database_now(session: Session) -> datetime:
     return session.execute(select(func.now())).scalar_one()
 
 
+@pytest.fixture(autouse=True)
+def prepared_seasons(session: Session) -> None:
+    ensure_active_and_upcoming_seasons(session)
+    session.commit()
+
+
 def create_player(session: Session, discord_user_id: int) -> Player:
     player = register_player(session=session, discord_user_id=discord_user_id)
     session.commit()
     return player
+
+
+def get_active_season_id(session: Session) -> int:
+    return ensure_active_and_upcoming_seasons(session).active.id
 
 
 def get_player_format_stats(
@@ -87,9 +99,13 @@ def get_player_format_stats(
     player_id: int,
     match_format: MatchFormat = DEFAULT_MATCH_FORMAT,
 ) -> PlayerFormatStats:
-    format_stats = session.get(
-        PlayerFormatStats,
-        {"player_id": player_id, "match_format": match_format},
+    season_id = get_active_season_id(session)
+    format_stats = session.scalar(
+        select(PlayerFormatStats).where(
+            PlayerFormatStats.player_id == player_id,
+            PlayerFormatStats.season_id == season_id,
+            PlayerFormatStats.match_format == match_format,
+        )
     )
     assert format_stats is not None
     return format_stats
@@ -248,6 +264,7 @@ def test_join_queue_rejects_player_when_rating_is_outside_allowed_range(
     player = create_player(session, 10_000_1)
     player_format_stats = get_player_format_stats(session, player.id)
     player_format_stats.rating = 2_100
+    player_format_stats.carryover_status = CarryoverStatus.NOT_APPLIED
     session.commit()
     queue_class_definitions = (
         MatchQueueClassDefinition(
@@ -921,9 +938,9 @@ def test_try_create_matches_creates_balanced_two_vs_two_match_from_four_players(
         players[3].id: 1200.0,
     }
     for player in players:
-        get_player_format_stats(
-            session, player.id, MatchFormat.TWO_VS_TWO
-        ).rating = ratings_by_player_id[player.id]
+        format_stats = get_player_format_stats(session, player.id, MatchFormat.TWO_VS_TWO)
+        format_stats.rating = ratings_by_player_id[player.id]
+        format_stats.carryover_status = CarryoverStatus.NOT_APPLIED
     queue_definition = get_match_queue_class_definition_by_name(MatchFormat.TWO_VS_TWO, "low")
     assert queue_definition is not None
     create_waiting_entries(session, players, queue_class_id=queue_definition.queue_class_id)
@@ -964,9 +981,9 @@ def test_try_create_matches_creates_two_one_vs_one_matches_from_four_players(
         players[3].id: 1400.0,
     }
     for player in players:
-        get_player_format_stats(
-            session, player.id, MatchFormat.ONE_VS_ONE
-        ).rating = ratings_by_player_id[player.id]
+        format_stats = get_player_format_stats(session, player.id, MatchFormat.ONE_VS_ONE)
+        format_stats.rating = ratings_by_player_id[player.id]
+        format_stats.carryover_status = CarryoverStatus.NOT_APPLIED
     queue_definition = get_match_queue_class_definition_by_name(MatchFormat.ONE_VS_ONE, "low")
     assert queue_definition is not None
     create_waiting_entries(session, players, queue_class_id=queue_definition.queue_class_id)

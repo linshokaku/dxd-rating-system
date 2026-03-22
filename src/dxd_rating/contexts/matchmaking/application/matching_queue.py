@@ -11,7 +11,7 @@ import psycopg
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import DBAPIError, InterfaceError, OperationalError
-from sqlalchemy.orm import Session, selectinload, sessionmaker
+from sqlalchemy.orm import Session, sessionmaker
 
 from dxd_rating.contexts.common.application.errors import (
     InvalidMatchFormatError,
@@ -33,6 +33,10 @@ from dxd_rating.contexts.matchmaking.domain import (
 from dxd_rating.contexts.restrictions.application.access_restrictions import (
     get_active_player_access_restriction,
 )
+from dxd_rating.contexts.seasons.application import (
+    get_active_and_upcoming_seasons,
+    resolve_player_format_stats_for_season,
+)
 from dxd_rating.platform.db.models import (
     ActiveMatchState,
     Match,
@@ -47,7 +51,6 @@ from dxd_rating.platform.db.models import (
     OutboxEventType,
     Player,
     PlayerAccessRestrictionType,
-    PlayerFormatStats,
 )
 from dxd_rating.platform.db.session import session_scope
 from dxd_rating.shared.constants import (
@@ -231,15 +234,22 @@ class MatchingQueueService:
             self._acquire_player_lock(session, player_id)
             self._ensure_queue_join_not_restricted(session, player.id)
             resolved_match_format = self._resolve_match_format(match_format)
+            current_time = self._get_database_now(session)
+            active_season = get_active_and_upcoming_seasons(
+                session,
+                current_time=current_time,
+            ).active
             queue_class_definition = self._resolve_queue_class_definition(
                 resolved_match_format,
                 queue_name,
             )
-            player_format_stats = self._require_player_format_stats(
+            player_format_stats = resolve_player_format_stats_for_season(
                 session,
-                player_id=player.id,
+                player_ids=(player.id,),
+                season_id=active_season.id,
                 match_format=resolved_match_format,
-            )
+                lock_rows=True,
+            )[player.id]
 
             if not is_queue_join_allowed(
                 rating=player_format_stats.rating,
@@ -250,7 +260,6 @@ class MatchingQueueService:
             ):
                 raise QueueJoinNotAllowedError(QUEUE_JOIN_NOT_ALLOWED_MESSAGE)
 
-            current_time = self._get_database_now(session)
             waiting_entry = self._get_waiting_entry_for_update(session, player_id)
 
             if waiting_entry is not None and waiting_entry.expire_at > current_time:
@@ -554,7 +563,6 @@ class MatchingQueueService:
         with session_scope(self.session_factory) as session:
             queue_entries = session.scalars(
                 select(MatchQueueEntry)
-                .options(selectinload(MatchQueueEntry.player).selectinload(Player.format_stats))
                 .where(
                     MatchQueueEntry.status == MatchQueueEntryStatus.WAITING,
                     MatchQueueEntry.queue_class_id == queue_class_id,
@@ -568,12 +576,34 @@ class MatchingQueueService:
             if len(queue_entries) < format_definition.players_per_batch:
                 return tuple()
 
-            prepared_matches = self._prepare_matches_for_batch(queue_entries, format_definition)
             current_time = self._get_database_now(session)
+            active_season = get_active_and_upcoming_seasons(
+                session,
+                current_time=current_time,
+            ).active
+            player_ids = tuple(sorted({queue_entry.player_id for queue_entry in queue_entries}))
+            for player_id in player_ids:
+                self._acquire_player_lock(session, player_id)
+            player_format_stats_by_player_id = resolve_player_format_stats_for_season(
+                session,
+                player_ids=player_ids,
+                season_id=active_season.id,
+                match_format=format_definition.match_format,
+                lock_rows=True,
+            )
+            prepared_matches = self._prepare_matches_for_batch(
+                queue_entries,
+                format_definition,
+                ratings_by_player_id={
+                    player_id: player_format_stats.rating
+                    for player_id, player_format_stats in player_format_stats_by_player_id.items()
+                },
+            )
             for prepared_match in prepared_matches:
                 match = Match(
                     match_format=prepared_match.match_format,
                     queue_class_id=queue_class_id,
+                    started_season_id=active_season.id,
                     created_at=current_time,
                 )
                 session.add(match)
@@ -671,6 +701,8 @@ class MatchingQueueService:
         self,
         queue_entries: Sequence[MatchQueueEntry],
         format_definition: MatchFormatDefinition,
+        *,
+        ratings_by_player_id: dict[int, float],
     ) -> tuple[PreparedMatch, ...]:
         prepared_match_plans = prepare_matches_for_batch(
             tuple(
@@ -678,7 +710,7 @@ class MatchingQueueService:
                     queue_entry_id=queue_entry.id,
                     player_id=queue_entry.player_id,
                     match_format=queue_entry.match_format,
-                    rating=self._get_entry_rating(queue_entry),
+                    rating=ratings_by_player_id[queue_entry.player_id],
                     joined_at=queue_entry.joined_at,
                 )
                 for queue_entry in queue_entries
@@ -700,17 +732,6 @@ class MatchingQueueService:
                 ),
             )
             for prepared_match_plan in prepared_match_plans
-        )
-
-    def _get_entry_rating(self, entry: MatchQueueEntry) -> float:
-        if entry.player is None:
-            raise ValueError(f"Player relationship is not loaded for queue_entry_id={entry.id}")
-        for format_stats in entry.player.format_stats:
-            if format_stats.match_format == entry.match_format:
-                return format_stats.rating
-        raise ValueError(
-            "Player format stats are not loaded for "
-            f"queue_entry_id={entry.id} match_format={entry.match_format.value}"
         )
 
     def _build_match_created_payloads(
@@ -836,24 +857,6 @@ class MatchingQueueService:
         if definition is None:
             raise ValueError(f"Unknown match_format: {match_format.value}")
         return definition
-
-    def _require_player_format_stats(
-        self,
-        session: Session,
-        *,
-        player_id: int,
-        match_format: MatchFormat,
-    ) -> PlayerFormatStats:
-        format_stats = session.get(
-            PlayerFormatStats,
-            {"player_id": player_id, "match_format": match_format},
-        )
-        if format_stats is None:
-            raise PlayerNotRegisteredError(
-                f"Player format stats are not registered: player_id={player_id} "
-                f"match_format={match_format.value}"
-            )
-        return format_stats
 
     def _raise_retryable_task_error(self, exc: Exception, *, operation: str) -> None:
         if isinstance(exc, RetryableTaskError):

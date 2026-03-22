@@ -14,15 +14,19 @@ from dxd_rating.contexts.common.application import (
     InvalidPlayerAccessRestrictionDurationError,
     InvalidPlayerAccessRestrictionTypeError,
     InvalidQueueNameError,
+    InvalidSeasonNameError,
     MatchFlowError,
     MatchSpectatingRestrictedError,
     PlayerAccessRestrictionAlreadyExistsError,
     PlayerAlreadyRegisteredError,
     PlayerNotRegisteredError,
+    PlayerSeasonStatsNotFoundError,
     QueueAlreadyJoinedError,
     QueueJoinNotAllowedError,
     QueueJoinRestrictedError,
     QueueNotJoinedError,
+    SeasonAlreadyExistsError,
+    SeasonNotFoundError,
 )
 from dxd_rating.contexts.matches.application import (
     MatchReportSubmissionResult,
@@ -45,6 +49,7 @@ from dxd_rating.contexts.restrictions.application import (
     PlayerAccessRestrictionDuration,
     PlayerAccessRestrictionService,
 )
+from dxd_rating.contexts.seasons.application import SeasonService
 from dxd_rating.platform.config.bot import BotSettings
 from dxd_rating.platform.db.models import (
     MatchFormat,
@@ -76,6 +81,9 @@ JOIN_FAILED_MESSAGE = "キュー参加に失敗しました。管理者に確認
 PRESENT_FAILED_MESSAGE = "在席更新に失敗しました。管理者に確認してください。"
 LEAVE_FAILED_MESSAGE = "キュー退出に失敗しました。管理者に確認してください。"
 PLAYER_INFO_FAILED_MESSAGE = "プレイヤー情報の取得に失敗しました。管理者に確認してください。"
+PLAYER_SEASON_INFO_FAILED_MESSAGE = (
+    "シーズン別プレイヤー情報の取得に失敗しました。管理者に確認してください。"
+)
 
 MATCH_PARENT_SUCCESS_MESSAGE = "親に立候補しました。"
 MATCH_SPECTATE_RESTRICTED_MESSAGE = "現在観戦を制限されています。"
@@ -98,6 +106,8 @@ INVALID_RESTRICTION_DURATION_MESSAGE = "duration が不正です。"
 ADMIN_PENALTY_ADD_SUCCESS_MESSAGE = "ペナルティを加算しました。"
 ADMIN_PENALTY_SUB_SUCCESS_MESSAGE = "ペナルティを減算しました。"
 ADMIN_PENALTY_FAILED_MESSAGE = "ペナルティ操作に失敗しました。管理者に確認してください。"
+ADMIN_RENAME_SEASON_SUCCESS_MESSAGE = "シーズン名を変更しました。"
+ADMIN_RENAME_SEASON_FAILED_MESSAGE = "シーズン名の変更に失敗しました。管理者に確認してください。"
 
 DEV_REGISTER_SUCCESS_MESSAGE = "ダミーユーザーを登録しました。"
 DEV_REGISTER_ALREADY_REGISTERED_MESSAGE = "指定したユーザーはすでに登録済みです。"
@@ -123,6 +133,9 @@ DEV_LEAVE_EXPIRED_MESSAGE = "指定したユーザーはすでに期限切れで
 DEV_LEAVE_FAILED_MESSAGE = "ダミーユーザーのキュー退出に失敗しました。管理者に確認してください。"
 DEV_PLAYER_INFO_FAILED_MESSAGE = (
     "指定したユーザーのプレイヤー情報取得に失敗しました。管理者に確認してください。"
+)
+DEV_PLAYER_SEASON_INFO_FAILED_MESSAGE = (
+    "指定したユーザーのシーズン別プレイヤー情報取得に失敗しました。管理者に確認してください。"
 )
 
 DEV_MATCH_PARENT_SUCCESS_MESSAGE = "指定したユーザーを親に立候補させました。"
@@ -263,6 +276,7 @@ class BotCommandHandlers:
         player_access_restriction_service: PlayerAccessRestrictionCommandService | None = None,
         player_lookup_service: PlayerLookupService | None = None,
         player_identity_service: PlayerIdentityService | None = None,
+        season_service: SeasonService | None = None,
         logger: logging.Logger | None = None,
     ) -> None:
         self.settings = settings
@@ -276,6 +290,7 @@ class BotCommandHandlers:
         self.player_identity_service = player_identity_service or PlayerIdentityService(
             session_factory
         )
+        self.season_service = season_service or SeasonService(session_factory)
         if (
             self._match_service is None
             and matching_queue_service is not None
@@ -440,6 +455,38 @@ class BotCommandHandlers:
 
         await self._send_message(interaction, self._format_player_info_message(player_info))
 
+    async def player_info_season(
+        self,
+        interaction: discord.Interaction[Any],
+        season_id: int,
+    ) -> None:
+        await self._sync_requesting_user_identity(interaction)
+        try:
+            player_info = await asyncio.to_thread(
+                self._lookup_player_info_by_season,
+                interaction.user.id,
+                season_id,
+            )
+        except PlayerNotRegisteredError:
+            await self._send_message(interaction, PLAYER_REGISTRATION_REQUIRED_MESSAGE)
+            return
+        except (SeasonNotFoundError, PlayerSeasonStatsNotFoundError) as exc:
+            await self._send_message(interaction, str(exc))
+            return
+        except Exception:
+            self.logger.exception(
+                "Failed to execute /player_info_season command discord_user_id=%s season_id=%s",
+                interaction.user.id,
+                season_id,
+            )
+            await self._send_message(interaction, PLAYER_SEASON_INFO_FAILED_MESSAGE)
+            return
+
+        await self._send_message(
+            interaction,
+            self._format_player_info_message(player_info, include_season=True),
+        )
+
     async def match_parent(self, interaction: discord.Interaction[Any], match_id: int) -> None:
         await self._sync_requesting_user_identity(interaction)
         await self._run_match_parent(
@@ -566,6 +613,34 @@ class BotCommandHandlers:
             return
 
         await self._send_message(interaction, ADMIN_MATCH_RESULT_SUCCESS_MESSAGE)
+
+    async def admin_rename_season(
+        self,
+        interaction: discord.Interaction[Any],
+        season_id: int,
+        name: str,
+    ) -> None:
+        if not await self._ensure_admin(interaction):
+            return
+
+        try:
+            await asyncio.to_thread(self._rename_season, season_id, name)
+        except (SeasonNotFoundError, InvalidSeasonNameError, SeasonAlreadyExistsError) as exc:
+            await self._send_message(interaction, str(exc))
+            return
+        except Exception:
+            self.logger.exception(
+                (
+                    "Failed to execute /admin_rename_season command "
+                    "executor_discord_user_id=%s season_id=%s"
+                ),
+                interaction.user.id,
+                season_id,
+            )
+            await self._send_message(interaction, ADMIN_RENAME_SEASON_FAILED_MESSAGE)
+            return
+
+        await self._send_message(interaction, ADMIN_RENAME_SEASON_SUCCESS_MESSAGE)
 
     async def admin_add_penalty(
         self,
@@ -929,6 +1004,47 @@ class BotCommandHandlers:
             return
 
         await self._send_message(interaction, self._format_player_info_message(player_info))
+
+    async def dev_player_info_season(
+        self,
+        interaction: discord.Interaction[Any],
+        season_id: int,
+        discord_user_id: str,
+    ) -> None:
+        if not await self._ensure_admin(interaction):
+            return
+
+        try:
+            target_discord_user_id = self._parse_discord_user_id(discord_user_id)
+            player_info = await asyncio.to_thread(
+                self._lookup_player_info_by_season,
+                target_discord_user_id,
+                season_id,
+            )
+        except ValueError:
+            await self._send_message(interaction, INVALID_DISCORD_USER_ID_MESSAGE)
+            return
+        except PlayerNotRegisteredError:
+            await self._send_message(interaction, DEV_TARGET_NOT_REGISTERED_MESSAGE)
+            return
+        except (SeasonNotFoundError, PlayerSeasonStatsNotFoundError) as exc:
+            await self._send_message(interaction, str(exc))
+            return
+        except Exception:
+            self.logger.exception(
+                "Failed to execute /dev_player_info_season command "
+                "executor_discord_user_id=%s target_discord_user_id=%s season_id=%s",
+                interaction.user.id,
+                discord_user_id,
+                season_id,
+            )
+            await self._send_message(interaction, DEV_PLAYER_SEASON_INFO_FAILED_MESSAGE)
+            return
+
+        await self._send_message(
+            interaction,
+            self._format_player_info_message(player_info, include_season=True),
+        )
 
     async def dev_match_parent(
         self,
@@ -1313,6 +1429,15 @@ class BotCommandHandlers:
     def _lookup_player_info(self, discord_user_id: int) -> PlayerInfo:
         return self.player_lookup_service.get_player_info_by_discord_user_id(discord_user_id)
 
+    def _lookup_player_info_by_season(self, discord_user_id: int, season_id: int) -> PlayerInfo:
+        return self.player_lookup_service.get_player_info_by_discord_user_id_and_season_id(
+            discord_user_id,
+            season_id,
+        )
+
+    def _rename_season(self, season_id: int, name: str) -> None:
+        self.season_service.rename_season(season_id, name)
+
     def _require_matching_queue_service(self) -> MatchingQueueCommandService:
         if self._matching_queue_service is None:
             raise RuntimeError("MatchingQueueService is not configured")
@@ -1450,8 +1575,20 @@ class BotCommandHandlers:
         except ValueError as exc:
             raise InvalidPlayerAccessRestrictionDurationError(f"Invalid duration: {value}") from exc
 
-    def _format_player_info_message(self, player_info: PlayerInfo) -> str:
+    def _format_player_info_message(
+        self,
+        player_info: PlayerInfo,
+        *,
+        include_season: bool = False,
+    ) -> str:
         lines = ["プレイヤー情報"]
+        if include_season:
+            lines.extend(
+                [
+                    f"season_id: {player_info.season.season_id}",
+                    f"season_name: {player_info.season.name}",
+                ]
+            )
         for format_stats in player_info.format_stats:
             last_played_at = (
                 "-"
@@ -1545,6 +1682,17 @@ def register_app_commands(
     async def player_info_command(interaction: discord.Interaction[Any]) -> None:
         await handlers.player_info(interaction)
 
+    @tree.command(
+        name="player_info_season",
+        description="指定したシーズンの自分のプレイヤー情報を表示します",
+    )
+    @app_commands.describe(season_id="対象の season_id")
+    async def player_info_season_command(
+        interaction: discord.Interaction[Any],
+        season_id: int,
+    ) -> None:
+        await handlers.player_info_season(interaction, season_id)
+
     @tree.command(name="match_parent", description="試合の親に立候補します")
     @app_commands.describe(match_id="対象の match_id")
     async def match_parent_command(
@@ -1605,6 +1753,15 @@ def register_app_commands(
         result: str,
     ) -> None:
         await handlers.admin_match_result(interaction, match_id, result)
+
+    @tree.command(name="admin_rename_season", description="シーズン名を変更します")
+    @app_commands.describe(season_id="対象の season_id", name="新しいシーズン名")
+    async def admin_rename_season_command(
+        interaction: discord.Interaction[Any],
+        season_id: int,
+        name: str,
+    ) -> None:
+        await handlers.admin_rename_season(interaction, season_id, name)
 
     @tree.command(name="admin_restrict_user", description="ユーザーの利用権限を制限します")
     @app_commands.describe(
@@ -1783,6 +1940,21 @@ def register_app_commands(
         discord_user_id: str,
     ) -> None:
         await handlers.dev_player_info(interaction, discord_user_id)
+
+    @tree.command(
+        name="dev_player_info_season",
+        description="指定したシーズンの任意の Discord user ID のプレイヤー情報を表示します",
+    )
+    @app_commands.describe(
+        season_id="対象の season_id",
+        discord_user_id="表示したい Discord user ID",
+    )
+    async def dev_player_info_season_command(
+        interaction: discord.Interaction[Any],
+        season_id: int,
+        discord_user_id: str,
+    ) -> None:
+        await handlers.dev_player_info_season(interaction, season_id, discord_user_id)
 
     @tree.command(name="dev_match_parent", description="ダミーユーザーを親に立候補させます")
     @app_commands.describe(match_id="対象の match_id", discord_user_id="対象の dummy_user_id")

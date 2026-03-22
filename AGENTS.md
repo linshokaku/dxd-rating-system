@@ -19,6 +19,7 @@
 - Hosting: Railway
 - Database: Railway Postgres
 - App: Discord Bot
+- Scheduled jobs: Railway Cron Job
 - Environment variables で設定を注入する
 - Bot token や DB 接続情報をコードに埋め込まない
 - 本番では PostgreSQL を前提とする
@@ -49,15 +50,17 @@
 ## Directory Guidance
 ```text
 src/
-  bot/
-    commands/
-    services/
-    runtime/
-    db/
-    models/
-    config.py
-    main.py
+  dxd_rating/
+    apps/
+      bot/
+      worker/
+    contexts/
+    platform/
+    shared/
 tests/
+  apps/
+  contexts/
+  platform/
 alembic/
 README.md
 AGENTS.md
@@ -66,8 +69,11 @@ AGENTS.md
 ルール:
 
 * 責務の分離はする
-* ただし過剰なレイヤ分割は避ける
-* 初期段階で DDD 風の大規模構成にはしない
+* 既存の `dxd_rating` パッケージ境界は尊重する
+* 業務ロジックは `contexts/`、インフラや Discord 接続は `platform/` に寄せる
+* Bot の entrypoint は `apps/bot/`、定期実行の entrypoint は `apps/worker/` に置く
+* `tests/` も `apps/` / `contexts/` / `platform/` の境界に合わせる
+* ただし現在の構成以上に不要な抽象レイヤは増やさない
 * 1ファイルが巨大化しすぎたら分割する
 
 ---
@@ -110,9 +116,15 @@ AGENTS.md
 
 ## Environment Variables
 
-最低限、以下を利用する想定です。
+サービスごとに最低限、以下を利用する想定です。
 
+Bot service:
 * `DISCORD_BOT_TOKEN`
+* `DATABASE_URL`
+* `SUPER_ADMIN_USER_IDS` (optional)
+* `LOG_LEVEL`
+
+Cron Job:
 * `DATABASE_URL`
 * `LOG_LEVEL`
 
@@ -123,7 +135,9 @@ AGENTS.md
 ## Railway Deployment Guidelines
 
 * Railway 上でそのまま起動できる構成を維持する
-* 起動コマンドを README.md に明記する
+* Bot 本体とは別に、定期実行処理は `src/dxd_rating/apps/worker/` 配下のモジュールとして実装する
+* 定期実行は Railway Cron Job を利用し、スケジュールは Railway 側で管理する
+* Bot と Cron Job の起動コマンドを README.md に明記する
 * DB 接続先は Railway Postgres を前提とする
 * 環境変数未設定時は起動時に明確に失敗させる
 * 本番で必要な migration 実行手順を明記する

@@ -33,7 +33,7 @@ select = ["E", "F", "I", "W"]
 [tool.mypy]
 python_version = "3.12"
 mypy_path = "src"
-packages = ["bot"]
+packages = ["dxd_rating"]
 plugins = ["pydantic.mypy"]
 check_untyped_defs = true
 disallow_untyped_defs = true

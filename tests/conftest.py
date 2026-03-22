@@ -6,13 +6,13 @@ from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.engine import Connection
 from sqlalchemy.orm import Session, sessionmaker
 
-from bot.config import Settings
+from dxd_rating.platform.config.common import DatabaseSettings
 
 
 def get_database_url() -> str:
     if "DATABASE_URL" in os.environ:
         return os.environ["DATABASE_URL"]
-    return Settings().database_url
+    return DatabaseSettings().database_url
 
 
 @pytest.fixture(scope="session")

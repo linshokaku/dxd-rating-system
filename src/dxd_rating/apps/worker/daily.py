@@ -8,6 +8,7 @@ from pydantic import ValidationError
 from sqlalchemy import text
 from sqlalchemy.orm import Session, sessionmaker
 
+from dxd_rating.contexts.leaderboard.application import maintain_leaderboard_snapshots
 from dxd_rating.contexts.seasons.application import (
     ensure_active_and_upcoming_seasons,
     get_database_now,
@@ -62,6 +63,21 @@ def maintain_seasons(session: Session) -> None:
     )
 
 
+def maintain_daily_leaderboard_snapshots(session: Session) -> None:
+    result = maintain_leaderboard_snapshots(session)
+    logger.info(
+        (
+            "Leaderboard snapshot maintenance completed snapshot_date=%s "
+            "season_id=%s created_count=%s deleted_count=%s skipped_creation=%s"
+        ),
+        result.snapshot_date,
+        result.season_id,
+        result.created_count,
+        result.deleted_count,
+        result.skipped_creation,
+    )
+
+
 def registered_daily_jobs() -> tuple[RegisteredDailyJob, ...]:
     return (
         RegisteredDailyJob(
@@ -71,6 +87,10 @@ def registered_daily_jobs() -> tuple[RegisteredDailyJob, ...]:
         RegisteredDailyJob(
             name="season_maintenance",
             handler=maintain_seasons,
+        ),
+        RegisteredDailyJob(
+            name="leaderboard_snapshot_maintenance",
+            handler=maintain_daily_leaderboard_snapshots,
         ),
     )
 

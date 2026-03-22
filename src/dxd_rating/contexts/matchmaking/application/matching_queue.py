@@ -5,9 +5,7 @@ import random
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from itertools import combinations
-from math import pow
-from typing import Any, Protocol, TypedDict
+from typing import Any, TypedDict
 
 import psycopg
 from sqlalchemy import func, select
@@ -24,6 +22,13 @@ from dxd_rating.contexts.common.application.errors import (
     QueueJoinRestrictedError,
     QueueNotJoinedError,
     RetryableTaskError,
+)
+from dxd_rating.contexts.matchmaking.domain import (
+    QueueEntrySnapshot,
+    RandomLike,
+    is_queue_join_allowed,
+    prepare_matches_for_batch,
+    validate_queue_class_definitions,
 )
 from dxd_rating.contexts.restrictions.application.access_restrictions import (
     get_active_player_access_restriction,
@@ -57,7 +62,6 @@ from dxd_rating.shared.constants import (
 )
 
 DEFAULT_CLEANUP_BATCH_SIZE = 100
-RATING_DIVISOR = 400.0
 
 JOIN_QUEUE_MESSAGE = "キューに参加しました。5分間マッチングします。"
 INVALID_MATCH_FORMAT_MESSAGE = "指定したフォーマットは存在しません。"
@@ -91,10 +95,6 @@ def _is_transient_task_db_error(exc: Exception) -> bool:
         return True
 
     return isinstance(exc.orig, (psycopg.OperationalError, psycopg.InterfaceError))
-
-
-class RandomLike(Protocol):
-    def randrange(self, stop: int, /) -> int: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -194,8 +194,9 @@ class MatchingQueueService:
             )
             if definition is not None
         }
-        self._queue_class_definitions = self._normalize_queue_class_definitions(
-            queue_class_definitions or get_match_queue_class_definitions()
+        self._queue_class_definitions = validate_queue_class_definitions(
+            queue_class_definitions or get_match_queue_class_definitions(),
+            supported_match_formats=self._match_format_definitions_by_format,
         )
         self._queue_class_definitions_by_id = {
             definition.queue_class_id: definition for definition in self._queue_class_definitions
@@ -213,14 +214,6 @@ class MatchingQueueService:
                 for definition in self._queue_class_definitions
                 if definition.match_format == match_format
             )
-        self._queue_class_index_by_id: dict[str, int] = {}
-        for definitions in self._queue_class_definitions_by_format.values():
-            for index, definition in enumerate(definitions):
-                self._queue_class_index_by_id[definition.queue_class_id] = index
-        self._rating_restrictions_enabled_by_format = {
-            match_format: all(definition.target_rating is not None for definition in definitions)
-            for match_format, definitions in self._queue_class_definitions_by_format.items()
-        }
         self._random = random_generator or random.Random()
 
     def join_queue(
@@ -248,9 +241,12 @@ class MatchingQueueService:
                 match_format=resolved_match_format,
             )
 
-            if not self._is_queue_join_allowed(
+            if not is_queue_join_allowed(
                 rating=player_format_stats.rating,
                 queue_class_definition=queue_class_definition,
+                definitions_for_format=self._queue_class_definitions_by_format[
+                    resolved_match_format
+                ],
             ):
                 raise QueueJoinNotAllowedError(QUEUE_JOIN_NOT_ALLOWED_MESSAGE)
 
@@ -676,174 +672,35 @@ class MatchingQueueService:
         queue_entries: Sequence[MatchQueueEntry],
         format_definition: MatchFormatDefinition,
     ) -> tuple[PreparedMatch, ...]:
-        if format_definition.match_format == MatchFormat.ONE_VS_ONE:
-            return self._prepare_one_vs_one_matches(queue_entries, format_definition)
-
-        team_a_entries, team_b_entries = self._assign_balanced_match_teams(
-            queue_entries,
-            team_player_count=format_definition.team_size,
-        )
-        return (
-            PreparedMatch(
-                match_format=format_definition.match_format,
-                team_a_entries=team_a_entries,
-                team_b_entries=team_b_entries,
-            ),
-        )
-
-    def _prepare_one_vs_one_matches(
-        self,
-        queue_entries: Sequence[MatchQueueEntry],
-        format_definition: MatchFormatDefinition,
-    ) -> tuple[PreparedMatch, ...]:
-        if len(queue_entries) != format_definition.players_per_batch:
-            raise ValueError(
-                "1v1 batch must contain exactly "
-                f"{format_definition.players_per_batch} queue entries"
-            )
-
-        ranked_entries = self._sort_entries_by_rating_desc_with_random_ties(queue_entries)
-        prepared_matches: list[PreparedMatch] = []
-        for index in range(0, len(ranked_entries), 2):
-            first_entry = ranked_entries[index]
-            second_entry = ranked_entries[index + 1]
-            if self._random.randrange(2) == 0:
-                team_a_entries = (first_entry,)
-                team_b_entries = (second_entry,)
-            else:
-                team_a_entries = (second_entry,)
-                team_b_entries = (first_entry,)
-            prepared_matches.append(
-                PreparedMatch(
-                    match_format=MatchFormat.ONE_VS_ONE,
-                    team_a_entries=team_a_entries,
-                    team_b_entries=team_b_entries,
+        prepared_match_plans = prepare_matches_for_batch(
+            tuple(
+                QueueEntrySnapshot(
+                    queue_entry_id=queue_entry.id,
+                    player_id=queue_entry.player_id,
+                    match_format=queue_entry.match_format,
+                    rating=self._get_entry_rating(queue_entry),
+                    joined_at=queue_entry.joined_at,
                 )
-            )
-
-        return tuple(prepared_matches)
-
-    def _assign_balanced_match_teams(
-        self,
-        queue_entries: Sequence[MatchQueueEntry],
-        *,
-        team_player_count: int,
-    ) -> tuple[tuple[MatchQueueEntry, ...], tuple[MatchQueueEntry, ...]]:
-        first_group, second_group = self._find_best_team_split(
-            queue_entries,
-            team_player_count=team_player_count,
+                for queue_entry in queue_entries
+            ),
+            format_definition,
+            random_generator=self._random,
         )
-        if self._random.randrange(2) == 0:
-            team_a_entries, team_b_entries = first_group, second_group
-        else:
-            team_a_entries, team_b_entries = second_group, first_group
-
-        return (
-            self._sort_team_entries(team_a_entries),
-            self._sort_team_entries(team_b_entries),
-        )
-
-    def _find_best_team_split(
-        self,
-        queue_entries: Sequence[MatchQueueEntry],
-        *,
-        team_player_count: int,
-    ) -> tuple[tuple[MatchQueueEntry, ...], tuple[MatchQueueEntry, ...]]:
-        expected_player_count = team_player_count * 2
-        if len(queue_entries) != expected_player_count:
-            raise ValueError(
-                f"Expected {expected_player_count} queue entries, got {len(queue_entries)}"
-            )
-
-        best_split: tuple[tuple[MatchQueueEntry, ...], tuple[MatchQueueEntry, ...]] | None = None
-        best_distance_from_even: float | None = None
-        all_indices = tuple(range(len(queue_entries)))
-
-        for remaining_indices in combinations(all_indices[1:], team_player_count - 1):
-            team_one_indices = (all_indices[0], *remaining_indices)
-            team_one_index_set = set(team_one_indices)
-            team_one_entries = tuple(queue_entries[index] for index in team_one_indices)
-            team_two_entries = tuple(
-                queue_entries[index] for index in all_indices if index not in team_one_index_set
-            )
-            team_one_expected_score = self._calculate_expected_score(
-                team_one_entries,
-                team_two_entries,
-            )
-            distance_from_even = abs(team_one_expected_score - 0.5)
-
-            if best_distance_from_even is None or distance_from_even < best_distance_from_even:
-                best_distance_from_even = distance_from_even
-                best_split = (team_one_entries, team_two_entries)
-
-        if best_split is None:
-            raise RuntimeError("Failed to find a team split for queue entries")
-        return best_split
-
-    def _calculate_expected_score(
-        self,
-        team_a_entries: Sequence[MatchQueueEntry],
-        team_b_entries: Sequence[MatchQueueEntry],
-    ) -> float:
-        team_a_strength = sum(
-            pow(10.0, self._get_entry_rating(entry) / RATING_DIVISOR) for entry in team_a_entries
-        )
-        team_b_strength = sum(
-            pow(10.0, self._get_entry_rating(entry) / RATING_DIVISOR) for entry in team_b_entries
-        )
-        return team_a_strength / (team_a_strength + team_b_strength)
-
-    def _sort_team_entries(
-        self,
-        team_entries: Sequence[MatchQueueEntry],
-    ) -> tuple[MatchQueueEntry, ...]:
+        queue_entries_by_id = {queue_entry.id: queue_entry for queue_entry in queue_entries}
         return tuple(
-            sorted(
-                team_entries,
-                key=lambda entry: (
-                    -self._get_entry_rating(entry),
-                    entry.joined_at,
-                    entry.id,
+            PreparedMatch(
+                match_format=prepared_match_plan.match_format,
+                team_a_entries=tuple(
+                    queue_entries_by_id[queue_entry_id]
+                    for queue_entry_id in prepared_match_plan.team_a_entry_ids
+                ),
+                team_b_entries=tuple(
+                    queue_entries_by_id[queue_entry_id]
+                    for queue_entry_id in prepared_match_plan.team_b_entry_ids
                 ),
             )
+            for prepared_match_plan in prepared_match_plans
         )
-
-    def _sort_entries_by_rating_desc_with_random_ties(
-        self,
-        queue_entries: Sequence[MatchQueueEntry],
-    ) -> tuple[MatchQueueEntry, ...]:
-        entries = list(
-            sorted(
-                queue_entries,
-                key=lambda entry: (
-                    -self._get_entry_rating(entry),
-                    entry.joined_at,
-                    entry.id,
-                ),
-            )
-        )
-        ranked_entries: list[MatchQueueEntry] = []
-        index = 0
-        while index < len(entries):
-            tie_group = [entries[index]]
-            tie_rating = self._get_entry_rating(entries[index])
-            index += 1
-            while index < len(entries) and self._get_entry_rating(entries[index]) == tie_rating:
-                tie_group.append(entries[index])
-                index += 1
-            ranked_entries.extend(self._shuffle_entries(tie_group))
-        return tuple(ranked_entries)
-
-    def _shuffle_entries(
-        self,
-        queue_entries: Sequence[MatchQueueEntry],
-    ) -> tuple[MatchQueueEntry, ...]:
-        remaining_entries = list(queue_entries)
-        shuffled_entries: list[MatchQueueEntry] = []
-        while remaining_entries:
-            random_index = self._random.randrange(len(remaining_entries))
-            shuffled_entries.append(remaining_entries.pop(random_index))
-        return tuple(shuffled_entries)
 
     def _get_entry_rating(self, entry: MatchQueueEntry) -> float:
         if entry.player is None:
@@ -970,92 +827,6 @@ class MatchingQueueService:
         if definition is None:
             raise ValueError(f"Unknown queue_class_id: {queue_class_id}")
         return definition
-
-    def _is_queue_join_allowed(
-        self,
-        *,
-        rating: float,
-        queue_class_definition: MatchQueueClassDefinition,
-    ) -> bool:
-        definitions = self._queue_class_definitions_by_format[queue_class_definition.match_format]
-        if not self._rating_restrictions_enabled_by_format[queue_class_definition.match_format]:
-            return True
-
-        queue_index = self._queue_class_index_by_id[queue_class_definition.queue_class_id]
-        if len(definitions) == 1:
-            return True
-
-        if queue_index == 0:
-            upper_definition = definitions[1]
-            assert upper_definition.target_rating is not None
-            return rating < upper_definition.target_rating
-
-        if queue_index == len(definitions) - 1:
-            lower_definition = definitions[-2]
-            assert lower_definition.target_rating is not None
-            return lower_definition.target_rating <= rating
-
-        lower_definition = definitions[queue_index - 1]
-        upper_definition = definitions[queue_index + 1]
-        assert lower_definition.target_rating is not None
-        assert upper_definition.target_rating is not None
-        return lower_definition.target_rating <= rating < upper_definition.target_rating
-
-    def _normalize_queue_class_definitions(
-        self,
-        definitions: Sequence[MatchQueueClassDefinition],
-    ) -> tuple[MatchQueueClassDefinition, ...]:
-        normalized_definitions = tuple(definitions)
-        if not normalized_definitions:
-            raise ValueError("At least one queue class definition is required")
-
-        queue_class_ids: set[str] = set()
-        normalized_queue_names_by_format: dict[MatchFormat, set[str]] = {}
-        definitions_by_format: dict[MatchFormat, list[MatchQueueClassDefinition]] = {}
-
-        for definition in normalized_definitions:
-            if definition.match_format not in self._match_format_definitions_by_format:
-                raise ValueError(f"Unsupported match_format: {definition.match_format.value}")
-            normalized_queue_name = definition.queue_name.strip().casefold()
-            if not normalized_queue_name:
-                raise ValueError("queue_name must not be empty")
-            if definition.queue_class_id in queue_class_ids:
-                raise ValueError(f"Duplicate queue_class_id: {definition.queue_class_id}")
-            names_for_format = normalized_queue_names_by_format.setdefault(
-                definition.match_format,
-                set(),
-            )
-            if normalized_queue_name in names_for_format:
-                raise ValueError(f"Duplicate queue_name: {definition.queue_name}")
-
-            queue_class_ids.add(definition.queue_class_id)
-            names_for_format.add(normalized_queue_name)
-            definitions_by_format.setdefault(definition.match_format, []).append(definition)
-
-        for match_format, definitions in definitions_by_format.items():
-            has_target_ratings = [
-                definition.target_rating is not None for definition in definitions
-            ]
-            if any(has_target_ratings) and not all(has_target_ratings):
-                raise ValueError(
-                    "queue_class_definitions for a match_format must either all define "
-                    "target_rating or all omit it"
-                )
-
-            previous_target_rating: float | None = None
-            for definition in definitions:
-                if definition.target_rating is None:
-                    continue
-                if (
-                    previous_target_rating is not None
-                    and definition.target_rating <= previous_target_rating
-                ):
-                    raise ValueError(
-                        "target_rating values must be strictly increasing within a match_format"
-                    )
-                previous_target_rating = definition.target_rating
-
-        return normalized_definitions
 
     def _require_match_format_definition(
         self,

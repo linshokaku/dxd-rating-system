@@ -22,6 +22,7 @@ from dxd_rating.contexts.matches.application import (
     MATCH_AUTO_PENALTY_APPLIED_NOTIFICATION_MESSAGE,
     MATCH_FINALIZED_NOTIFICATION_MESSAGE,
     ActiveMatchTimerState,
+    MatchApprovalResult,
     MatchFinalizationResult,
     MatchReportSubmissionResult,
 )
@@ -42,6 +43,7 @@ from dxd_rating.contexts.matchmaking.application import (
 from dxd_rating.contexts.players.application import register_player
 from dxd_rating.platform.db.models import (
     Match,
+    MatchApprovalStatus,
     MatchFormat,
     MatchQueueEntry,
     MatchQueueEntryStatus,
@@ -594,6 +596,34 @@ def test_match_runtime_submit_match_report_cancels_match_tasks_when_finalized(
     )
     cancel_all_match_tasks.assert_called_once_with(701)
     schedule_match_approval_task.assert_not_called()
+
+
+def test_match_runtime_approve_match_result_cancels_match_tasks_when_finalized(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = Mock()
+    match_service = Mock()
+    approval_result = MatchApprovalResult(
+        match_id=702,
+        approval_status=MatchApprovalStatus.APPROVED,
+        finalized=True,
+        finalized_at=datetime.now(timezone.utc),
+        final_result=MatchResult.TEAM_A_WIN,
+    )
+    match_service.approve_provisional_result.return_value = approval_result
+    runtime = MatchRuntime(service=service, match_service=match_service)
+    cancel_all_match_tasks = Mock()
+    monkeypatch.setattr(runtime, "_cancel_all_match_tasks", cancel_all_match_tasks)
+
+    result = asyncio.run(runtime.approve_match_result(702, 902))
+
+    assert result == approval_result
+    match_service.approve_provisional_result.assert_called_once_with(
+        702,
+        902,
+        notification_context=None,
+    )
+    cancel_all_match_tasks.assert_called_once_with(702)
 
 
 def test_match_runtime_process_report_deadline_cancels_match_tasks_when_finalized(

@@ -417,12 +417,15 @@ class MatchRuntime:
         match_service = self._require_match_service()
         self._ensure_open()
         self._bind_current_loop_if_needed()
-        return await asyncio.to_thread(
+        result = await asyncio.to_thread(
             match_service.approve_provisional_result,
             match_id,
             player_id,
             notification_context=notification_context,
         )
+        if result.finalized:
+            self._cancel_all_match_tasks(match_id)
+        return result
 
     async def admin_override_match_result(
         self,

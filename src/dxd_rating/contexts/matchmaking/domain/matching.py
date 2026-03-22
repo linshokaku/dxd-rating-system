@@ -67,9 +67,7 @@ def is_queue_join_allowed(
     definitions_for_format: Sequence[MatchQueueClassDefinition],
 ) -> bool:
     if not definitions_for_format:
-        raise ValueError(
-            "definitions_for_format must contain at least one queue class definition"
-        )
+        raise ValueError("definitions_for_format must contain at least one queue class definition")
     if not all(definition.target_rating is not None for definition in definitions_for_format):
         return True
     if len(definitions_for_format) == 1:
@@ -171,8 +169,7 @@ def _prepare_one_vs_one_matches(
 ) -> tuple[PreparedMatchPlan, ...]:
     if len(queue_entries) != format_definition.players_per_batch:
         raise ValueError(
-            "1v1 batch must contain exactly "
-            f"{format_definition.players_per_batch} queue entries"
+            f"1v1 batch must contain exactly {format_definition.players_per_batch} queue entries"
         )
 
     ranked_entries = _sort_entries_by_rating_desc_with_random_ties(
@@ -228,7 +225,9 @@ def _find_best_team_split(
 ) -> tuple[tuple[QueueEntrySnapshot, ...], tuple[QueueEntrySnapshot, ...]]:
     expected_player_count = team_player_count * 2
     if len(queue_entries) != expected_player_count:
-        raise ValueError(f"Expected {expected_player_count} queue entries, got {len(queue_entries)}")
+        raise ValueError(
+            f"Expected {expected_player_count} queue entries, got {len(queue_entries)}"
+        )
 
     best_split: tuple[tuple[QueueEntrySnapshot, ...], tuple[QueueEntrySnapshot, ...]] | None = None
     best_distance_from_even: float | None = None

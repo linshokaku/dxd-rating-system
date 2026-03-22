@@ -112,3 +112,27 @@ class InvalidPlayerAccessRestrictionDurationError(PlayerAccessRestrictionError):
 
 class PlayerAccessRestrictionAlreadyExistsError(PlayerAccessRestrictionError):
     pass
+
+
+class SeasonError(Exception):
+    pass
+
+
+class SeasonNotFoundError(SeasonError):
+    pass
+
+
+class SeasonAlreadyExistsError(SeasonError):
+    pass
+
+
+class InvalidSeasonNameError(SeasonError):
+    pass
+
+
+class PlayerSeasonStatsNotFoundError(SeasonError):
+    pass
+
+
+class SeasonStateError(SeasonError):
+    pass

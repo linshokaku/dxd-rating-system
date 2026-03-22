@@ -15,6 +15,7 @@ from dxd_rating.contexts.players.application import (
     register_player,
     resolve_player_display_name,
 )
+from dxd_rating.contexts.seasons.application import ensure_active_and_upcoming_seasons
 from dxd_rating.platform.db.models import INITIAL_RATING, MatchFormat, Player, PlayerFormatStats
 
 
@@ -26,10 +27,22 @@ class FakeDiscordUser:
     nick: str | None = None
 
 
+def get_active_and_upcoming_season_ids(session: Session) -> tuple[int, int]:
+    season_pair = ensure_active_and_upcoming_seasons(session)
+    return season_pair.active.id, season_pair.upcoming.id
+
+
+@pytest.fixture(autouse=True)
+def prepared_seasons(session: Session) -> None:
+    ensure_active_and_upcoming_seasons(session)
+    session.commit()
+
+
 def test_register_player_creates_player_with_initial_rating(session: Session) -> None:
     discord_user_id = 123456789012345678
 
     player = register_player(session=session, discord_user_id=discord_user_id)
+    active_season_id, upcoming_season_id = get_active_and_upcoming_season_ids(session)
 
     persisted_player = session.scalar(
         select(Player).where(Player.discord_user_id == discord_user_id)
@@ -46,7 +59,11 @@ def test_register_player_creates_player_with_initial_rating(session: Session) ->
     persisted_format_stats = session.scalars(
         select(PlayerFormatStats).where(PlayerFormatStats.player_id == player.id)
     ).all()
-    assert len(persisted_format_stats) == 3
+    assert len(persisted_format_stats) == 6
+    assert {format_stats.season_id for format_stats in persisted_format_stats} == {
+        active_season_id,
+        upcoming_season_id,
+    }
     assert {format_stats.match_format for format_stats in persisted_format_stats} == {
         MatchFormat.ONE_VS_ONE,
         MatchFormat.TWO_VS_TWO,
@@ -162,12 +179,17 @@ def test_player_lookup_service_returns_player_info_for_registered_discord_user_i
 ) -> None:
     discord_user_id = 123456789012345681
     player = register_player(session=session, discord_user_id=discord_user_id)
+    active_season_id, _ = get_active_and_upcoming_season_ids(session)
     player.display_name = "Cached Name"
     player.display_name_updated_at = datetime(2026, 3, 19, 9, 30, 0, tzinfo=timezone.utc)
     player.last_seen_at = datetime(2026, 3, 20, 8, 0, 0, tzinfo=timezone.utc)
     three_vs_three_stats = session.get(
         PlayerFormatStats,
-        {"player_id": player.id, "match_format": MatchFormat.THREE_VS_THREE},
+        {
+            "player_id": player.id,
+            "season_id": active_season_id,
+            "match_format": MatchFormat.THREE_VS_THREE,
+        },
     )
     assert three_vs_three_stats is not None
     three_vs_three_stats.rating = 1523.75
@@ -206,6 +228,7 @@ def test_player_lookup_service_returns_player_info_for_registered_discord_user_i
         tzinfo=timezone.utc,
     )
     assert player_info.resolved_display_name == "Cached Name"
+    assert player_info.season.season_id == active_season_id
     assert format_stats_by_format[MatchFormat.ONE_VS_ONE].rating == INITIAL_RATING
     assert format_stats_by_format[MatchFormat.TWO_VS_TWO].rating == INITIAL_RATING
     assert format_stats_by_format[MatchFormat.THREE_VS_THREE].rating == 1523.75
@@ -255,3 +278,36 @@ def test_player_info_resolved_display_name_falls_back_to_discord_user_id(
 
     assert player_info.display_name is None
     assert player_info.resolved_display_name == str(discord_user_id)
+
+
+def test_player_lookup_service_returns_player_info_for_specified_season(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    discord_user_id = 123456789012345684
+    player = register_player(session=session, discord_user_id=discord_user_id)
+    active_season_id, upcoming_season_id = get_active_and_upcoming_season_ids(session)
+    upcoming_three_vs_three_stats = session.get(
+        PlayerFormatStats,
+        {
+            "player_id": player.id,
+            "season_id": upcoming_season_id,
+            "match_format": MatchFormat.THREE_VS_THREE,
+        },
+    )
+    assert upcoming_three_vs_three_stats is not None
+    upcoming_three_vs_three_stats.rating = 1610
+    session.commit()
+    service = PlayerLookupService(session_factory)
+
+    player_info = service.get_player_info_by_discord_user_id_and_season_id(
+        discord_user_id,
+        upcoming_season_id,
+    )
+    format_stats_by_format = {
+        format_stats.match_format: format_stats for format_stats in player_info.format_stats
+    }
+
+    assert player_info.season.season_id == upcoming_season_id
+    assert player_info.season.season_id != active_season_id
+    assert format_stats_by_format[MatchFormat.THREE_VS_THREE].rating == 1610

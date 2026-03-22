@@ -8,6 +8,12 @@ from pydantic import ValidationError
 from sqlalchemy import text
 from sqlalchemy.orm import Session, sessionmaker
 
+from dxd_rating.contexts.leaderboard.application import maintain_leaderboard_snapshots
+from dxd_rating.contexts.seasons.application import (
+    ensure_active_and_upcoming_seasons,
+    get_database_now,
+    update_ended_season_completions,
+)
 from dxd_rating.platform.config.common import configure_logging, raise_settings_load_error
 from dxd_rating.platform.config.worker import WorkerSettings
 from dxd_rating.platform.db.session import create_db_engine, create_session_factory, session_scope
@@ -39,8 +45,37 @@ def verify_database_connection(session: Session) -> None:
     logger.info("Database connectivity check succeeded")
 
 
-def log_placeholder_message(_: Session) -> None:
-    logger.info("No domain-specific daily jobs are registered yet")
+def maintain_seasons(session: Session) -> None:
+    current_time = get_database_now(session)
+    season_pair = ensure_active_and_upcoming_seasons(session, current_time=current_time)
+    completed_season_ids = update_ended_season_completions(
+        session,
+        current_time=current_time,
+    )
+    logger.info(
+        (
+            "Season maintenance completed active_season_id=%s "
+            "upcoming_season_id=%s completed_season_ids=%s"
+        ),
+        season_pair.active.id,
+        season_pair.upcoming.id,
+        list(completed_season_ids),
+    )
+
+
+def maintain_daily_leaderboard_snapshots(session: Session) -> None:
+    result = maintain_leaderboard_snapshots(session)
+    logger.info(
+        (
+            "Leaderboard snapshot maintenance completed snapshot_date=%s "
+            "season_id=%s created_count=%s deleted_count=%s skipped_creation=%s"
+        ),
+        result.snapshot_date,
+        result.season_id,
+        result.created_count,
+        result.deleted_count,
+        result.skipped_creation,
+    )
 
 
 def registered_daily_jobs() -> tuple[RegisteredDailyJob, ...]:
@@ -50,8 +85,12 @@ def registered_daily_jobs() -> tuple[RegisteredDailyJob, ...]:
             handler=verify_database_connection,
         ),
         RegisteredDailyJob(
-            name="daily_job_placeholder",
-            handler=log_placeholder_message,
+            name="season_maintenance",
+            handler=maintain_seasons,
+        ),
+        RegisteredDailyJob(
+            name="leaderboard_snapshot_maintenance",
+            handler=maintain_daily_leaderboard_snapshots,
         ),
     )
 

@@ -27,6 +27,7 @@ from dxd_rating.contexts.restrictions.application import (
     PlayerAccessRestrictionDuration,
     PlayerAccessRestrictionService,
 )
+from dxd_rating.contexts.seasons.application import ensure_active_and_upcoming_seasons
 from dxd_rating.platform.db.models import (
     INITIAL_RATING,
     ActiveMatchPlayerState,
@@ -64,10 +65,20 @@ def get_database_now(session: Session) -> datetime:
     return session.execute(select(func.now())).scalar_one()
 
 
+@pytest.fixture(autouse=True)
+def prepared_seasons(session: Session) -> None:
+    ensure_active_and_upcoming_seasons(session)
+    session.commit()
+
+
 def create_player(session: Session, discord_user_id: int) -> Player:
     player = register_player(session=session, discord_user_id=discord_user_id)
     session.commit()
     return player
+
+
+def get_active_season_id(session: Session) -> int:
+    return ensure_active_and_upcoming_seasons(session).active.id
 
 
 def create_players(
@@ -85,9 +96,11 @@ def get_player_format_stats_by_player_id(
     *,
     match_format: MatchFormat = DEFAULT_MATCH_FORMAT,
 ) -> dict[int, PlayerFormatStats]:
+    season_id = get_active_season_id(session)
     rows = session.scalars(
         select(PlayerFormatStats).where(
             PlayerFormatStats.player_id.in_(player_ids),
+            PlayerFormatStats.season_id == season_id,
             PlayerFormatStats.match_format == match_format,
         )
     ).all()

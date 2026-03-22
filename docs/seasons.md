@@ -38,6 +38,8 @@
 - シーズン時刻は JST で扱う
 - シーズンの期間は半開区間 `[start_at, end_at)` とする
 - シーズン切替時刻は毎月 `14日 00:00 JST` とする
+- 実装上、`start_at` と `end_at` は UTC の `timestamptz` として保存してよい
+- JST 境界の判定は、各処理で都度ばらばらに実装せず、専用の season resolver に集約する
 
 例:
 
@@ -68,7 +70,10 @@
 
 補足:
 
-- 初期のデフォルト名は `delta` とする
+- 自動作成時のデフォルト名は `YYYYMMdelta` 形式とする
+- `YYYYMM` はそのシーズンの `start_at` を JST へ変換した年 4 桁 + 月 2 桁とする
+- 例: `2026-03-14 00:00 JST` 開始のシーズン名は `202603delta`
+- 自動生成名はシーズンごとに一意であり、重複を許さない
 - `name` は admin による rename で更新できる
 - `start_at` と `end_at` は作成後に変更しない
 - シーズンの追加や削除は Bot コマンドからは行わない
@@ -84,7 +89,7 @@
 
 - `start_at = active_season.end_at`
 - `end_at = start_at の翌月 14日 00:00 JST`
-- `name = 'delta'`
+- `name = start_at を JST に変換した YYYYMM + 'delta'`
 
 補足:
 
@@ -97,6 +102,9 @@
 - admin はシーズン名だけを変更できる
 - rename は `season_id` を指定して行う
 - rename はレート、戦績、期間、完了フラグへ影響しない
+- rename 後の `name` は、既存の他シーズン名と重複してはならない
+- rename 後の `name` の先頭 1 文字目に数字は使えない
+- これにより、常に数字始まりである自動生成名 `YYYYMMdelta` と衝突しないことを保証する
 
 ## `player_format_stats`
 
@@ -278,3 +286,8 @@ carryover を適用しない場合:
 
 - 終了済みシーズンの閲覧でも、当時の表示名 snapshot は保持しない
 - シーズン別ランキング表示時の表示名は、現在の `players.display_name` キャッシュを参照してよい
+
+## Bot コマンド表示方針
+
+- `player_info` コマンドは、稼働中シーズンの情報のみを表示する
+- シーズンを指定して表示する機能は、`player_info` とは別コマンドで提供する

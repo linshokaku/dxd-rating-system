@@ -28,7 +28,9 @@ from dxd_rating.contexts.common.application.errors import (
     MatchSpectatingRestrictedError,
     MatchSpectatorAlreadyRegisteredError,
     MatchSpectatorCapacityError,
+    PlayerSeasonStatsNotFoundError,
     RetryableTaskError,
+    SeasonNotFoundError,
 )
 from dxd_rating.contexts.matches.domain.match_rules import (
     LatestMatchReportSnapshot,
@@ -54,6 +56,10 @@ from dxd_rating.contexts.matchmaking.application.matching_queue import (
 )
 from dxd_rating.contexts.restrictions.application.access_restrictions import (
     get_active_player_access_restriction,
+)
+from dxd_rating.contexts.seasons.application import (
+    resolve_player_format_stats_for_season,
+    update_season_completion,
 )
 from dxd_rating.platform.db.models import (
     ActiveMatchPlayerState,
@@ -180,6 +186,7 @@ class MatchAdminOverrideResult:
     match_id: int
     final_result: MatchResult
     finalized_at: datetime
+
 
 @dataclass(frozen=True, slots=True)
 class PlayerPenaltyAdjustmentResult:
@@ -925,6 +932,8 @@ class MatchFlowService:
         finalization_dedupe_suffix: str,
     ) -> MatchFinalizationResult:
         participants = self._get_match_participants(session, active_state.match_id)
+        for player_id in sorted({participant.player_id for participant in participants}):
+            self._acquire_player_lock(session, player_id)
         latest_reports_by_player = self._get_latest_reports_by_player(
             session,
             active_state.match_id,
@@ -984,7 +993,9 @@ class MatchFlowService:
         player_format_stats_by_player_id = self._get_player_format_stats_by_player_id(
             session,
             player_ids=[participant.player_id for participant in participants],
+            season_id=active_state.match.started_season_id,
             match_format=active_state.match.match_format,
+            lock_rows=True,
         )
         rating_snapshots_by_player_id = {
             participant.player_id: RatingParticipantSnapshot(
@@ -1160,6 +1171,12 @@ class MatchFlowService:
             finalized_by_admin=finalized_by_admin,
             finalization_dedupe_suffix=finalization_dedupe_suffix,
             auto_penalty_notifications=auto_penalty_notifications,
+            player_format_stats_by_player_id=player_format_stats_by_player_id,
+        )
+        update_season_completion(
+            session,
+            season_id=active_state.match.started_season_id,
+            current_time=finalized_at,
         )
 
         return MatchFinalizationResult(
@@ -1182,6 +1199,8 @@ class MatchFlowService:
         finalization_dedupe_suffix: str,
     ) -> None:
         participants = self._get_match_participants(session, active_state.match_id)
+        for player_id in sorted({participant.player_id for participant in participants}):
+            self._acquire_player_lock(session, player_id)
         latest_reports_by_player = self._get_latest_reports_by_player(
             session,
             active_state.match_id,
@@ -1231,7 +1250,9 @@ class MatchFlowService:
         player_format_stats_by_player_id = self._get_player_format_stats_by_player_id(
             session,
             player_ids=[participant.player_id for participant in participants],
+            season_id=active_state.match.started_season_id,
             match_format=active_state.match.match_format,
+            lock_rows=True,
         )
         rating_snapshots_by_player_id = {
             participant.player_id: RatingParticipantSnapshot(
@@ -1346,6 +1367,7 @@ class MatchFlowService:
                 .join(Match, Match.id == FinalizedMatchResult.match_id)
                 .where(
                     Match.match_format == target_finalized_result.match.match_format,
+                    Match.started_season_id == target_finalized_result.match.started_season_id,
                     or_(
                         FinalizedMatchResult.rated_at > target_finalized_result.rated_at,
                         and_(
@@ -1380,24 +1402,13 @@ class MatchFlowService:
         for player_id in affected_player_ids:
             self._acquire_player_lock(session, player_id)
 
-        locked_player_format_stats = session.scalars(
-            select(PlayerFormatStats).where(
-                PlayerFormatStats.player_id.in_(affected_player_ids),
-                PlayerFormatStats.match_format == target_finalized_result.match.match_format,
-            )
-        ).all()
-        player_format_stats_by_player_id = {
-            player_format_stats.player_id: player_format_stats
-            for player_format_stats in locked_player_format_stats
-        }
-        missing_player_ids = sorted(
-            set(affected_player_ids) - set(player_format_stats_by_player_id)
+        player_format_stats_by_player_id = self._get_player_format_stats_by_player_id(
+            session,
+            player_ids=affected_player_ids,
+            season_id=target_finalized_result.match.started_season_id,
+            match_format=target_finalized_result.match.match_format,
+            lock_rows=True,
         )
-        if missing_player_ids:
-            raise MatchFlowError(
-                "試合結果の補正に必要なプレイヤー統計が不足しています。"
-                f" player_ids={missing_player_ids}"
-            )
         current_player_states = {
             player_id: RatingState(
                 rating=player_format_stats.rating,
@@ -1449,6 +1460,7 @@ class MatchFlowService:
         self._refresh_last_played_at_for_players(
             session,
             player_format_stats_by_player_id=player_format_stats_by_player_id,
+            season_id=target_finalized_result.match.started_season_id,
             match_format=target_finalized_result.match.match_format,
         )
 
@@ -1463,6 +1475,7 @@ class MatchFlowService:
         finalized_by_admin: bool,
         finalization_dedupe_suffix: str,
         auto_penalty_notifications: Sequence[tuple[MatchParticipant, PenaltyType, int]],
+        player_format_stats_by_player_id: dict[int, PlayerFormatStats] | None = None,
     ) -> None:
         finalized_notification_payload: dict[str, Any] = {
             "match_id": active_state.match_id,
@@ -1475,14 +1488,14 @@ class MatchFlowService:
                 self._build_team_rating_entries(
                     participants=participants,
                     team=MatchParticipantTeam.TEAM_A,
-                    match_format=active_state.match.match_format,
+                    player_format_stats_by_player_id=player_format_stats_by_player_id,
                 )
             )
             finalized_notification_payload["team_b_rating_entries"] = (
                 self._build_team_rating_entries(
                     participants=participants,
                     team=MatchParticipantTeam.TEAM_B,
-                    match_format=active_state.match.match_format,
+                    player_format_stats_by_player_id=player_format_stats_by_player_id,
                 )
             )
 
@@ -1583,6 +1596,7 @@ class MatchFlowService:
         session: Session,
         *,
         player_format_stats_by_player_id: dict[int, PlayerFormatStats],
+        season_id: int,
         match_format: MatchFormat,
     ) -> None:
         if not player_format_stats_by_player_id:
@@ -1605,6 +1619,7 @@ class MatchFlowService:
                 .where(
                     FinalizedMatchPlayerResult.player_id.in_(player_ids),
                     Match.match_format == match_format,
+                    Match.started_season_id == season_id,
                     FinalizedMatchResult.final_result.in_(_RATED_MATCH_RESULTS),
                     FinalizedMatchResult.rated_at.is_not(None),
                 )
@@ -1823,18 +1838,17 @@ class MatchFlowService:
         *,
         participants: Sequence[MatchParticipant],
         team: MatchParticipantTeam,
-        match_format: MatchFormat,
+        player_format_stats_by_player_id: dict[int, PlayerFormatStats] | None,
     ) -> list[TeamRatingEntryPayload]:
+        if player_format_stats_by_player_id is None:
+            raise MatchFlowError("プレイヤー統計が見つかりません。")
         return [
             {
                 "discord_user_id": (
                     participant.notification_mention_discord_user_id
                     or participant.player.discord_user_id
                 ),
-                "rating": self._get_player_format_rating(
-                    participant.player,
-                    match_format=match_format,
-                ),
+                "rating": player_format_stats_by_player_id[participant.player_id].rating,
             }
             for participant in participants
             if participant.team == team
@@ -1845,38 +1859,22 @@ class MatchFlowService:
         session: Session,
         *,
         player_ids: Sequence[int],
+        season_id: int,
         match_format: MatchFormat,
+        lock_rows: bool = False,
     ) -> dict[int, PlayerFormatStats]:
-        player_format_stats = session.scalars(
-            select(PlayerFormatStats).where(
-                PlayerFormatStats.player_id.in_(player_ids),
-                PlayerFormatStats.match_format == match_format,
+        try:
+            return resolve_player_format_stats_for_season(
+                session,
+                player_ids=tuple(player_ids),
+                season_id=season_id,
+                match_format=match_format,
+                lock_rows=lock_rows,
             )
-        ).all()
-        player_format_stats_by_player_id = {
-            format_stats.player_id: format_stats for format_stats in player_format_stats
-        }
-        missing_player_ids = sorted(set(player_ids) - set(player_format_stats_by_player_id))
-        if missing_player_ids:
-            raise MatchFlowError(
-                "プレイヤー統計が見つかりません。"
-                f" match_format={match_format.value} player_ids={missing_player_ids}"
-            )
-        return player_format_stats_by_player_id
-
-    def _get_player_format_rating(
-        self,
-        player: Player,
-        *,
-        match_format: MatchFormat,
-    ) -> float:
-        for format_stats in player.format_stats:
-            if format_stats.match_format == match_format:
-                return format_stats.rating
-        raise MatchFlowError(
-            "プレイヤー統計が見つかりません。"
-            f" player_id={player.id} match_format={match_format.value}"
-        )
+        except SeasonNotFoundError as exc:
+            raise MatchFlowError(str(exc)) from exc
+        except PlayerSeasonStatsNotFoundError as exc:
+            raise MatchFlowError(str(exc)) from exc
 
     def _require_match_format_definition(
         self,

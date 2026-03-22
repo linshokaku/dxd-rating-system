@@ -1030,7 +1030,7 @@ def test_submit_report_allows_void_before_report_open_and_overwrites_latest_repo
         (MatchFormat.THREE_VS_THREE, 60_212, 91_002_12, 92_002_12),
     ],
 )
-def test_submit_reports_starts_approval_and_accepts_approval_for_all_formats(
+def test_submit_reports_starts_approval_and_finalizes_when_all_approvals_complete_for_all_formats(
     session: Session,
     session_factory: sessionmaker[Session],
     match_format: MatchFormat,
@@ -1103,15 +1103,28 @@ def test_submit_reports_starts_approval_and_accepts_approval_for_all_formats(
     )
 
     session.expire_all()
+    active_state = session.get(ActiveMatchState, match_id)
     dissenting_state = session.get(
         ActiveMatchPlayerState,
         {"match_id": match_id, "player_id": dissenting_participant.player_id},
     )
+    finalized_result = session.get(FinalizedMatchResult, match_id)
+    penalty_adjustments = session.scalars(
+        select(PlayerPenaltyAdjustment).where(PlayerPenaltyAdjustment.match_id == match_id)
+    ).all()
 
     assert approval_result.approval_status == MatchApprovalStatus.APPROVED
+    assert approval_result.finalized is True
+    assert approval_result.finalized_at is not None
+    assert approval_result.final_result == MatchResult.TEAM_A_WIN
+    assert active_state is not None
+    assert active_state.state == MatchState.FINALIZED
     assert dissenting_state is not None
     assert dissenting_state.approval_status == MatchApprovalStatus.APPROVED
     assert dissenting_state.approved_at is not None
+    assert finalized_result is not None
+    assert finalized_result.final_result == MatchResult.TEAM_A_WIN
+    assert penalty_adjustments == []
 
 
 @pytest.mark.parametrize(
@@ -1383,7 +1396,7 @@ def test_process_deadlines_unresolved_tie_becomes_void_and_notifies_admin_for_te
     assert admin_review_events[0].payload["admin_review_reasons"] == ["unresolved_tie"]
 
 
-def test_submit_reports_from_all_players_starts_approval_and_accepts_approval(
+def test_submit_reports_from_all_players_finalizes_when_last_pending_player_approves(
     session: Session,
     session_factory: sessionmaker[Session],
 ) -> None:
@@ -1468,16 +1481,41 @@ def test_submit_reports_from_all_players_starts_approval_and_accepts_approval(
     )
 
     session.expire_all()
+    active_state = session.get(ActiveMatchState, match_id)
     dissenting_state = session.get(
         ActiveMatchPlayerState,
         {"match_id": match_id, "player_id": dissenting_participant.player_id},
     )
+    finalized_result = session.get(FinalizedMatchResult, match_id)
+    finalized_player_results = {
+        player_result.player_id: player_result
+        for player_result in session.scalars(
+            select(FinalizedMatchPlayerResult).where(
+                FinalizedMatchPlayerResult.match_id == match_id
+            )
+        ).all()
+    }
+    penalty_adjustments = session.scalars(
+        select(PlayerPenaltyAdjustment).where(PlayerPenaltyAdjustment.match_id == match_id)
+    ).all()
 
     assert last_result.finalized is False
     assert approval_result.approval_status == MatchApprovalStatus.APPROVED
+    assert approval_result.finalized is True
+    assert approval_result.finalized_at is not None
+    assert approval_result.final_result == MatchResult.TEAM_A_WIN
+    assert active_state is not None
+    assert active_state.state == MatchState.FINALIZED
     assert dissenting_state is not None
     assert dissenting_state.approval_status == MatchApprovalStatus.APPROVED
     assert dissenting_state.approved_at is not None
+    assert finalized_result is not None
+    assert finalized_result.final_result == MatchResult.TEAM_A_WIN
+    assert finalized_player_results[dissenting_participant.player_id].approval_status == (
+        MatchApprovalStatus.APPROVED
+    )
+    assert finalized_player_results[dissenting_participant.player_id].auto_penalty_type is None
+    assert penalty_adjustments == []
 
 
 def test_process_deadlines_finalizes_match_and_applies_auto_penalties(

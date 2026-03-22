@@ -139,6 +139,9 @@ class MatchReportSubmissionResult:
 class MatchApprovalResult:
     match_id: int
     approval_status: MatchApprovalStatus
+    finalized: bool = False
+    finalized_at: datetime | None = None
+    final_result: MatchResult | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -477,9 +480,35 @@ class MatchFlowService:
 
             player_state.approval_status = MatchApprovalStatus.APPROVED
             player_state.approved_at = current_time
+            session.flush()
+
+            pending_approval_count = session.scalar(
+                select(func.count(ActiveMatchPlayerState.player_id)).where(
+                    ActiveMatchPlayerState.match_id == match_id,
+                    ActiveMatchPlayerState.approval_status == MatchApprovalStatus.PENDING,
+                )
+            )
+            if pending_approval_count:
+                return MatchApprovalResult(
+                    match_id=match_id,
+                    approval_status=player_state.approval_status,
+                )
+
+            finalization_result = self._finalize_match_locked(
+                session,
+                active_state=active_state,
+                final_result=active_state.provisional_result or MatchResult.VOID,
+                finalized_at=current_time,
+                finalized_by_admin=False,
+                apply_auto_penalties=True,
+                finalization_dedupe_suffix=f"all_approvals:{player_id}",
+            )
             return MatchApprovalResult(
                 match_id=match_id,
                 approval_status=player_state.approval_status,
+                finalized=finalization_result.finalized,
+                finalized_at=finalization_result.finalized_at,
+                final_result=finalization_result.final_result,
             )
 
     def process_report_open(self, match_id: int) -> bool:

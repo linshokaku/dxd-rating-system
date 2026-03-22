@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 import random
-from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -31,9 +30,24 @@ from dxd_rating.contexts.common.application.errors import (
     MatchSpectatorCapacityError,
     RetryableTaskError,
 )
+from dxd_rating.contexts.matches.domain.match_rules import (
+    LatestMatchReportSnapshot,
+    MatchParticipantIdentity,
+    determine_admin_review_reasons,
+    determine_auto_penalty_type,
+    determine_match_result,
+    determine_report_status,
+    normalize_report_result,
+)
 from dxd_rating.contexts.matches.domain.rating import (
     RatingParticipantSnapshot,
     calculate_rating_updates,
+)
+from dxd_rating.contexts.matches.domain.rating_replay import (
+    HistoricalMatchPlayerSnapshot,
+    HistoricalMatchRatingSnapshot,
+    RatingState,
+    replay_rating_history,
 )
 from dxd_rating.contexts.matchmaking.application.matching_queue import (
     MatchingQueueNotificationContext,
@@ -166,16 +180,6 @@ class MatchAdminOverrideResult:
     match_id: int
     final_result: MatchResult
     finalized_at: datetime
-
-
-@dataclass(frozen=True, slots=True)
-class PlayerRatingState:
-    rating: float
-    games_played: int
-    wins: int
-    losses: int
-    draws: int
-
 
 @dataclass(frozen=True, slots=True)
 class PlayerPenaltyAdjustmentResult:
@@ -408,7 +412,7 @@ class MatchFlowService:
                 match_id=match_id,
                 player_id=player_id,
                 reported_input_result=input_result,
-                normalized_result=self._normalize_report_result(participant.team, input_result),
+                normalized_result=normalize_report_result(participant.team, input_result),
                 reported_at=current_time,
                 is_latest=True,
             )
@@ -766,15 +770,19 @@ class MatchFlowService:
             session,
             active_state.match_id,
         )
-        provisional_result, unresolved_tie = self._determine_match_result(
-            latest_reports_by_player=latest_reports_by_player,
+        latest_report_snapshots_by_player = self._build_latest_match_report_snapshots_by_player(
+            latest_reports_by_player
+        )
+        result_decision = determine_match_result(
+            latest_reports_by_player=latest_report_snapshots_by_player,
             parent_player_id=active_state.parent_player_id,
         )
+        provisional_result = result_decision.provisional_result
         format_definition = self._require_match_format_definition(match_format)
-        admin_review_reasons = self._determine_admin_review_reasons(
-            participants=participants,
-            latest_reports_by_player=latest_reports_by_player,
-            unresolved_tie=unresolved_tie,
+        admin_review_reasons = determine_admin_review_reasons(
+            participants=self._build_match_participant_identities(participants),
+            latest_reports_by_player=latest_report_snapshots_by_player,
+            unresolved_tie=result_decision.unresolved_tie,
             team_size=format_definition.team_size,
         )
 
@@ -793,7 +801,10 @@ class MatchFlowService:
 
         for participant in participants:
             latest_report = latest_reports_by_player.get(participant.player_id)
-            report_status = self._determine_report_status(latest_report, provisional_result)
+            report_status = determine_report_status(
+                self._build_latest_match_report_snapshot(latest_report),
+                provisional_result,
+            )
             approval_status = (
                 MatchApprovalStatus.NOT_REQUIRED
                 if report_status == MatchReportStatus.CORRECT
@@ -992,7 +1003,7 @@ class MatchFlowService:
         desired_auto_penalties_by_player: dict[int, PenaltyType | None] = {}
         for participant in participants:
             player_state = player_states_by_player[participant.player_id]
-            desired_auto_penalty = self._determine_auto_penalty_type(
+            desired_auto_penalty = determine_auto_penalty_type(
                 report_status=player_state.report_status,
                 approval_status=player_state.approval_status,
                 apply_auto_penalties=apply_auto_penalties,
@@ -1357,6 +1368,8 @@ class MatchFlowService:
                 .order_by(FinalizedMatchResult.rated_at, FinalizedMatchResult.match_id)
             ).all()
         )
+        if not affected_matches:
+            return
         affected_player_ids = sorted(
             {
                 player_result.player_id
@@ -1385,8 +1398,8 @@ class MatchFlowService:
                 "試合結果の補正に必要なプレイヤー統計が不足しています。"
                 f" player_ids={missing_player_ids}"
             )
-        working_states = {
-            player_id: PlayerRatingState(
+        current_player_states = {
+            player_id: RatingState(
                 rating=player_format_stats.rating,
                 games_played=player_format_stats.games_played,
                 wins=player_format_stats.wins,
@@ -1395,82 +1408,37 @@ class MatchFlowService:
             )
             for player_id, player_format_stats in player_format_stats_by_player_id.items()
         }
-
-        for finalized_match in reversed(affected_matches[1:]):
-            for player_result in finalized_match.player_results:
-                if (
-                    player_result.rating_before is None
-                    or player_result.games_played_before is None
-                    or player_result.wins_before is None
-                    or player_result.losses_before is None
-                    or player_result.draws_before is None
-                ):
-                    raise MatchFlowError("試合結果の補正に必要な開始時点状態が不足しています。")
-                working_states[player_result.player_id] = PlayerRatingState(
-                    rating=player_result.rating_before,
-                    games_played=player_result.games_played_before,
-                    wins=player_result.wins_before,
-                    losses=player_result.losses_before,
-                    draws=player_result.draws_before,
-                )
-
-        for player_result in affected_matches[0].player_results:
-            if (
-                player_result.rating_before is None
-                or player_result.games_played_before is None
-                or player_result.wins_before is None
-                or player_result.losses_before is None
-                or player_result.draws_before is None
-            ):
-                raise MatchFlowError("試合結果の補正に必要な開始時点状態が不足しています。")
-            working_states[player_result.player_id] = PlayerRatingState(
-                rating=player_result.rating_before,
-                games_played=player_result.games_played_before,
-                wins=player_result.wins_before,
-                losses=player_result.losses_before,
-                draws=player_result.draws_before,
+        historical_match_snapshots = tuple(
+            HistoricalMatchRatingSnapshot(
+                match_id=finalized_match.match_id,
+                final_result=finalized_match.final_result,
+                player_results=tuple(
+                    self._build_historical_match_player_snapshot(player_result)
+                    for player_result in finalized_match.player_results
+                ),
             )
-
+            for finalized_match in affected_matches
+        )
+        replay_result = replay_rating_history(
+            finalized_matches=historical_match_snapshots,
+            current_player_states=current_player_states,
+        )
+        replayed_player_results_by_key = {
+            (player_result.match_id, player_result.player_id): player_result
+            for player_result in replay_result.player_results
+        }
         for finalized_match in affected_matches:
-            ordered_player_results = sorted(
-                finalized_match.player_results,
-                key=lambda result: (result.team.value, result.player_id),
-            )
-            rating_snapshots = tuple(
-                RatingParticipantSnapshot(
-                    player_id=player_result.player_id,
-                    team=player_result.team,
-                    rating=working_states[player_result.player_id].rating,
-                    games_played=working_states[player_result.player_id].games_played,
-                    wins=working_states[player_result.player_id].wins,
-                    losses=working_states[player_result.player_id].losses,
-                    draws=working_states[player_result.player_id].draws,
-                )
-                for player_result in ordered_player_results
-            )
+            for player_result in finalized_match.player_results:
+                replayed_player_result = replayed_player_results_by_key[
+                    (finalized_match.match_id, player_result.player_id)
+                ]
+                player_result.rating_before = replayed_player_result.rating_before
+                player_result.games_played_before = replayed_player_result.games_played_before
+                player_result.wins_before = replayed_player_result.wins_before
+                player_result.losses_before = replayed_player_result.losses_before
+                player_result.draws_before = replayed_player_result.draws_before
 
-            for player_result in ordered_player_results:
-                player_state = working_states[player_result.player_id]
-                player_result.rating_before = player_state.rating
-                player_result.games_played_before = player_state.games_played
-                player_result.wins_before = player_state.wins
-                player_result.losses_before = player_state.losses
-                player_result.draws_before = player_state.draws
-
-            rating_updates_by_player_id = calculate_rating_updates(
-                rating_snapshots,
-                finalized_match.final_result,
-            )
-            for player_id, rating_update in rating_updates_by_player_id.items():
-                working_states[player_id] = PlayerRatingState(
-                    rating=rating_update.rating_after,
-                    games_played=rating_update.games_played_after,
-                    wins=rating_update.wins_after,
-                    losses=rating_update.losses_after,
-                    draws=rating_update.draws_after,
-                )
-
-        for player_id, player_state in working_states.items():
+        for player_id, player_state in replay_result.player_states_by_player_id.items():
             player_format_stats = player_format_stats_by_player_id[player_id]
             player_format_stats.rating = player_state.rating
             player_format_stats.games_played = player_state.games_played
@@ -1674,7 +1642,10 @@ class MatchFlowService:
                 player_state = ActiveMatchPlayerState(
                     match_id=active_state.match_id,
                     player_id=participant.player_id,
-                    report_status=self._determine_report_status(latest_report, final_result),
+                    report_status=determine_report_status(
+                        self._build_latest_match_report_snapshot(latest_report),
+                        final_result,
+                    ),
                     approval_status=MatchApprovalStatus.NOT_REQUIRED,
                     locked_at=finalized_at,
                     approved_at=None,
@@ -1690,8 +1661,8 @@ class MatchFlowService:
                 session.add(player_state)
                 player_states_by_player[participant.player_id] = player_state
             else:
-                player_state.report_status = self._determine_report_status(
-                    latest_report,
+                player_state.report_status = determine_report_status(
+                    self._build_latest_match_report_snapshot(latest_report),
                     final_result,
                 )
                 if player_state.approval_status == MatchApprovalStatus.PENDING:
@@ -1770,102 +1741,6 @@ class MatchFlowService:
             report_open_at=active_state.report_open_at,
             report_deadline_at=active_state.report_deadline_at,
             assigned=True,
-        )
-
-    def _determine_match_result(
-        self,
-        *,
-        latest_reports_by_player: dict[int, MatchReport],
-        parent_player_id: int | None,
-    ) -> tuple[MatchResult, bool]:
-        if not latest_reports_by_player:
-            return MatchResult.VOID, False
-
-        counts = Counter(report.normalized_result for report in latest_reports_by_player.values())
-        max_count = max(counts.values())
-        candidates = [result for result, count in counts.items() if count == max_count]
-        if len(candidates) == 1:
-            return candidates[0], False
-
-        if parent_player_id is not None:
-            parent_report = latest_reports_by_player.get(parent_player_id)
-            if parent_report is not None and parent_report.normalized_result in candidates:
-                return parent_report.normalized_result, False
-
-        return MatchResult.VOID, True
-
-    def _determine_admin_review_reasons(
-        self,
-        *,
-        participants: Sequence[MatchParticipant],
-        latest_reports_by_player: dict[int, MatchReport],
-        unresolved_tie: bool,
-        team_size: int,
-    ) -> list[str]:
-        reasons: list[str] = []
-        if len(latest_reports_by_player) < team_size:
-            reasons.append("low_report_count")
-
-        teams_with_reports = {
-            participant.team
-            for participant in participants
-            if participant.player_id in latest_reports_by_player
-        }
-        if latest_reports_by_player and len(teams_with_reports) == 1:
-            reasons.append("single_team_reports")
-
-        if unresolved_tie:
-            reasons.append("unresolved_tie")
-
-        return reasons
-
-    def _determine_report_status(
-        self,
-        latest_report: MatchReport | None,
-        final_result: MatchResult,
-    ) -> MatchReportStatus:
-        if latest_report is None:
-            return MatchReportStatus.NOT_REPORTED
-        if latest_report.normalized_result == final_result:
-            return MatchReportStatus.CORRECT
-        return MatchReportStatus.INCORRECT
-
-    def _determine_auto_penalty_type(
-        self,
-        *,
-        report_status: MatchReportStatus,
-        approval_status: MatchApprovalStatus,
-        apply_auto_penalties: bool,
-    ) -> PenaltyType | None:
-        if not apply_auto_penalties:
-            return None
-        if approval_status == MatchApprovalStatus.APPROVED:
-            return None
-        if report_status == MatchReportStatus.INCORRECT:
-            return PenaltyType.INCORRECT_REPORT
-        if report_status == MatchReportStatus.NOT_REPORTED:
-            return PenaltyType.NO_REPORT
-        return None
-
-    def _normalize_report_result(
-        self,
-        team: MatchParticipantTeam,
-        input_result: MatchReportInputResult,
-    ) -> MatchResult:
-        if input_result == MatchReportInputResult.DRAW:
-            return MatchResult.DRAW
-        if input_result == MatchReportInputResult.VOID:
-            return MatchResult.VOID
-        if team == MatchParticipantTeam.TEAM_A:
-            return (
-                MatchResult.TEAM_A_WIN
-                if input_result == MatchReportInputResult.WIN
-                else MatchResult.TEAM_B_WIN
-            )
-        return (
-            MatchResult.TEAM_B_WIN
-            if input_result == MatchReportInputResult.WIN
-            else MatchResult.TEAM_A_WIN
         )
 
     def _apply_penalty_adjustment(
@@ -2075,6 +1950,64 @@ class MatchFlowService:
             notification_context.mention_discord_user_id
         )
         participant.notification_recorded_at = recorded_at
+
+    def _build_match_participant_identities(
+        self,
+        participants: Sequence[MatchParticipant],
+    ) -> tuple[MatchParticipantIdentity, ...]:
+        return tuple(
+            MatchParticipantIdentity(
+                player_id=participant.player_id,
+                team=participant.team,
+            )
+            for participant in participants
+        )
+
+    def _build_latest_match_report_snapshot(
+        self,
+        latest_report: MatchReport | None,
+    ) -> LatestMatchReportSnapshot | None:
+        if latest_report is None:
+            return None
+        return LatestMatchReportSnapshot(
+            player_id=latest_report.player_id,
+            normalized_result=latest_report.normalized_result,
+        )
+
+    def _build_latest_match_report_snapshots_by_player(
+        self,
+        latest_reports_by_player: dict[int, MatchReport],
+    ) -> dict[int, LatestMatchReportSnapshot]:
+        return {
+            player_id: LatestMatchReportSnapshot(
+                player_id=report.player_id,
+                normalized_result=report.normalized_result,
+            )
+            for player_id, report in latest_reports_by_player.items()
+        }
+
+    def _build_historical_match_player_snapshot(
+        self,
+        player_result: FinalizedMatchPlayerResult,
+    ) -> HistoricalMatchPlayerSnapshot:
+        if (
+            player_result.rating_before is None
+            or player_result.games_played_before is None
+            or player_result.wins_before is None
+            or player_result.losses_before is None
+            or player_result.draws_before is None
+        ):
+            raise MatchFlowError("試合結果の補正に必要な開始時点状態が不足しています。")
+
+        return HistoricalMatchPlayerSnapshot(
+            player_id=player_result.player_id,
+            team=player_result.team,
+            rating_before=player_result.rating_before,
+            games_played_before=player_result.games_played_before,
+            wins_before=player_result.wins_before,
+            losses_before=player_result.losses_before,
+            draws_before=player_result.draws_before,
+        )
 
     def _get_match_participants(
         self,

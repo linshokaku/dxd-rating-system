@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
-from enum import StrEnum
+from datetime import datetime
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, sessionmaker
@@ -13,6 +12,11 @@ from dxd_rating.contexts.common.application.errors import (
     PlayerAccessRestrictionAlreadyExistsError,
     PlayerNotRegisteredError,
 )
+from dxd_rating.contexts.restrictions.domain import (
+    PlayerAccessRestrictionDuration,
+    build_access_restriction_expires_at,
+    normalize_access_restriction_reason,
+)
 from dxd_rating.platform.db.models import (
     Player,
     PlayerAccessRestriction,
@@ -22,28 +26,6 @@ from dxd_rating.platform.db.session import session_scope
 
 QUEUE_JOIN_RESTRICTED_MESSAGE = "現在キュー参加を制限されています。"
 SPECTATE_RESTRICTED_MESSAGE = "現在観戦を制限されています。"
-
-
-class PlayerAccessRestrictionDuration(StrEnum):
-    ONE_DAY = "1d"
-    THREE_DAYS = "3d"
-    SEVEN_DAYS = "7d"
-    FOURTEEN_DAYS = "14d"
-    TWENTY_EIGHT_DAYS = "28d"
-    FIFTY_SIX_DAYS = "56d"
-    EIGHTY_FOUR_DAYS = "84d"
-    PERMANENT = "permanent"
-
-
-_RESTRICTION_DURATION_DELTAS = {
-    PlayerAccessRestrictionDuration.ONE_DAY: timedelta(days=1),
-    PlayerAccessRestrictionDuration.THREE_DAYS: timedelta(days=3),
-    PlayerAccessRestrictionDuration.SEVEN_DAYS: timedelta(days=7),
-    PlayerAccessRestrictionDuration.FOURTEEN_DAYS: timedelta(days=14),
-    PlayerAccessRestrictionDuration.TWENTY_EIGHT_DAYS: timedelta(days=28),
-    PlayerAccessRestrictionDuration.FIFTY_SIX_DAYS: timedelta(days=56),
-    PlayerAccessRestrictionDuration.EIGHTY_FOUR_DAYS: timedelta(days=84),
-}
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,7 +100,7 @@ class PlayerAccessRestrictionService:
                 )
 
             current_time = self._get_database_now(session)
-            expires_at = self._build_expires_at(
+            expires_at = build_access_restriction_expires_at(
                 current_time=current_time,
                 duration=resolved_duration,
             )
@@ -128,7 +110,7 @@ class PlayerAccessRestrictionService:
                 created_at=current_time,
                 expires_at=expires_at,
                 created_by_admin_discord_user_id=admin_discord_user_id,
-                reason=self._normalize_reason(reason),
+                reason=normalize_access_restriction_reason(reason),
             )
             session.add(restriction)
             session.flush()
@@ -200,22 +182,6 @@ class PlayerAccessRestrictionService:
             raise InvalidPlayerAccessRestrictionDurationError(
                 f"Invalid duration: {duration}"
             ) from exc
-
-    def _build_expires_at(
-        self,
-        *,
-        current_time: datetime,
-        duration: PlayerAccessRestrictionDuration,
-    ) -> datetime | None:
-        if duration == PlayerAccessRestrictionDuration.PERMANENT:
-            return None
-        return current_time + _RESTRICTION_DURATION_DELTAS[duration]
-
-    def _normalize_reason(self, reason: str | None) -> str | None:
-        if reason is None:
-            return None
-        normalized_reason = reason.strip()
-        return normalized_reason or None
 
     def _ensure_player_exists(self, session: Session, player_id: int) -> Player:
         player = session.get(Player, player_id)

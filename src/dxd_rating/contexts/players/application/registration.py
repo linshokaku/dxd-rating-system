@@ -9,9 +9,15 @@ from dxd_rating.contexts.common.application.errors import (
     PlayerAlreadyRegisteredError,
     PlayerNotRegisteredError,
 )
+from dxd_rating.contexts.players.domain import (
+    build_dummy_player_display_name,
+    format_player_display_name,
+    resolve_player_display_name,
+    resolve_registered_display_name,
+)
 from dxd_rating.platform.db.models import MatchFormat, Player, PlayerFormatStats
 from dxd_rating.platform.db.session import session_scope
-from dxd_rating.shared.constants import get_match_format_definitions, is_dummy_discord_user_id
+from dxd_rating.shared.constants import get_match_format_definitions
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,35 +47,6 @@ class PlayerInfo:
             display_name=self.display_name,
         )
 
-
-def build_dummy_player_display_name(discord_user_id: int) -> str:
-    return f"<dummy_{discord_user_id}>"
-
-
-def format_player_display_name(*, discord_user_id: int, display_name: str | None) -> str:
-    if display_name is not None:
-        return display_name
-    return str(discord_user_id)
-
-
-def resolve_player_display_name(
-    *,
-    discord_user_id: int,
-    guild_display_name: str | None = None,
-    global_display_name: str | None = None,
-    username: str | None = None,
-) -> str | None:
-    if is_dummy_discord_user_id(discord_user_id):
-        return build_dummy_player_display_name(discord_user_id)
-
-    for candidate in (guild_display_name, global_display_name, username):
-        normalized_candidate = _normalize_display_name(candidate)
-        if normalized_candidate is not None:
-            return normalized_candidate
-
-    return None
-
-
 def register_player(
     session: Session,
     discord_user_id: int,
@@ -87,9 +64,10 @@ def register_player(
     session.add(player)
     session.flush()
 
-    resolved_display_name = display_name
-    if resolved_display_name is None and is_dummy_discord_user_id(discord_user_id):
-        resolved_display_name = build_dummy_player_display_name(discord_user_id)
+    resolved_display_name = resolve_registered_display_name(
+        discord_user_id=discord_user_id,
+        display_name=display_name,
+    )
 
     if resolved_display_name is not None:
         resolved_observed_at = _utcnow() if observed_at is None else observed_at
@@ -118,9 +96,10 @@ def update_player_identity(
     if player is None:
         return False
 
-    resolved_display_name = display_name
-    if resolved_display_name is None and is_dummy_discord_user_id(discord_user_id):
-        resolved_display_name = build_dummy_player_display_name(discord_user_id)
+    resolved_display_name = resolve_registered_display_name(
+        discord_user_id=discord_user_id,
+        display_name=display_name,
+    )
     if resolved_display_name is None:
         return False
 
@@ -204,17 +183,6 @@ class PlayerLookupService:
                 for format_definition in get_match_format_definitions()
             ),
         )
-
-
-def _normalize_display_name(value: object) -> str | None:
-    if not isinstance(value, str):
-        return None
-
-    normalized_value = value.strip()
-    if normalized_value == "":
-        return None
-    return normalized_value
-
 
 def _resolve_discord_user_identity(discord_user: Any) -> tuple[int, str | None]:
     discord_user_id = getattr(discord_user, "id", None)

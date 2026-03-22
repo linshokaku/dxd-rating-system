@@ -10,12 +10,12 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
-from bot.constants import (
+from dxd_rating.constants import (
     MatchQueueClassDefinition,
     get_match_queue_class_definition_by_id,
     get_match_queue_class_definition_by_name,
 )
-from bot.models import (
+from dxd_rating.models import (
     Match,
     MatchFormat,
     MatchParticipant,
@@ -29,7 +29,7 @@ from bot.models import (
     PlayerAccessRestrictionType,
     PlayerFormatStats,
 )
-from bot.services import (
+from dxd_rating.services import (
     MATCH_QUEUE_TTL,
     InvalidQueueNameError,
     MatchingQueueNotificationContext,
@@ -749,7 +749,7 @@ def test_process_expire_marks_waiting_entry_expired_creates_outbox_and_logs(
     )
     service = create_matching_queue_service(session_factory)
 
-    with caplog.at_level(logging.INFO, logger="bot.services.matching_queue"):
+    with caplog.at_level(logging.INFO, logger="dxd_rating.services.matching_queue"):
         first_result = service.process_expire(entry.id, expected_revision=1)
         second_result = service.process_expire(entry.id, expected_revision=1)
 

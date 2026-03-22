@@ -9,9 +9,9 @@ import discord
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
-from bot.commands import BotCommandHandlers, register_app_commands
-from bot.config import Settings
-from bot.models import (
+from dxd_rating.commands import BotCommandHandlers, register_app_commands
+from dxd_rating.config import Settings
+from dxd_rating.models import (
     MatchFormat,
     MatchQueueEntry,
     MatchQueueEntryStatus,
@@ -23,8 +23,8 @@ from bot.models import (
     PlayerFormatStats,
     PlayerPenalty,
 )
-from bot.runtime import MatchRuntime
-from bot.services import (
+from dxd_rating.runtime import MatchRuntime
+from dxd_rating.services import (
     MatchFlowService,
     MatchingQueueNotificationContext,
     MatchingQueueService,

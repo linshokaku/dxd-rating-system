@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from bot.models import MatchParticipantTeam, MatchResult
-from bot.services.rating import RatingParticipantSnapshot, calculate_rating_updates
+from dxd_rating.models import MatchParticipantTeam, MatchResult
+from dxd_rating.services.rating import RatingParticipantSnapshot, calculate_rating_updates
 
 
 def build_equal_rating_snapshots(

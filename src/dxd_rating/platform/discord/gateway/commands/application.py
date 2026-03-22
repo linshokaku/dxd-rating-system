@@ -1,0 +1,1847 @@
+from __future__ import annotations
+
+import asyncio
+import logging
+import re
+from typing import Any, Protocol, cast
+
+import discord
+from discord import app_commands
+from sqlalchemy.orm import Session, sessionmaker
+
+from dxd_rating.config import Settings
+from dxd_rating.platform.db.models import (
+    MatchFormat,
+    MatchReportInputResult,
+    MatchResult,
+    PenaltyType,
+    PlayerAccessRestrictionType,
+)
+from dxd_rating.platform.db.session import session_scope
+from dxd_rating.services import (
+    InvalidMatchFormatError,
+    InvalidPlayerAccessRestrictionDurationError,
+    InvalidPlayerAccessRestrictionTypeError,
+    InvalidQueueNameError,
+    JoinQueueResult,
+    LeaveQueueResult,
+    MatchFlowError,
+    MatchingQueueNotificationContext,
+    MatchReportSubmissionResult,
+    MatchSpectateResult,
+    MatchSpectatingRestrictedError,
+    PlayerAccessRestrictionAlreadyExistsError,
+    PlayerAccessRestrictionDuration,
+    PlayerAccessRestrictionService,
+    PlayerAlreadyRegisteredError,
+    PlayerIdentityService,
+    PlayerInfo,
+    PlayerLookupService,
+    PlayerNotRegisteredError,
+    PlayerPenaltyAdjustmentResult,
+    PresentQueueResult,
+    QueueAlreadyJoinedError,
+    QueueJoinNotAllowedError,
+    QueueJoinRestrictedError,
+    QueueNotJoinedError,
+    register_player,
+)
+from dxd_rating.shared.constants import (
+    MATCH_FORMAT_CHOICES,
+    MATCH_QUEUE_NAME_CHOICES,
+    is_dummy_discord_user_id,
+)
+
+REGISTER_SUCCESS_MESSAGE = "登録が完了しました。"
+REGISTER_ALREADY_REGISTERED_MESSAGE = "すでに登録済みです。"
+REGISTER_FAILED_MESSAGE = "登録に失敗しました。管理者に確認してください。"
+
+PLAYER_REGISTRATION_REQUIRED_MESSAGE = (
+    "プレイヤー登録が必要です。先に /register を実行してください。"
+)
+INVALID_QUEUE_NAME_MESSAGE = "指定したキューは存在しません。"
+QUEUE_JOIN_NOT_ALLOWED_MESSAGE = "現在のレーティングではそのキューに参加できません。"
+QUEUE_JOIN_RESTRICTED_MESSAGE = "現在キュー参加を制限されています。"
+JOIN_ALREADY_JOINED_MESSAGE = "すでにキュー参加中です。"
+PRESENT_NOT_JOINED_MESSAGE = "キューに参加していません。"
+JOIN_FAILED_MESSAGE = "キュー参加に失敗しました。管理者に確認してください。"
+PRESENT_FAILED_MESSAGE = "在席更新に失敗しました。管理者に確認してください。"
+LEAVE_FAILED_MESSAGE = "キュー退出に失敗しました。管理者に確認してください。"
+PLAYER_INFO_FAILED_MESSAGE = "プレイヤー情報の取得に失敗しました。管理者に確認してください。"
+
+MATCH_PARENT_SUCCESS_MESSAGE = "親に立候補しました。"
+MATCH_SPECTATE_RESTRICTED_MESSAGE = "現在観戦を制限されています。"
+MATCH_SPECTATE_FAILED_MESSAGE = "観戦応募に失敗しました。管理者に確認してください。"
+MATCH_REPORT_SUCCESS_MESSAGE = "勝敗報告を受け付けました。"
+MATCH_APPROVE_SUCCESS_MESSAGE = "仮決定結果を承認しました。"
+MATCH_ACTION_FAILED_MESSAGE = "試合操作に失敗しました。管理者に確認してください。"
+
+ADMIN_ONLY_MESSAGE = "このコマンドは管理者のみ実行できます。"
+INVALID_DISCORD_USER_ID_MESSAGE = "discord_user_id が不正です。"
+INVALID_ADMIN_TARGET_USER_MESSAGE = "対象ユーザーの指定が不正です。"
+ADMIN_MATCH_RESULT_SUCCESS_MESSAGE = "試合結果を上書きしました。"
+ADMIN_MATCH_RESULT_FAILED_MESSAGE = "試合結果の上書きに失敗しました。管理者に確認してください。"
+ADMIN_TARGET_NOT_REGISTERED_MESSAGE = "指定したユーザーは未登録です。"
+ADMIN_RESTRICTION_FAILED_MESSAGE = "利用制限の設定に失敗しました。管理者に確認してください。"
+ADMIN_UNRESTRICTION_FAILED_MESSAGE = "利用制限の解除に失敗しました。管理者に確認してください。"
+ADMIN_RESTRICTION_ALREADY_EXISTS_MESSAGE = "指定したユーザーにはすでに同種別の制限が有効です。"
+INVALID_RESTRICTION_TYPE_MESSAGE = "restriction_type が不正です。"
+INVALID_RESTRICTION_DURATION_MESSAGE = "duration が不正です。"
+ADMIN_PENALTY_ADD_SUCCESS_MESSAGE = "ペナルティを加算しました。"
+ADMIN_PENALTY_SUB_SUCCESS_MESSAGE = "ペナルティを減算しました。"
+ADMIN_PENALTY_FAILED_MESSAGE = "ペナルティ操作に失敗しました。管理者に確認してください。"
+
+DEV_REGISTER_SUCCESS_MESSAGE = "ダミーユーザーを登録しました。"
+DEV_REGISTER_ALREADY_REGISTERED_MESSAGE = "指定したユーザーはすでに登録済みです。"
+DEV_REGISTER_FAILED_MESSAGE = "ダミーユーザーの登録に失敗しました。管理者に確認してください。"
+
+DEV_TARGET_NOT_REGISTERED_MESSAGE = "指定したユーザーは未登録です。"
+DEV_JOIN_SUCCESS_MESSAGE = "指定したユーザーをキューに参加させました。"
+DEV_INVALID_QUEUE_NAME_MESSAGE = "指定したキューは存在しません。"
+DEV_JOIN_ALREADY_JOINED_MESSAGE = "指定したユーザーはすでにキュー参加中です。"
+DEV_JOIN_NOT_ALLOWED_MESSAGE = (
+    "指定したユーザーは現在のレーティングではそのキューに参加できません。"
+)
+DEV_JOIN_RESTRICTED_MESSAGE = "指定したユーザーは現在キュー参加を制限されています。"
+DEV_JOIN_FAILED_MESSAGE = "ダミーユーザーのキュー参加に失敗しました。管理者に確認してください。"
+
+DEV_PRESENT_SUCCESS_MESSAGE = "指定したユーザーの在席を更新しました。"
+DEV_PRESENT_NOT_JOINED_MESSAGE = "指定したユーザーはキューに参加していません。"
+DEV_PRESENT_EXPIRED_MESSAGE = "指定したユーザーは期限切れのためキューから外れました。"
+DEV_PRESENT_FAILED_MESSAGE = "ダミーユーザーの在席更新に失敗しました。管理者に確認してください。"
+
+DEV_LEAVE_SUCCESS_MESSAGE = "指定したユーザーをキューから退出させました。"
+DEV_LEAVE_EXPIRED_MESSAGE = "指定したユーザーはすでに期限切れでキューから外れています。"
+DEV_LEAVE_FAILED_MESSAGE = "ダミーユーザーのキュー退出に失敗しました。管理者に確認してください。"
+DEV_PLAYER_INFO_FAILED_MESSAGE = (
+    "指定したユーザーのプレイヤー情報取得に失敗しました。管理者に確認してください。"
+)
+
+DEV_MATCH_PARENT_SUCCESS_MESSAGE = "指定したユーザーを親に立候補させました。"
+DEV_MATCH_SPECTATE_SUCCESS_MESSAGE = "指定したユーザーの観戦応募を受け付けました。"
+DEV_MATCH_SPECTATE_RESTRICTED_MESSAGE = "指定したユーザーは現在観戦を制限されています。"
+DEV_MATCH_REPORT_SUCCESS_MESSAGE = "指定したユーザーの勝敗報告を受け付けました。"
+DEV_MATCH_APPROVE_SUCCESS_MESSAGE = "指定したユーザーが仮決定結果を承認しました。"
+DEV_MATCH_ACTION_FAILED_MESSAGE = (
+    "ダミーユーザーの試合操作に失敗しました。管理者に確認してください。"
+)
+
+DEV_IS_ADMIN_ERROR_MESSAGE = "エラーが発生しました。管理者に確認してください。"
+
+PLAYER_ACCESS_RESTRICTION_TYPE_LABELS = {
+    PlayerAccessRestrictionType.QUEUE_JOIN: "キュー参加",
+    PlayerAccessRestrictionType.SPECTATE: "観戦",
+}
+PLAYER_ACCESS_RESTRICTION_DURATION_LABELS = {
+    PlayerAccessRestrictionDuration.ONE_DAY: "1日",
+    PlayerAccessRestrictionDuration.THREE_DAYS: "3日",
+    PlayerAccessRestrictionDuration.SEVEN_DAYS: "7日",
+    PlayerAccessRestrictionDuration.FOURTEEN_DAYS: "14日",
+    PlayerAccessRestrictionDuration.TWENTY_EIGHT_DAYS: "28日",
+    PlayerAccessRestrictionDuration.FIFTY_SIX_DAYS: "56日",
+    PlayerAccessRestrictionDuration.EIGHTY_FOUR_DAYS: "84日",
+    PlayerAccessRestrictionDuration.PERMANENT: "永久",
+}
+
+DUMMY_USER_REFERENCE_PATTERN = re.compile(r"<dummy_(\d+)>")
+
+
+def is_super_admin(user_id: int, settings: Settings) -> bool:
+    return user_id in settings.super_admin_user_ids
+
+
+class DiscordUserLike(Protocol):
+    id: int
+
+
+class MatchingQueueCommandService(Protocol):
+    async def join_queue(
+        self,
+        player_id: int,
+        match_format: MatchFormat | str,
+        queue_name: str,
+        *,
+        notification_context: MatchingQueueNotificationContext | None = None,
+    ) -> JoinQueueResult: ...
+
+    async def present(
+        self,
+        player_id: int,
+        *,
+        notification_context: MatchingQueueNotificationContext | None = None,
+    ) -> PresentQueueResult: ...
+
+    async def leave(self, player_id: int) -> LeaveQueueResult: ...
+
+
+class MatchCommandService(Protocol):
+    async def volunteer_parent(
+        self,
+        match_id: int,
+        player_id: int,
+        *,
+        notification_context: MatchingQueueNotificationContext | None = None,
+    ) -> object: ...
+
+    async def spectate_match(
+        self,
+        match_id: int,
+        player_id: int,
+    ) -> MatchSpectateResult: ...
+
+    async def submit_match_report(
+        self,
+        match_id: int,
+        player_id: int,
+        input_result: MatchReportInputResult,
+        *,
+        notification_context: MatchingQueueNotificationContext | None = None,
+    ) -> MatchReportSubmissionResult: ...
+
+    async def approve_match_result(
+        self,
+        match_id: int,
+        player_id: int,
+        *,
+        notification_context: MatchingQueueNotificationContext | None = None,
+    ) -> object: ...
+
+    async def admin_override_match_result(
+        self,
+        match_id: int,
+        final_result: MatchResult,
+        *,
+        admin_discord_user_id: int,
+    ) -> object: ...
+
+    async def adjust_penalty(
+        self,
+        player_id: int,
+        penalty_type: PenaltyType,
+        delta: int,
+        *,
+        admin_discord_user_id: int,
+    ) -> PlayerPenaltyAdjustmentResult: ...
+
+
+class PlayerAccessRestrictionCommandService(Protocol):
+    def restrict_player_access(
+        self,
+        player_id: int,
+        restriction_type: PlayerAccessRestrictionType | str,
+        duration: PlayerAccessRestrictionDuration | str,
+        *,
+        admin_discord_user_id: int,
+        reason: str | None = None,
+    ) -> object: ...
+
+    def unrestrict_player_access(
+        self,
+        player_id: int,
+        restriction_type: PlayerAccessRestrictionType | str,
+        *,
+        admin_discord_user_id: int,
+    ) -> object: ...
+
+
+class BotCommandHandlers:
+    def __init__(
+        self,
+        settings: Settings,
+        session_factory: sessionmaker[Session],
+        *,
+        matching_queue_service: MatchingQueueCommandService | None = None,
+        match_service: MatchCommandService | None = None,
+        player_access_restriction_service: PlayerAccessRestrictionCommandService | None = None,
+        player_lookup_service: PlayerLookupService | None = None,
+        player_identity_service: PlayerIdentityService | None = None,
+        logger: logging.Logger | None = None,
+    ) -> None:
+        self.settings = settings
+        self.session_factory = session_factory
+        self.logger = logger or logging.getLogger(__name__)
+        self._matching_queue_service = matching_queue_service
+        self._match_service = match_service
+        self._player_access_restriction_service = (
+            player_access_restriction_service or PlayerAccessRestrictionService(session_factory)
+        )
+        self.player_identity_service = player_identity_service or PlayerIdentityService(
+            session_factory
+        )
+        if (
+            self._match_service is None
+            and matching_queue_service is not None
+            and hasattr(
+                matching_queue_service,
+                "volunteer_parent",
+            )
+        ):
+            self._match_service = cast(MatchCommandService, matching_queue_service)
+        self.player_lookup_service = player_lookup_service or PlayerLookupService(session_factory)
+
+    @property
+    def matching_queue_service(self) -> MatchingQueueCommandService | None:
+        return self._matching_queue_service
+
+    @matching_queue_service.setter
+    def matching_queue_service(self, service: MatchingQueueCommandService | None) -> None:
+        self._matching_queue_service = service
+        if service is not None and hasattr(service, "volunteer_parent"):
+            self._match_service = cast(MatchCommandService, service)
+
+    @property
+    def match_service(self) -> MatchCommandService | None:
+        return self._match_service
+
+    @match_service.setter
+    def match_service(self, service: MatchCommandService | None) -> None:
+        self._match_service = service
+
+    async def register(self, interaction: discord.Interaction[Any]) -> None:
+        await self._sync_requesting_user_identity(interaction)
+        try:
+            await asyncio.to_thread(self._register_player, interaction.user.id)
+        except PlayerAlreadyRegisteredError:
+            await self._send_message(interaction, REGISTER_ALREADY_REGISTERED_MESSAGE)
+            return
+        except Exception:
+            self.logger.exception(
+                "Failed to execute /register command discord_user_id=%s",
+                interaction.user.id,
+            )
+            await self._send_message(interaction, REGISTER_FAILED_MESSAGE)
+            return
+
+        await self._sync_requesting_user_identity(interaction)
+        await self._send_message(interaction, REGISTER_SUCCESS_MESSAGE)
+
+    async def join(
+        self,
+        interaction: discord.Interaction[Any],
+        match_format: str,
+        queue_name: str,
+    ) -> None:
+        await self._sync_requesting_user_identity(interaction)
+        try:
+            notification_context = self._build_notification_context(interaction)
+            player_id = await asyncio.to_thread(self._lookup_player_id, interaction.user.id)
+            service = self._require_matching_queue_service()
+            result = await service.join_queue(
+                player_id,
+                match_format,
+                queue_name,
+                notification_context=notification_context,
+            )
+        except PlayerNotRegisteredError:
+            await self._send_message(interaction, PLAYER_REGISTRATION_REQUIRED_MESSAGE)
+            return
+        except InvalidMatchFormatError:
+            await self._send_message(interaction, "指定したフォーマットは存在しません。")
+            return
+        except InvalidQueueNameError:
+            await self._send_message(interaction, INVALID_QUEUE_NAME_MESSAGE)
+            return
+        except QueueJoinNotAllowedError:
+            await self._send_message(interaction, QUEUE_JOIN_NOT_ALLOWED_MESSAGE)
+            return
+        except QueueJoinRestrictedError:
+            await self._send_message(interaction, QUEUE_JOIN_RESTRICTED_MESSAGE)
+            return
+        except QueueAlreadyJoinedError:
+            await self._send_message(interaction, JOIN_ALREADY_JOINED_MESSAGE)
+            return
+        except Exception:
+            self.logger.exception(
+                "Failed to execute /join command discord_user_id=%s match_format=%s queue_name=%s "
+                "channel_id=%s guild_id=%s",
+                interaction.user.id,
+                match_format,
+                queue_name,
+                interaction.channel_id,
+                interaction.guild_id,
+            )
+            await self._send_message(interaction, JOIN_FAILED_MESSAGE)
+            return
+
+        await self._send_message(interaction, result.message)
+
+    async def present(self, interaction: discord.Interaction[Any]) -> None:
+        await self._sync_requesting_user_identity(interaction)
+        try:
+            notification_context = self._build_notification_context(interaction)
+            player_id = await asyncio.to_thread(self._lookup_player_id, interaction.user.id)
+            service = self._require_matching_queue_service()
+            result = await service.present(
+                player_id,
+                notification_context=notification_context,
+            )
+        except PlayerNotRegisteredError:
+            await self._send_message(interaction, PLAYER_REGISTRATION_REQUIRED_MESSAGE)
+            return
+        except QueueNotJoinedError:
+            await self._send_message(interaction, PRESENT_NOT_JOINED_MESSAGE)
+            return
+        except Exception:
+            self.logger.exception(
+                "Failed to execute /present command discord_user_id=%s channel_id=%s guild_id=%s",
+                interaction.user.id,
+                interaction.channel_id,
+                interaction.guild_id,
+            )
+            await self._send_message(interaction, PRESENT_FAILED_MESSAGE)
+            return
+
+        await self._send_message(interaction, result.message)
+
+    async def leave(self, interaction: discord.Interaction[Any]) -> None:
+        await self._sync_requesting_user_identity(interaction)
+        try:
+            player_id = await asyncio.to_thread(self._lookup_player_id, interaction.user.id)
+            service = self._require_matching_queue_service()
+            result = await service.leave(player_id)
+        except PlayerNotRegisteredError:
+            await self._send_message(interaction, PLAYER_REGISTRATION_REQUIRED_MESSAGE)
+            return
+        except Exception:
+            self.logger.exception(
+                "Failed to execute /leave command discord_user_id=%s",
+                interaction.user.id,
+            )
+            await self._send_message(interaction, LEAVE_FAILED_MESSAGE)
+            return
+
+        await self._send_message(interaction, result.message)
+
+    async def player_info(self, interaction: discord.Interaction[Any]) -> None:
+        await self._sync_requesting_user_identity(interaction)
+        try:
+            player_info = await asyncio.to_thread(
+                self._lookup_player_info,
+                interaction.user.id,
+            )
+        except PlayerNotRegisteredError:
+            await self._send_message(interaction, PLAYER_REGISTRATION_REQUIRED_MESSAGE)
+            return
+        except Exception:
+            self.logger.exception(
+                "Failed to execute /player_info command discord_user_id=%s",
+                interaction.user.id,
+            )
+            await self._send_message(interaction, PLAYER_INFO_FAILED_MESSAGE)
+            return
+
+        await self._send_message(interaction, self._format_player_info_message(player_info))
+
+    async def match_parent(self, interaction: discord.Interaction[Any], match_id: int) -> None:
+        await self._sync_requesting_user_identity(interaction)
+        await self._run_match_parent(
+            interaction=interaction,
+            match_id=match_id,
+            executor_discord_user_id=interaction.user.id,
+            success_message=MATCH_PARENT_SUCCESS_MESSAGE,
+            failure_message=MATCH_ACTION_FAILED_MESSAGE,
+        )
+
+    async def match_spectate(self, interaction: discord.Interaction[Any], match_id: int) -> None:
+        await self._sync_requesting_user_identity(interaction)
+        await self._run_match_spectate(
+            interaction=interaction,
+            match_id=match_id,
+            executor_discord_user_id=interaction.user.id,
+            success_message=None,
+            failure_message=MATCH_SPECTATE_FAILED_MESSAGE,
+        )
+
+    async def match_win(self, interaction: discord.Interaction[Any], match_id: int) -> None:
+        await self._sync_requesting_user_identity(interaction)
+        await self._run_match_report(
+            interaction=interaction,
+            match_id=match_id,
+            executor_discord_user_id=interaction.user.id,
+            input_result=MatchReportInputResult.WIN,
+            success_message=MATCH_REPORT_SUCCESS_MESSAGE,
+            failure_message=MATCH_ACTION_FAILED_MESSAGE,
+        )
+
+    async def match_lose(self, interaction: discord.Interaction[Any], match_id: int) -> None:
+        await self._sync_requesting_user_identity(interaction)
+        await self._run_match_report(
+            interaction=interaction,
+            match_id=match_id,
+            executor_discord_user_id=interaction.user.id,
+            input_result=MatchReportInputResult.LOSE,
+            success_message=MATCH_REPORT_SUCCESS_MESSAGE,
+            failure_message=MATCH_ACTION_FAILED_MESSAGE,
+        )
+
+    async def match_draw(self, interaction: discord.Interaction[Any], match_id: int) -> None:
+        await self._sync_requesting_user_identity(interaction)
+        await self._run_match_report(
+            interaction=interaction,
+            match_id=match_id,
+            executor_discord_user_id=interaction.user.id,
+            input_result=MatchReportInputResult.DRAW,
+            success_message=MATCH_REPORT_SUCCESS_MESSAGE,
+            failure_message=MATCH_ACTION_FAILED_MESSAGE,
+        )
+
+    async def match_void(self, interaction: discord.Interaction[Any], match_id: int) -> None:
+        await self._sync_requesting_user_identity(interaction)
+        await self._run_match_report(
+            interaction=interaction,
+            match_id=match_id,
+            executor_discord_user_id=interaction.user.id,
+            input_result=MatchReportInputResult.VOID,
+            success_message=MATCH_REPORT_SUCCESS_MESSAGE,
+            failure_message=MATCH_ACTION_FAILED_MESSAGE,
+        )
+
+    async def match_approve(self, interaction: discord.Interaction[Any], match_id: int) -> None:
+        await self._sync_requesting_user_identity(interaction)
+        try:
+            notification_context = self._build_notification_context(interaction)
+            player_id = await asyncio.to_thread(self._lookup_player_id, interaction.user.id)
+            service = self._require_match_service()
+            await service.approve_match_result(
+                match_id,
+                player_id,
+                notification_context=notification_context,
+            )
+        except PlayerNotRegisteredError:
+            await self._send_message(interaction, PLAYER_REGISTRATION_REQUIRED_MESSAGE)
+            return
+        except MatchFlowError as exc:
+            await self._send_message(interaction, str(exc))
+            return
+        except Exception:
+            self.logger.exception(
+                "Failed to execute /match_approve command discord_user_id=%s match_id=%s",
+                interaction.user.id,
+                match_id,
+            )
+            await self._send_message(interaction, MATCH_ACTION_FAILED_MESSAGE)
+            return
+
+        await self._send_message(interaction, MATCH_APPROVE_SUCCESS_MESSAGE)
+
+    async def admin_match_result(
+        self,
+        interaction: discord.Interaction[Any],
+        match_id: int,
+        result: str,
+    ) -> None:
+        if not await self._ensure_admin(interaction):
+            return
+
+        try:
+            service = self._require_match_service()
+            await service.admin_override_match_result(
+                match_id,
+                self._parse_match_result(result),
+                admin_discord_user_id=interaction.user.id,
+            )
+        except ValueError:
+            await self._send_message(interaction, "result が不正です。")
+            return
+        except MatchFlowError as exc:
+            await self._send_message(interaction, str(exc))
+            return
+        except Exception:
+            self.logger.exception(
+                "Failed to execute /admin_match_result command "
+                "executor_discord_user_id=%s match_id=%s result=%s",
+                interaction.user.id,
+                match_id,
+                result,
+            )
+            await self._send_message(interaction, ADMIN_MATCH_RESULT_FAILED_MESSAGE)
+            return
+
+        await self._send_message(interaction, ADMIN_MATCH_RESULT_SUCCESS_MESSAGE)
+
+    async def admin_add_penalty(
+        self,
+        interaction: discord.Interaction[Any],
+        penalty_type: PenaltyType,
+        *,
+        target_user: DiscordUserLike | None = None,
+        dummy_user: str | None = None,
+    ) -> None:
+        await self._run_admin_penalty(
+            interaction=interaction,
+            penalty_type=penalty_type,
+            delta=1,
+            success_message=ADMIN_PENALTY_ADD_SUCCESS_MESSAGE,
+            target_user=target_user,
+            dummy_user=dummy_user,
+        )
+
+    async def admin_sub_penalty(
+        self,
+        interaction: discord.Interaction[Any],
+        penalty_type: PenaltyType,
+        *,
+        target_user: DiscordUserLike | None = None,
+        dummy_user: str | None = None,
+    ) -> None:
+        await self._run_admin_penalty(
+            interaction=interaction,
+            penalty_type=penalty_type,
+            delta=-1,
+            success_message=ADMIN_PENALTY_SUB_SUCCESS_MESSAGE,
+            target_user=target_user,
+            dummy_user=dummy_user,
+        )
+
+    async def admin_restrict_user(
+        self,
+        interaction: discord.Interaction[Any],
+        restriction_type: str,
+        duration: str,
+        *,
+        target_user: DiscordUserLike | None = None,
+        dummy_user: str | None = None,
+        reason: str | None = None,
+    ) -> None:
+        if not await self._ensure_admin(interaction):
+            return
+
+        try:
+            await self._sync_admin_target_user_identity(target_user)
+            target_discord_user_id = self._resolve_admin_target_discord_user_id(
+                target_user=target_user,
+                dummy_user=dummy_user,
+            )
+            resolved_restriction_type = self._parse_restriction_type(restriction_type)
+            resolved_duration = self._parse_restriction_duration(duration)
+            player_id = await asyncio.to_thread(self._lookup_player_id, target_discord_user_id)
+            service = self._require_player_access_restriction_service()
+            await asyncio.to_thread(
+                service.restrict_player_access,
+                player_id,
+                resolved_restriction_type,
+                resolved_duration,
+                admin_discord_user_id=interaction.user.id,
+                reason=reason,
+            )
+        except ValueError:
+            await self._send_message(interaction, INVALID_ADMIN_TARGET_USER_MESSAGE)
+            return
+        except InvalidPlayerAccessRestrictionTypeError:
+            await self._send_message(interaction, INVALID_RESTRICTION_TYPE_MESSAGE)
+            return
+        except InvalidPlayerAccessRestrictionDurationError:
+            await self._send_message(interaction, INVALID_RESTRICTION_DURATION_MESSAGE)
+            return
+        except PlayerNotRegisteredError:
+            await self._send_message(interaction, ADMIN_TARGET_NOT_REGISTERED_MESSAGE)
+            return
+        except PlayerAccessRestrictionAlreadyExistsError:
+            await self._send_message(interaction, ADMIN_RESTRICTION_ALREADY_EXISTS_MESSAGE)
+            return
+        except Exception:
+            self.logger.exception(
+                "Failed to execute /admin_restrict_user command "
+                "executor_discord_user_id=%s target_discord_user_id=%s "
+                "restriction_type=%s duration=%s",
+                interaction.user.id,
+                self._format_admin_target_for_log(target_user=target_user, dummy_user=dummy_user),
+                restriction_type,
+                duration,
+            )
+            await self._send_message(interaction, ADMIN_RESTRICTION_FAILED_MESSAGE)
+            return
+
+        await self._send_message(
+            interaction,
+            (
+                f"指定したユーザーの"
+                f"{PLAYER_ACCESS_RESTRICTION_TYPE_LABELS[resolved_restriction_type]}を"
+                f"{PLAYER_ACCESS_RESTRICTION_DURATION_LABELS[resolved_duration]}制限しました。"
+            ),
+        )
+
+    async def admin_unrestrict_user(
+        self,
+        interaction: discord.Interaction[Any],
+        restriction_type: str,
+        *,
+        target_user: DiscordUserLike | None = None,
+        dummy_user: str | None = None,
+    ) -> None:
+        if not await self._ensure_admin(interaction):
+            return
+
+        try:
+            await self._sync_admin_target_user_identity(target_user)
+            target_discord_user_id = self._resolve_admin_target_discord_user_id(
+                target_user=target_user,
+                dummy_user=dummy_user,
+            )
+            resolved_restriction_type = self._parse_restriction_type(restriction_type)
+            player_id = await asyncio.to_thread(self._lookup_player_id, target_discord_user_id)
+            service = self._require_player_access_restriction_service()
+            await asyncio.to_thread(
+                service.unrestrict_player_access,
+                player_id,
+                resolved_restriction_type,
+                admin_discord_user_id=interaction.user.id,
+            )
+        except ValueError:
+            await self._send_message(interaction, INVALID_ADMIN_TARGET_USER_MESSAGE)
+            return
+        except InvalidPlayerAccessRestrictionTypeError:
+            await self._send_message(interaction, INVALID_RESTRICTION_TYPE_MESSAGE)
+            return
+        except PlayerNotRegisteredError:
+            await self._send_message(interaction, ADMIN_TARGET_NOT_REGISTERED_MESSAGE)
+            return
+        except Exception:
+            self.logger.exception(
+                "Failed to execute /admin_unrestrict_user command "
+                "executor_discord_user_id=%s target_discord_user_id=%s restriction_type=%s",
+                interaction.user.id,
+                self._format_admin_target_for_log(target_user=target_user, dummy_user=dummy_user),
+                restriction_type,
+            )
+            await self._send_message(interaction, ADMIN_UNRESTRICTION_FAILED_MESSAGE)
+            return
+
+        await self._send_message(
+            interaction,
+            (
+                f"指定したユーザーの"
+                f"{PLAYER_ACCESS_RESTRICTION_TYPE_LABELS[resolved_restriction_type]}制限を解除しました。"
+            ),
+        )
+
+    async def dev_register(
+        self,
+        interaction: discord.Interaction[Any],
+        discord_user_id: str,
+    ) -> None:
+        if not await self._ensure_admin(interaction):
+            return
+
+        try:
+            target_discord_user_id = self._parse_dummy_discord_user_id(discord_user_id)
+            await asyncio.to_thread(self._register_player, target_discord_user_id)
+        except ValueError:
+            await self._send_message(interaction, INVALID_DISCORD_USER_ID_MESSAGE)
+            return
+        except PlayerAlreadyRegisteredError:
+            await self._send_message(interaction, DEV_REGISTER_ALREADY_REGISTERED_MESSAGE)
+            return
+        except Exception:
+            self.logger.exception(
+                "Failed to execute /dev_register command "
+                "executor_discord_user_id=%s target_discord_user_id=%s",
+                interaction.user.id,
+                discord_user_id,
+            )
+            await self._send_message(interaction, DEV_REGISTER_FAILED_MESSAGE)
+            return
+
+        await self._send_message(interaction, DEV_REGISTER_SUCCESS_MESSAGE)
+
+    async def dev_join(
+        self,
+        interaction: discord.Interaction[Any],
+        match_format: str,
+        queue_name: str,
+        discord_user_id: str,
+    ) -> None:
+        if not await self._ensure_admin(interaction):
+            return
+
+        try:
+            target_discord_user_id = self._parse_discord_user_id(discord_user_id)
+            notification_context = self._build_notification_context(
+                interaction,
+                mention_discord_user_id=target_discord_user_id,
+            )
+            player_id = await asyncio.to_thread(self._lookup_player_id, target_discord_user_id)
+            service = self._require_matching_queue_service()
+            await service.join_queue(
+                player_id,
+                match_format,
+                queue_name,
+                notification_context=notification_context,
+            )
+        except ValueError:
+            await self._send_message(interaction, INVALID_DISCORD_USER_ID_MESSAGE)
+            return
+        except InvalidMatchFormatError:
+            await self._send_message(interaction, "指定したフォーマットは存在しません。")
+            return
+        except InvalidQueueNameError:
+            await self._send_message(interaction, DEV_INVALID_QUEUE_NAME_MESSAGE)
+            return
+        except PlayerNotRegisteredError:
+            await self._send_message(interaction, DEV_TARGET_NOT_REGISTERED_MESSAGE)
+            return
+        except QueueJoinNotAllowedError:
+            await self._send_message(interaction, DEV_JOIN_NOT_ALLOWED_MESSAGE)
+            return
+        except QueueJoinRestrictedError:
+            await self._send_message(interaction, DEV_JOIN_RESTRICTED_MESSAGE)
+            return
+        except QueueAlreadyJoinedError:
+            await self._send_message(interaction, DEV_JOIN_ALREADY_JOINED_MESSAGE)
+            return
+        except Exception:
+            self.logger.exception(
+                "Failed to execute /dev_join command "
+                "executor_discord_user_id=%s target_discord_user_id=%s "
+                "match_format=%s queue_name=%s "
+                "channel_id=%s guild_id=%s",
+                interaction.user.id,
+                discord_user_id,
+                match_format,
+                queue_name,
+                interaction.channel_id,
+                interaction.guild_id,
+            )
+            await self._send_message(interaction, DEV_JOIN_FAILED_MESSAGE)
+            return
+
+        await self._send_message(interaction, DEV_JOIN_SUCCESS_MESSAGE)
+
+    async def dev_present(
+        self,
+        interaction: discord.Interaction[Any],
+        discord_user_id: str,
+    ) -> None:
+        if not await self._ensure_admin(interaction):
+            return
+
+        try:
+            target_discord_user_id = self._parse_discord_user_id(discord_user_id)
+            notification_context = self._build_notification_context(
+                interaction,
+                mention_discord_user_id=target_discord_user_id,
+            )
+            player_id = await asyncio.to_thread(self._lookup_player_id, target_discord_user_id)
+            service = self._require_matching_queue_service()
+            result = await service.present(
+                player_id,
+                notification_context=notification_context,
+            )
+        except ValueError:
+            await self._send_message(interaction, INVALID_DISCORD_USER_ID_MESSAGE)
+            return
+        except PlayerNotRegisteredError:
+            await self._send_message(interaction, DEV_TARGET_NOT_REGISTERED_MESSAGE)
+            return
+        except QueueNotJoinedError:
+            await self._send_message(interaction, DEV_PRESENT_NOT_JOINED_MESSAGE)
+            return
+        except Exception:
+            self.logger.exception(
+                "Failed to execute /dev_present command "
+                "executor_discord_user_id=%s target_discord_user_id=%s "
+                "channel_id=%s guild_id=%s",
+                interaction.user.id,
+                discord_user_id,
+                interaction.channel_id,
+                interaction.guild_id,
+            )
+            await self._send_message(interaction, DEV_PRESENT_FAILED_MESSAGE)
+            return
+
+        if result.expired:
+            await self._send_message(interaction, DEV_PRESENT_EXPIRED_MESSAGE)
+            return
+
+        await self._send_message(interaction, DEV_PRESENT_SUCCESS_MESSAGE)
+
+    async def dev_leave(
+        self,
+        interaction: discord.Interaction[Any],
+        discord_user_id: str,
+    ) -> None:
+        if not await self._ensure_admin(interaction):
+            return
+
+        try:
+            target_discord_user_id = self._parse_discord_user_id(discord_user_id)
+            player_id = await asyncio.to_thread(self._lookup_player_id, target_discord_user_id)
+            service = self._require_matching_queue_service()
+            result = await service.leave(player_id)
+        except ValueError:
+            await self._send_message(interaction, INVALID_DISCORD_USER_ID_MESSAGE)
+            return
+        except PlayerNotRegisteredError:
+            await self._send_message(interaction, DEV_TARGET_NOT_REGISTERED_MESSAGE)
+            return
+        except Exception:
+            self.logger.exception(
+                "Failed to execute /dev_leave command "
+                "executor_discord_user_id=%s target_discord_user_id=%s",
+                interaction.user.id,
+                discord_user_id,
+            )
+            await self._send_message(interaction, DEV_LEAVE_FAILED_MESSAGE)
+            return
+
+        if result.expired:
+            await self._send_message(interaction, DEV_LEAVE_EXPIRED_MESSAGE)
+            return
+
+        await self._send_message(interaction, DEV_LEAVE_SUCCESS_MESSAGE)
+
+    async def dev_player_info(
+        self,
+        interaction: discord.Interaction[Any],
+        discord_user_id: str,
+    ) -> None:
+        if not await self._ensure_admin(interaction):
+            return
+
+        try:
+            target_discord_user_id = self._parse_discord_user_id(discord_user_id)
+            player_info = await asyncio.to_thread(
+                self._lookup_player_info,
+                target_discord_user_id,
+            )
+        except ValueError:
+            await self._send_message(interaction, INVALID_DISCORD_USER_ID_MESSAGE)
+            return
+        except PlayerNotRegisteredError:
+            await self._send_message(interaction, DEV_TARGET_NOT_REGISTERED_MESSAGE)
+            return
+        except Exception:
+            self.logger.exception(
+                "Failed to execute /dev_player_info command "
+                "executor_discord_user_id=%s target_discord_user_id=%s",
+                interaction.user.id,
+                discord_user_id,
+            )
+            await self._send_message(interaction, DEV_PLAYER_INFO_FAILED_MESSAGE)
+            return
+
+        await self._send_message(interaction, self._format_player_info_message(player_info))
+
+    async def dev_match_parent(
+        self,
+        interaction: discord.Interaction[Any],
+        match_id: int,
+        discord_user_id: str,
+    ) -> None:
+        if not await self._ensure_admin(interaction):
+            return
+        try:
+            target_discord_user_id = self._parse_dummy_discord_user_id(discord_user_id)
+        except ValueError:
+            await self._send_message(interaction, INVALID_DISCORD_USER_ID_MESSAGE)
+            return
+        await self._run_match_parent(
+            interaction=interaction,
+            match_id=match_id,
+            executor_discord_user_id=target_discord_user_id,
+            success_message=DEV_MATCH_PARENT_SUCCESS_MESSAGE,
+            failure_message=DEV_MATCH_ACTION_FAILED_MESSAGE,
+        )
+
+    async def dev_match_spectate(
+        self,
+        interaction: discord.Interaction[Any],
+        match_id: int,
+        discord_user_id: str,
+    ) -> None:
+        if not await self._ensure_admin(interaction):
+            return
+
+        try:
+            target_discord_user_id = self._parse_dummy_discord_user_id(discord_user_id)
+        except ValueError:
+            await self._send_message(interaction, INVALID_DISCORD_USER_ID_MESSAGE)
+            return
+
+        await self._run_match_spectate(
+            interaction=interaction,
+            match_id=match_id,
+            executor_discord_user_id=target_discord_user_id,
+            success_message=DEV_MATCH_SPECTATE_SUCCESS_MESSAGE,
+            failure_message=DEV_MATCH_ACTION_FAILED_MESSAGE,
+        )
+
+    async def dev_match_win(
+        self,
+        interaction: discord.Interaction[Any],
+        match_id: int,
+        discord_user_id: str,
+    ) -> None:
+        await self._run_dev_match_report(
+            interaction=interaction,
+            match_id=match_id,
+            discord_user_id=discord_user_id,
+            input_result=MatchReportInputResult.WIN,
+        )
+
+    async def dev_match_lose(
+        self,
+        interaction: discord.Interaction[Any],
+        match_id: int,
+        discord_user_id: str,
+    ) -> None:
+        await self._run_dev_match_report(
+            interaction=interaction,
+            match_id=match_id,
+            discord_user_id=discord_user_id,
+            input_result=MatchReportInputResult.LOSE,
+        )
+
+    async def dev_match_draw(
+        self,
+        interaction: discord.Interaction[Any],
+        match_id: int,
+        discord_user_id: str,
+    ) -> None:
+        await self._run_dev_match_report(
+            interaction=interaction,
+            match_id=match_id,
+            discord_user_id=discord_user_id,
+            input_result=MatchReportInputResult.DRAW,
+        )
+
+    async def dev_match_void(
+        self,
+        interaction: discord.Interaction[Any],
+        match_id: int,
+        discord_user_id: str,
+    ) -> None:
+        await self._run_dev_match_report(
+            interaction=interaction,
+            match_id=match_id,
+            discord_user_id=discord_user_id,
+            input_result=MatchReportInputResult.VOID,
+        )
+
+    async def dev_match_approve(
+        self,
+        interaction: discord.Interaction[Any],
+        match_id: int,
+        discord_user_id: str,
+    ) -> None:
+        if not await self._ensure_admin(interaction):
+            return
+
+        try:
+            target_discord_user_id = self._parse_dummy_discord_user_id(discord_user_id)
+            notification_context = self._build_notification_context(
+                interaction,
+                mention_discord_user_id=target_discord_user_id,
+            )
+            player_id = await asyncio.to_thread(self._lookup_player_id, target_discord_user_id)
+            service = self._require_match_service()
+            await service.approve_match_result(
+                match_id,
+                player_id,
+                notification_context=notification_context,
+            )
+        except ValueError:
+            await self._send_message(interaction, INVALID_DISCORD_USER_ID_MESSAGE)
+            return
+        except PlayerNotRegisteredError:
+            await self._send_message(interaction, DEV_TARGET_NOT_REGISTERED_MESSAGE)
+            return
+        except MatchFlowError as exc:
+            await self._send_message(interaction, str(exc))
+            return
+        except Exception:
+            self.logger.exception(
+                "Failed to execute /dev_match_approve command "
+                "executor_discord_user_id=%s target_discord_user_id=%s match_id=%s",
+                interaction.user.id,
+                discord_user_id,
+                match_id,
+            )
+            await self._send_message(interaction, DEV_MATCH_ACTION_FAILED_MESSAGE)
+            return
+
+        await self._send_message(interaction, DEV_MATCH_APPROVE_SUCCESS_MESSAGE)
+
+    async def dev_is_admin(self, interaction: discord.Interaction[Any]) -> None:
+        await self._sync_requesting_user_identity(interaction)
+        try:
+            message = "はい" if is_super_admin(interaction.user.id, self.settings) else "いいえ"
+        except Exception:
+            self.logger.exception(
+                "Failed to execute /dev_is_admin command discord_user_id=%s",
+                interaction.user.id,
+            )
+            await self._send_message(interaction, DEV_IS_ADMIN_ERROR_MESSAGE)
+            return
+
+        await self._send_message(interaction, message)
+
+    async def _run_match_parent(
+        self,
+        *,
+        interaction: discord.Interaction[Any],
+        match_id: int,
+        executor_discord_user_id: int | None,
+        success_message: str,
+        failure_message: str,
+    ) -> None:
+        if executor_discord_user_id is None:
+            return
+
+        try:
+            notification_context = self._build_notification_context(
+                interaction,
+                mention_discord_user_id=executor_discord_user_id,
+            )
+            player_id = await asyncio.to_thread(self._lookup_player_id, executor_discord_user_id)
+            service = self._require_match_service()
+            await service.volunteer_parent(
+                match_id,
+                player_id,
+                notification_context=notification_context,
+            )
+        except PlayerNotRegisteredError:
+            message = (
+                PLAYER_REGISTRATION_REQUIRED_MESSAGE
+                if executor_discord_user_id == interaction.user.id
+                else DEV_TARGET_NOT_REGISTERED_MESSAGE
+            )
+            await self._send_message(interaction, message)
+            return
+        except MatchFlowError as exc:
+            await self._send_message(interaction, str(exc))
+            return
+        except Exception:
+            self.logger.exception(
+                "Failed to execute match_parent command executor_discord_user_id=%s match_id=%s",
+                executor_discord_user_id,
+                match_id,
+            )
+            await self._send_message(interaction, failure_message)
+            return
+
+        await self._send_message(interaction, success_message)
+
+    async def _run_match_spectate(
+        self,
+        *,
+        interaction: discord.Interaction[Any],
+        match_id: int,
+        executor_discord_user_id: int,
+        success_message: str | None,
+        failure_message: str,
+    ) -> None:
+        try:
+            player_id = await asyncio.to_thread(self._lookup_player_id, executor_discord_user_id)
+            service = self._require_match_service()
+            result = await service.spectate_match(match_id, player_id)
+        except PlayerNotRegisteredError:
+            message = (
+                PLAYER_REGISTRATION_REQUIRED_MESSAGE
+                if executor_discord_user_id == interaction.user.id
+                else DEV_TARGET_NOT_REGISTERED_MESSAGE
+            )
+            await self._send_message(interaction, message)
+            return
+        except MatchSpectatingRestrictedError:
+            message = (
+                MATCH_SPECTATE_RESTRICTED_MESSAGE
+                if executor_discord_user_id == interaction.user.id
+                else DEV_MATCH_SPECTATE_RESTRICTED_MESSAGE
+            )
+            await self._send_message(interaction, message)
+            return
+        except MatchFlowError as exc:
+            await self._send_message(interaction, str(exc))
+            return
+        except Exception:
+            self.logger.exception(
+                "Failed to execute match_spectate command executor_discord_user_id=%s match_id=%s",
+                executor_discord_user_id,
+                match_id,
+            )
+            await self._send_message(interaction, failure_message)
+            return
+
+        if success_message is not None:
+            await self._send_message(interaction, success_message)
+            return
+
+        await self._send_message(
+            interaction,
+            (
+                "観戦応募を受け付けました。"
+                f"現在 {result.active_spectator_count} / {result.max_spectators} 人です。"
+            ),
+        )
+
+    async def _run_match_report(
+        self,
+        *,
+        interaction: discord.Interaction[Any],
+        match_id: int,
+        executor_discord_user_id: int,
+        input_result: MatchReportInputResult,
+        success_message: str,
+        failure_message: str,
+    ) -> None:
+        try:
+            notification_context = self._build_notification_context(
+                interaction,
+                mention_discord_user_id=executor_discord_user_id,
+            )
+            player_id = await asyncio.to_thread(self._lookup_player_id, executor_discord_user_id)
+            service = self._require_match_service()
+            await service.submit_match_report(
+                match_id,
+                player_id,
+                input_result,
+                notification_context=notification_context,
+            )
+        except PlayerNotRegisteredError:
+            message = (
+                PLAYER_REGISTRATION_REQUIRED_MESSAGE
+                if executor_discord_user_id == interaction.user.id
+                else DEV_TARGET_NOT_REGISTERED_MESSAGE
+            )
+            await self._send_message(interaction, message)
+            return
+        except MatchFlowError as exc:
+            await self._send_message(interaction, str(exc))
+            return
+        except Exception:
+            self.logger.exception(
+                "Failed to execute match_report command "
+                "executor_discord_user_id=%s match_id=%s input_result=%s",
+                executor_discord_user_id,
+                match_id,
+                input_result.value,
+            )
+            await self._send_message(interaction, failure_message)
+            return
+
+        await self._send_message(interaction, success_message)
+
+    async def _run_dev_match_report(
+        self,
+        *,
+        interaction: discord.Interaction[Any],
+        discord_user_id: str,
+        match_id: int,
+        input_result: MatchReportInputResult,
+    ) -> None:
+        if not await self._ensure_admin(interaction):
+            return
+
+        try:
+            target_discord_user_id = self._parse_dummy_discord_user_id(discord_user_id)
+        except ValueError:
+            await self._send_message(interaction, INVALID_DISCORD_USER_ID_MESSAGE)
+            return
+
+        await self._run_match_report(
+            interaction=interaction,
+            match_id=match_id,
+            executor_discord_user_id=target_discord_user_id,
+            input_result=input_result,
+            success_message=DEV_MATCH_REPORT_SUCCESS_MESSAGE,
+            failure_message=DEV_MATCH_ACTION_FAILED_MESSAGE,
+        )
+
+    async def _run_admin_penalty(
+        self,
+        *,
+        interaction: discord.Interaction[Any],
+        penalty_type: PenaltyType,
+        delta: int,
+        success_message: str,
+        target_user: DiscordUserLike | None = None,
+        dummy_user: str | None = None,
+    ) -> None:
+        if not await self._ensure_admin(interaction):
+            return
+
+        try:
+            await self._sync_admin_target_user_identity(target_user)
+            target_discord_user_id = self._resolve_admin_target_discord_user_id(
+                target_user=target_user,
+                dummy_user=dummy_user,
+            )
+            player_id = await asyncio.to_thread(self._lookup_player_id, target_discord_user_id)
+            service = self._require_match_service()
+            await service.adjust_penalty(
+                player_id,
+                penalty_type,
+                delta,
+                admin_discord_user_id=interaction.user.id,
+            )
+        except ValueError:
+            await self._send_message(interaction, INVALID_ADMIN_TARGET_USER_MESSAGE)
+            return
+        except PlayerNotRegisteredError:
+            await self._send_message(interaction, ADMIN_TARGET_NOT_REGISTERED_MESSAGE)
+            return
+        except Exception:
+            self.logger.exception(
+                "Failed to execute admin penalty command executor_discord_user_id=%s "
+                "target_discord_user_id=%s penalty_type=%s delta=%s",
+                interaction.user.id,
+                self._format_admin_target_for_log(target_user=target_user, dummy_user=dummy_user),
+                penalty_type.value,
+                delta,
+            )
+            await self._send_message(interaction, ADMIN_PENALTY_FAILED_MESSAGE)
+            return
+
+        await self._send_message(interaction, success_message)
+
+    def _register_player(self, discord_user_id: int) -> None:
+        with session_scope(self.session_factory) as session:
+            register_player(session=session, discord_user_id=discord_user_id)
+
+    def _lookup_player_id(self, discord_user_id: int) -> int:
+        return self.player_lookup_service.get_player_id_by_discord_user_id(discord_user_id)
+
+    def _lookup_player_info(self, discord_user_id: int) -> PlayerInfo:
+        return self.player_lookup_service.get_player_info_by_discord_user_id(discord_user_id)
+
+    def _require_matching_queue_service(self) -> MatchingQueueCommandService:
+        if self._matching_queue_service is None:
+            raise RuntimeError("MatchingQueueService is not configured")
+        return self._matching_queue_service
+
+    def _require_match_service(self) -> MatchCommandService:
+        if self._match_service is None:
+            raise RuntimeError("MatchService is not configured")
+        return self._match_service
+
+    def _require_player_access_restriction_service(
+        self,
+    ) -> PlayerAccessRestrictionCommandService:
+        return self._player_access_restriction_service
+
+    def _build_notification_context(
+        self,
+        interaction: discord.Interaction[Any],
+        *,
+        mention_discord_user_id: int | None = None,
+    ) -> MatchingQueueNotificationContext:
+        if interaction.channel_id is None:
+            raise ValueError("interaction.channel_id is required")
+
+        return MatchingQueueNotificationContext(
+            channel_id=interaction.channel_id,
+            guild_id=interaction.guild_id,
+            mention_discord_user_id=(
+                interaction.user.id if mention_discord_user_id is None else mention_discord_user_id
+            ),
+        )
+
+    async def _ensure_admin(self, interaction: discord.Interaction[Any]) -> bool:
+        await self._sync_requesting_user_identity(interaction)
+        if is_super_admin(interaction.user.id, self.settings):
+            return True
+
+        await self._send_message(interaction, ADMIN_ONLY_MESSAGE)
+        return False
+
+    async def _sync_requesting_user_identity(
+        self,
+        interaction: discord.Interaction[Any],
+    ) -> None:
+        await asyncio.to_thread(self._best_effort_sync_discord_user, interaction.user)
+
+    async def _sync_admin_target_user_identity(
+        self,
+        target_user: DiscordUserLike | None,
+    ) -> None:
+        if target_user is None:
+            return
+
+        await asyncio.to_thread(self._best_effort_sync_discord_user, target_user)
+
+    def _best_effort_sync_discord_user(self, discord_user: DiscordUserLike | None) -> None:
+        if discord_user is None:
+            return
+
+        discord_user_id = getattr(discord_user, "id", None)
+        try:
+            self.player_identity_service.sync_discord_user(discord_user)
+        except Exception:
+            self.logger.exception(
+                "Failed to sync player identity cache discord_user_id=%s",
+                discord_user_id,
+            )
+
+    def _parse_discord_user_id(self, value: str) -> int:
+        normalized_value = value.strip()
+        if not normalized_value.isdigit():
+            raise ValueError("discord_user_id must contain only digits")
+
+        discord_user_id = int(normalized_value)
+        if discord_user_id <= 0:
+            raise ValueError("discord_user_id must be a positive integer")
+
+        return discord_user_id
+
+    def _parse_dummy_discord_user_id(self, value: str) -> int:
+        discord_user_id = self._parse_discord_user_id(value)
+        if not is_dummy_discord_user_id(discord_user_id):
+            raise ValueError("dummy discord_user_id must be between 1 and 1000")
+        return discord_user_id
+
+    def _parse_dummy_user_reference(self, value: str) -> int:
+        match = DUMMY_USER_REFERENCE_PATTERN.fullmatch(value.strip())
+        if match is None:
+            raise ValueError("dummy_user must be in <dummy_{dummy user id}> format")
+
+        return self._parse_dummy_discord_user_id(match.group(1))
+
+    def _resolve_admin_target_discord_user_id(
+        self,
+        *,
+        target_user: DiscordUserLike | None,
+        dummy_user: str | None,
+    ) -> int:
+        has_target_user = target_user is not None
+        has_dummy_user = dummy_user is not None and dummy_user.strip() != ""
+        if has_target_user == has_dummy_user:
+            raise ValueError("exactly one of target_user or dummy_user must be provided")
+
+        if target_user is not None:
+            return target_user.id
+
+        assert dummy_user is not None
+        return self._parse_dummy_user_reference(dummy_user)
+
+    def _format_admin_target_for_log(
+        self,
+        *,
+        target_user: DiscordUserLike | None,
+        dummy_user: str | None,
+    ) -> str:
+        if target_user is not None:
+            return str(target_user.id)
+
+        return repr(dummy_user)
+
+    def _parse_match_result(self, value: str) -> MatchResult:
+        return MatchResult(value)
+
+    def _parse_restriction_type(self, value: str) -> PlayerAccessRestrictionType:
+        try:
+            return PlayerAccessRestrictionType(value)
+        except ValueError as exc:
+            raise InvalidPlayerAccessRestrictionTypeError(
+                f"Invalid restriction_type: {value}"
+            ) from exc
+
+    def _parse_restriction_duration(self, value: str) -> PlayerAccessRestrictionDuration:
+        try:
+            return PlayerAccessRestrictionDuration(value)
+        except ValueError as exc:
+            raise InvalidPlayerAccessRestrictionDurationError(f"Invalid duration: {value}") from exc
+
+    def _format_player_info_message(self, player_info: PlayerInfo) -> str:
+        lines = ["プレイヤー情報"]
+        for format_stats in player_info.format_stats:
+            last_played_at = (
+                "-"
+                if format_stats.last_played_at is None
+                else format_stats.last_played_at.isoformat()
+            )
+            lines.extend(
+                [
+                    format_stats.match_format.value,
+                    f"rating: {format_stats.rating:.2f}",
+                    f"games_played: {format_stats.games_played}",
+                    f"wins: {format_stats.wins}",
+                    f"losses: {format_stats.losses}",
+                    f"draws: {format_stats.draws}",
+                    f"last_played_at: {last_played_at}",
+                ]
+            )
+        return "\n".join(lines)
+
+    async def _send_message(
+        self,
+        interaction: discord.Interaction[Any],
+        message: str,
+    ) -> None:
+        await interaction.response.send_message(message)
+
+
+def register_app_commands(
+    tree: app_commands.CommandTree[Any],
+    handlers: BotCommandHandlers,
+) -> None:
+    match_format_choices = [
+        app_commands.Choice(name=match_format, value=match_format)
+        for match_format in MATCH_FORMAT_CHOICES
+    ]
+    queue_name_choices = [
+        app_commands.Choice(name=queue_name, value=queue_name)
+        for queue_name in MATCH_QUEUE_NAME_CHOICES
+    ]
+    restriction_type_choices = [
+        app_commands.Choice(
+            name=PLAYER_ACCESS_RESTRICTION_TYPE_LABELS[restriction_type],
+            value=restriction_type.value,
+        )
+        for restriction_type in (
+            PlayerAccessRestrictionType.QUEUE_JOIN,
+            PlayerAccessRestrictionType.SPECTATE,
+        )
+    ]
+    restriction_duration_choices = [
+        app_commands.Choice(
+            name=PLAYER_ACCESS_RESTRICTION_DURATION_LABELS[duration],
+            value=duration.value,
+        )
+        for duration in (
+            PlayerAccessRestrictionDuration.ONE_DAY,
+            PlayerAccessRestrictionDuration.THREE_DAYS,
+            PlayerAccessRestrictionDuration.SEVEN_DAYS,
+            PlayerAccessRestrictionDuration.FOURTEEN_DAYS,
+            PlayerAccessRestrictionDuration.TWENTY_EIGHT_DAYS,
+            PlayerAccessRestrictionDuration.FIFTY_SIX_DAYS,
+            PlayerAccessRestrictionDuration.EIGHTY_FOUR_DAYS,
+            PlayerAccessRestrictionDuration.PERMANENT,
+        )
+    ]
+
+    @tree.command(name="register", description="プレイヤー登録を行います")
+    async def register_command(interaction: discord.Interaction[Any]) -> None:
+        await handlers.register(interaction)
+
+    @tree.command(name="join", description="マッチングキューに参加します")
+    @app_commands.describe(match_format="参加したいフォーマット", queue_name="参加したいキュー名")
+    @app_commands.choices(match_format=match_format_choices)
+    @app_commands.choices(queue_name=queue_name_choices)
+    async def join_command(
+        interaction: discord.Interaction[Any],
+        match_format: str,
+        queue_name: str,
+    ) -> None:
+        await handlers.join(interaction, match_format, queue_name)
+
+    @tree.command(name="present", description="在席を更新して期限を延長します")
+    async def present_command(interaction: discord.Interaction[Any]) -> None:
+        await handlers.present(interaction)
+
+    @tree.command(name="leave", description="マッチングキューから退出します")
+    async def leave_command(interaction: discord.Interaction[Any]) -> None:
+        await handlers.leave(interaction)
+
+    @tree.command(name="player_info", description="自分のプレイヤー情報を表示します")
+    async def player_info_command(interaction: discord.Interaction[Any]) -> None:
+        await handlers.player_info(interaction)
+
+    @tree.command(name="match_parent", description="試合の親に立候補します")
+    @app_commands.describe(match_id="対象の match_id")
+    async def match_parent_command(
+        interaction: discord.Interaction[Any],
+        match_id: int,
+    ) -> None:
+        await handlers.match_parent(interaction, match_id)
+
+    @tree.command(name="match_spectate", description="試合の観戦応募を行います")
+    @app_commands.describe(match_id="対象の match_id")
+    async def match_spectate_command(
+        interaction: discord.Interaction[Any],
+        match_id: int,
+    ) -> None:
+        await handlers.match_spectate(interaction, match_id)
+
+    @tree.command(name="match_win", description="自分視点で勝ちを報告します")
+    @app_commands.describe(match_id="対象の match_id")
+    async def match_win_command(interaction: discord.Interaction[Any], match_id: int) -> None:
+        await handlers.match_win(interaction, match_id)
+
+    @tree.command(name="match_lose", description="自分視点で負けを報告します")
+    @app_commands.describe(match_id="対象の match_id")
+    async def match_lose_command(interaction: discord.Interaction[Any], match_id: int) -> None:
+        await handlers.match_lose(interaction, match_id)
+
+    @tree.command(name="match_draw", description="引き分けを報告します")
+    @app_commands.describe(match_id="対象の match_id")
+    async def match_draw_command(interaction: discord.Interaction[Any], match_id: int) -> None:
+        await handlers.match_draw(interaction, match_id)
+
+    @tree.command(name="match_void", description="無効試合を報告します")
+    @app_commands.describe(match_id="対象の match_id")
+    async def match_void_command(interaction: discord.Interaction[Any], match_id: int) -> None:
+        await handlers.match_void(interaction, match_id)
+
+    @tree.command(name="match_approve", description="仮決定結果を承認します")
+    @app_commands.describe(match_id="対象の match_id")
+    async def match_approve_command(
+        interaction: discord.Interaction[Any],
+        match_id: int,
+    ) -> None:
+        await handlers.match_approve(interaction, match_id)
+
+    @tree.command(name="admin_match_result", description="試合結果を上書きします")
+    @app_commands.describe(match_id="対象の match_id", result="上書きする結果")
+    @app_commands.choices(
+        result=[
+            app_commands.Choice(name="チーム A の勝ち", value=MatchResult.TEAM_A_WIN.value),
+            app_commands.Choice(name="チーム B の勝ち", value=MatchResult.TEAM_B_WIN.value),
+            app_commands.Choice(name="引き分け", value=MatchResult.DRAW.value),
+            app_commands.Choice(name="無効試合", value=MatchResult.VOID.value),
+        ]
+    )
+    async def admin_match_result_command(
+        interaction: discord.Interaction[Any],
+        match_id: int,
+        result: str,
+    ) -> None:
+        await handlers.admin_match_result(interaction, match_id, result)
+
+    @tree.command(name="admin_restrict_user", description="ユーザーの利用権限を制限します")
+    @app_commands.describe(
+        restriction_type="制限したい権限",
+        duration="制限期間",
+        user="対象の Discord ユーザー",
+        dummy_user="対象のダミーユーザー。<dummy_123> 形式",
+        reason="制限理由",
+    )
+    @app_commands.choices(restriction_type=restriction_type_choices)
+    @app_commands.choices(duration=restriction_duration_choices)
+    async def admin_restrict_user_command(
+        interaction: discord.Interaction[Any],
+        restriction_type: str,
+        duration: str,
+        user: discord.Member | discord.User | None = None,
+        dummy_user: str | None = None,
+        reason: str | None = None,
+    ) -> None:
+        await handlers.admin_restrict_user(
+            interaction,
+            restriction_type,
+            duration,
+            target_user=user,
+            dummy_user=dummy_user,
+            reason=reason,
+        )
+
+    @tree.command(name="admin_unrestrict_user", description="ユーザーの利用権限制限を解除します")
+    @app_commands.describe(
+        restriction_type="解除したい制限種別",
+        user="対象の Discord ユーザー",
+        dummy_user="対象のダミーユーザー。<dummy_123> 形式",
+    )
+    @app_commands.choices(restriction_type=restriction_type_choices)
+    async def admin_unrestrict_user_command(
+        interaction: discord.Interaction[Any],
+        restriction_type: str,
+        user: discord.Member | discord.User | None = None,
+        dummy_user: str | None = None,
+    ) -> None:
+        await handlers.admin_unrestrict_user(
+            interaction,
+            restriction_type,
+            target_user=user,
+            dummy_user=dummy_user,
+        )
+
+    def register_penalty_commands(
+        *,
+        add_name: str,
+        sub_name: str,
+        description: str,
+        penalty_type: PenaltyType,
+    ) -> None:
+        @tree.command(name=add_name, description=f"{description} を +1 します")
+        @app_commands.describe(
+            user="対象の Discord ユーザー",
+            dummy_user="対象のダミーユーザー。<dummy_123> 形式",
+        )
+        async def add_command(
+            interaction: discord.Interaction[Any],
+            user: discord.Member | discord.User | None = None,
+            dummy_user: str | None = None,
+        ) -> None:
+            await handlers.admin_add_penalty(
+                interaction,
+                penalty_type,
+                target_user=user,
+                dummy_user=dummy_user,
+            )
+
+        @tree.command(name=sub_name, description=f"{description} を -1 します")
+        @app_commands.describe(
+            user="対象の Discord ユーザー",
+            dummy_user="対象のダミーユーザー。<dummy_123> 形式",
+        )
+        async def sub_command(
+            interaction: discord.Interaction[Any],
+            user: discord.Member | discord.User | None = None,
+            dummy_user: str | None = None,
+        ) -> None:
+            await handlers.admin_sub_penalty(
+                interaction,
+                penalty_type,
+                target_user=user,
+                dummy_user=dummy_user,
+            )
+
+        del add_command, sub_command
+
+    register_penalty_commands(
+        add_name="admin_add_incorrect_report",
+        sub_name="admin_sub_incorrect_report",
+        description="勝敗誤報告ペナルティ",
+        penalty_type=PenaltyType.INCORRECT_REPORT,
+    )
+    register_penalty_commands(
+        add_name="admin_add_no_report",
+        sub_name="admin_sub_no_report",
+        description="勝敗無報告ペナルティ",
+        penalty_type=PenaltyType.NO_REPORT,
+    )
+    register_penalty_commands(
+        add_name="admin_add_room_setup_delay",
+        sub_name="admin_sub_room_setup_delay",
+        description="部屋立て遅延ペナルティ",
+        penalty_type=PenaltyType.ROOM_SETUP_DELAY,
+    )
+    register_penalty_commands(
+        add_name="admin_add_match_mistake",
+        sub_name="admin_sub_match_mistake",
+        description="試合ミスペナルティ",
+        penalty_type=PenaltyType.MATCH_MISTAKE,
+    )
+    register_penalty_commands(
+        add_name="admin_add_late",
+        sub_name="admin_sub_late",
+        description="遅刻ペナルティ",
+        penalty_type=PenaltyType.LATE,
+    )
+    register_penalty_commands(
+        add_name="admin_add_disconnect",
+        sub_name="admin_sub_disconnect",
+        description="切断ペナルティ",
+        penalty_type=PenaltyType.DISCONNECT,
+    )
+
+    @tree.command(name="dev_register", description="任意の Discord user ID を登録します")
+    @app_commands.describe(discord_user_id="登録したい Discord user ID")
+    async def dev_register_command(
+        interaction: discord.Interaction[Any],
+        discord_user_id: str,
+    ) -> None:
+        await handlers.dev_register(interaction, discord_user_id)
+
+    @tree.command(name="dev_join", description="任意の Discord user ID をキュー参加させます")
+    @app_commands.describe(
+        match_format="参加させたいフォーマット",
+        queue_name="参加させたいキュー名",
+        discord_user_id="キュー参加させたい Discord user ID",
+    )
+    @app_commands.choices(match_format=match_format_choices)
+    @app_commands.choices(queue_name=queue_name_choices)
+    async def dev_join_command(
+        interaction: discord.Interaction[Any],
+        match_format: str,
+        queue_name: str,
+        discord_user_id: str,
+    ) -> None:
+        await handlers.dev_join(interaction, match_format, queue_name, discord_user_id)
+
+    @tree.command(name="dev_present", description="任意の Discord user ID の在席を更新します")
+    @app_commands.describe(discord_user_id="在席を更新したい Discord user ID")
+    async def dev_present_command(
+        interaction: discord.Interaction[Any],
+        discord_user_id: str,
+    ) -> None:
+        await handlers.dev_present(interaction, discord_user_id)
+
+    @tree.command(name="dev_leave", description="任意の Discord user ID をキューから退出させます")
+    @app_commands.describe(discord_user_id="キューから退出させたい Discord user ID")
+    async def dev_leave_command(
+        interaction: discord.Interaction[Any],
+        discord_user_id: str,
+    ) -> None:
+        await handlers.dev_leave(interaction, discord_user_id)
+
+    @tree.command(
+        name="dev_player_info",
+        description="任意の Discord user ID のプレイヤー情報を表示します",
+    )
+    @app_commands.describe(discord_user_id="表示したい Discord user ID")
+    async def dev_player_info_command(
+        interaction: discord.Interaction[Any],
+        discord_user_id: str,
+    ) -> None:
+        await handlers.dev_player_info(interaction, discord_user_id)
+
+    @tree.command(name="dev_match_parent", description="ダミーユーザーを親に立候補させます")
+    @app_commands.describe(match_id="対象の match_id", discord_user_id="対象の dummy_user_id")
+    async def dev_match_parent_command(
+        interaction: discord.Interaction[Any],
+        match_id: int,
+        discord_user_id: str,
+    ) -> None:
+        await handlers.dev_match_parent(interaction, match_id, discord_user_id)
+
+    @tree.command(name="dev_match_spectate", description="ダミーユーザーに観戦応募させます")
+    @app_commands.describe(match_id="対象の match_id", discord_user_id="対象の dummy_user_id")
+    async def dev_match_spectate_command(
+        interaction: discord.Interaction[Any],
+        match_id: int,
+        discord_user_id: str,
+    ) -> None:
+        await handlers.dev_match_spectate(interaction, match_id, discord_user_id)
+
+    @tree.command(name="dev_match_win", description="ダミーユーザーに勝ちを報告させます")
+    @app_commands.describe(match_id="対象の match_id", discord_user_id="対象の dummy_user_id")
+    async def dev_match_win_command(
+        interaction: discord.Interaction[Any],
+        match_id: int,
+        discord_user_id: str,
+    ) -> None:
+        await handlers.dev_match_win(interaction, match_id, discord_user_id)
+
+    @tree.command(name="dev_match_lose", description="ダミーユーザーに負けを報告させます")
+    @app_commands.describe(match_id="対象の match_id", discord_user_id="対象の dummy_user_id")
+    async def dev_match_lose_command(
+        interaction: discord.Interaction[Any],
+        match_id: int,
+        discord_user_id: str,
+    ) -> None:
+        await handlers.dev_match_lose(interaction, match_id, discord_user_id)
+
+    @tree.command(name="dev_match_draw", description="ダミーユーザーに引き分けを報告させます")
+    @app_commands.describe(match_id="対象の match_id", discord_user_id="対象の dummy_user_id")
+    async def dev_match_draw_command(
+        interaction: discord.Interaction[Any],
+        match_id: int,
+        discord_user_id: str,
+    ) -> None:
+        await handlers.dev_match_draw(interaction, match_id, discord_user_id)
+
+    @tree.command(name="dev_match_void", description="ダミーユーザーに無効試合を報告させます")
+    @app_commands.describe(match_id="対象の match_id", discord_user_id="対象の dummy_user_id")
+    async def dev_match_void_command(
+        interaction: discord.Interaction[Any],
+        match_id: int,
+        discord_user_id: str,
+    ) -> None:
+        await handlers.dev_match_void(interaction, match_id, discord_user_id)
+
+    @tree.command(
+        name="dev_match_approve",
+        description="ダミーユーザーに仮決定結果を承認させます",
+    )
+    @app_commands.describe(match_id="対象の match_id", discord_user_id="対象の dummy_user_id")
+    async def dev_match_approve_command(
+        interaction: discord.Interaction[Any],
+        match_id: int,
+        discord_user_id: str,
+    ) -> None:
+        await handlers.dev_match_approve(interaction, match_id, discord_user_id)
+
+    @tree.command(name="dev_is_admin", description="実行者が admin かどうかを確認します")
+    async def dev_is_admin_command(interaction: discord.Interaction[Any]) -> None:
+        await handlers.dev_is_admin(interaction)

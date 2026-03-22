@@ -6,7 +6,7 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from bot.models import (
+from dxd_rating.models import (
     MatchFormat,
     MatchQueueEntry,
     MatchQueueEntryStatus,
@@ -16,7 +16,7 @@ from bot.models import (
     PlayerAccessRestriction,
     PlayerAccessRestrictionType,
 )
-from bot.services import (
+from dxd_rating.services import (
     MatchFlowService,
     MatchingQueueNotificationContext,
     MatchingQueueService,

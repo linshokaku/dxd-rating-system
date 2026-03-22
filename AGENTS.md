@@ -50,15 +50,21 @@
 ## Directory Guidance
 ```text
 src/
-  bot/
+  dxd_rating/
+    apps/
+      bot/
+      worker/
     commands/
-    services/
-    runtime/
+    config.py
+    constants.py
     db/
     models/
-    config.py
-    main.py
-  jobs/
+    notifications/
+    runtime/
+    services/
+    contexts/
+    platform/
+    shared/
 tests/
 alembic/
 README.md
@@ -68,8 +74,10 @@ AGENTS.md
 ルール:
 
 * 責務の分離はする
-* ただし過剰なレイヤ分割は避ける
-* 初期段階で DDD 風の大規模構成にはしない
+* 既存の `dxd_rating` パッケージ境界は尊重する
+* `dxd_rating.services` / `dxd_rating.models` / `dxd_rating.db` / `dxd_rating.runtime` は公開 import 面として扱う
+* 業務ロジックは `contexts/`、インフラや Discord 接続は `platform/` に寄せる
+* ただし現在の構成以上に不要な抽象レイヤは増やさない
 * 1ファイルが巨大化しすぎたら分割する
 
 ---
@@ -131,7 +139,7 @@ Cron Job:
 ## Railway Deployment Guidelines
 
 * Railway 上でそのまま起動できる構成を維持する
-* Bot 本体とは別に、定期実行処理は `src/jobs/` 配下のモジュールとして実装する
+* Bot 本体とは別に、定期実行処理は `src/dxd_rating/apps/worker/` 配下のモジュールとして実装する
 * 定期実行は Railway Cron Job を利用し、スケジュールは Railway 側で管理する
 * Bot と Cron Job の起動コマンドを README.md に明記する
 * DB 接続先は Railway Postgres を前提とする

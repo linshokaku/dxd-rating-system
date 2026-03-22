@@ -6,9 +6,9 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
-import bot.services.match_flow as match_flow_module
-from bot.constants import MATCH_PARENT_SELECTION_WINDOW, get_match_format_definition
-from bot.models import (
+import dxd_rating.services.match_flow as match_flow_module
+from dxd_rating.constants import MATCH_PARENT_SELECTION_WINDOW, get_match_format_definition
+from dxd_rating.models import (
     INITIAL_RATING,
     ActiveMatchPlayerState,
     ActiveMatchState,
@@ -35,14 +35,14 @@ from bot.models import (
     PlayerPenalty,
     PlayerPenaltyAdjustment,
 )
-from bot.services import (
+from dxd_rating.services import (
     MatchFlowService,
     MatchingQueueNotificationContext,
     MatchingQueueService,
     PlayerAccessRestrictionDuration,
     PlayerAccessRestrictionService,
 )
-from bot.services.errors import (
+from dxd_rating.services.errors import (
     MatchNotFinalizedError,
     MatchParticipantError,
     MatchReportNotOpenError,
@@ -51,8 +51,8 @@ from bot.services.errors import (
     MatchSpectatorAlreadyRegisteredError,
     MatchSpectatorCapacityError,
 )
-from bot.services.rating import RatingParticipantSnapshot, calculate_rating_updates
-from bot.services.registration import register_player
+from dxd_rating.services.rating import RatingParticipantSnapshot, calculate_rating_updates
+from dxd_rating.services.registration import register_player
 
 DEFAULT_MATCH_FORMAT = MatchFormat.THREE_VS_THREE
 DEFAULT_QUEUE_NAME = "low"

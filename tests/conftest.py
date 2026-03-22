@@ -6,7 +6,7 @@ from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.engine import Connection
 from sqlalchemy.orm import Session, sessionmaker
 
-from bot.config import Settings
+from dxd_rating.config import Settings
 
 
 def get_database_url() -> str:

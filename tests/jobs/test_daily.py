@@ -3,7 +3,7 @@ import logging
 import pytest
 from sqlalchemy.orm import Session, sessionmaker
 
-from jobs.daily import JobSettings, load_settings, run_daily_jobs
+from dxd_rating.apps.worker.daily import JobSettings, load_settings, run_daily_jobs
 
 
 def test_load_settings_does_not_require_discord_token(monkeypatch: pytest.MonkeyPatch) -> None:

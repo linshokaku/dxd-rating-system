@@ -5,8 +5,8 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
-from bot.models import INITIAL_RATING, MatchFormat, Player, PlayerFormatStats
-from bot.services import (
+from dxd_rating.models import INITIAL_RATING, MatchFormat, Player, PlayerFormatStats
+from dxd_rating.services import (
     PlayerAlreadyRegisteredError,
     PlayerIdentityService,
     PlayerLookupService,

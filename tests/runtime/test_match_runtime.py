@@ -13,10 +13,13 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
-import bot.runtime.match_runtime as match_runtime_module
-import bot.runtime.outbox as outbox_runtime
-from bot.constants import PRESENCE_REMINDER_LEAD_TIME, get_match_queue_class_definition_by_name
-from bot.models import (
+import dxd_rating.runtime.match_runtime as match_runtime_module
+import dxd_rating.runtime.outbox as outbox_runtime
+from dxd_rating.constants import (
+    PRESENCE_REMINDER_LEAD_TIME,
+    get_match_queue_class_definition_by_name,
+)
+from dxd_rating.models import (
     Match,
     MatchFormat,
     MatchQueueEntry,
@@ -27,8 +30,8 @@ from bot.models import (
     OutboxEvent,
     OutboxEventType,
 )
-from bot.notifications import DiscordOutboxEventPublisher
-from bot.runtime import (
+from dxd_rating.notifications import DiscordOutboxEventPublisher
+from dxd_rating.runtime import (
     BotRuntime,
     BotRuntimeStartResult,
     MatchRuntime,
@@ -38,7 +41,7 @@ from bot.runtime import (
     OutboxStartupResult,
     PendingOutboxEvent,
 )
-from bot.services import (
+from dxd_rating.services import (
     MATCH_APPROVAL_REQUESTED_NOTIFICATION_MESSAGE,
     MATCH_APPROVAL_STARTED_NOTIFICATION_MESSAGE,
     MATCH_AUTO_PENALTY_APPLIED_NOTIFICATION_MESSAGE,
@@ -1454,7 +1457,7 @@ def test_outbox_dispatcher_fallback_poll_logs_warning_when_it_publishes(
         finally:
             await dispatcher.stop()
 
-    with caplog.at_level(logging.WARNING, logger="bot.runtime.outbox"):
+    with caplog.at_level(logging.WARNING, logger="dxd_rating.runtime.outbox"):
         asyncio.run(scenario())
 
     assert "Fallback outbox poll published events" in caplog.text

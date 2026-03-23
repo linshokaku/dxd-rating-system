@@ -50,6 +50,12 @@
   - ユーザー向け slash command
 - [commands/dev-commands.md](commands/dev-commands.md)
   - 開発者向け slash command
+- [ui/common.md](ui/common.md)
+  - Discord UI の共通仕様
+- [ui/register.md](ui/register.md)
+  - 公開チャンネルに設置する登録 UI
+- [ui/setup_channel.md](ui/setup_channel.md)
+  - UI 設置チャンネルの作成・撤収コマンド
 
 読み方の推奨順は以下とする。
 
@@ -64,3 +70,7 @@
 9. [rating/common.md](rating/common.md)
 10. [leaderboard/ranking.md](leaderboard/ranking.md)
 11. [leaderboard/snapshots.md](leaderboard/snapshots.md)
+12. [commands/user-commands.md](commands/user-commands.md)
+13. [ui/common.md](ui/common.md)
+14. [ui/setup_channel.md](ui/setup_channel.md)
+15. 必要な UI 別仕様

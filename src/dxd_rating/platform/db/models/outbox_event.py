@@ -54,3 +54,4 @@ class OutboxEvent(Base):
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    discarded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

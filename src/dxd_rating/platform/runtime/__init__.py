@@ -7,6 +7,7 @@ from dxd_rating.platform.runtime.match_runtime import (
 from dxd_rating.platform.runtime.outbox import (
     DEFAULT_OUTBOX_BATCH_SIZE,
     DEFAULT_OUTBOX_POLL_INTERVAL,
+    NonRetryableOutboxPublishError,
     NoopOutboxDispatcher,
     NoopOutboxEventPublisher,
     OutboxDispatcher,
@@ -23,6 +24,7 @@ __all__ = [
     "DEFAULT_RECONCILE_INTERVAL",
     "MatchRuntime",
     "MatchRuntimeSyncResult",
+    "NonRetryableOutboxPublishError",
     "NoopOutboxDispatcher",
     "NoopOutboxEventPublisher",
     "OutboxDispatcher",

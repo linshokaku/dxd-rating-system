@@ -21,7 +21,10 @@ from dxd_rating.contexts.matchmaking.application import (
     QUEUE_EXPIRED_NOTIFICATION_MESSAGE,
 )
 from dxd_rating.platform.db.models import OutboxEventType
-from dxd_rating.platform.runtime.outbox import PendingOutboxEvent
+from dxd_rating.platform.runtime.outbox import (
+    NonRetryableOutboxPublishError,
+    PendingOutboxEvent,
+)
 from dxd_rating.shared.constants import format_discord_user_mention
 
 
@@ -99,10 +102,15 @@ class DiscordOutboxEventPublisher:
             channel=channel,
             event=event,
         )
-        await channel.send(
-            notification.content,
-            allowed_mentions=self._allowed_mentions,
-        )
+        try:
+            await channel.send(
+                notification.content,
+                allowed_mentions=self._allowed_mentions,
+            )
+        except discord.NotFound as exc:
+            raise NonRetryableOutboxPublishError(
+                f"Discord channel was deleted before send: {notification.destination.channel_id}"
+            ) from exc
 
     def _resolve_notification(self, event: PendingOutboxEvent) -> ResolvedNotification:
         return ResolvedNotification(
@@ -115,9 +123,18 @@ class DiscordOutboxEventPublisher:
         if channel is not None:
             return channel
 
-        fetched_channel = self._as_sendable_channel(await self.client.fetch_channel(channel_id))
+        try:
+            fetched_channel_object = await self.client.fetch_channel(channel_id)
+        except discord.NotFound as exc:
+            raise NonRetryableOutboxPublishError(
+                f"Discord channel not found: {channel_id}"
+            ) from exc
+
+        fetched_channel = self._as_sendable_channel(fetched_channel_object)
         if fetched_channel is None:
-            self._raise_publish_error(f"Fetched Discord channel is not sendable: {channel_id}")
+            raise NonRetryableOutboxPublishError(
+                f"Fetched Discord channel is not sendable: {channel_id}"
+            )
         return fetched_channel
 
     def _render_content(

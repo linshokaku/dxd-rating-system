@@ -4,6 +4,7 @@ from dxd_rating.platform.db.models.base import Base
 from dxd_rating.platform.db.models.finalized_match_player_result import FinalizedMatchPlayerResult
 from dxd_rating.platform.db.models.finalized_match_result import FinalizedMatchResult
 from dxd_rating.platform.db.models.leaderboard_snapshot import LeaderboardSnapshot
+from dxd_rating.platform.db.models.managed_ui_channel import ManagedUiChannel, ManagedUiType
 from dxd_rating.platform.db.models.match import Match
 from dxd_rating.platform.db.models.match_admin_override import MatchAdminOverride
 from dxd_rating.platform.db.models.match_format import MatchFormat
@@ -48,6 +49,8 @@ __all__ = [
     "FinalizedMatchResult",
     "INITIAL_RATING",
     "LeaderboardSnapshot",
+    "ManagedUiChannel",
+    "ManagedUiType",
     "Match",
     "MatchAdminOverride",
     "MatchApprovalStatus",

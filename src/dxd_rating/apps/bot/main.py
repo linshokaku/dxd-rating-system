@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 import discord
@@ -11,6 +12,7 @@ from dxd_rating.platform.config.common import configure_logging, raise_settings_
 from dxd_rating.platform.db.session import create_db_engine, create_session_factory, session_scope
 from dxd_rating.platform.discord.gateway.commands import BotCommandHandlers, register_app_commands
 from dxd_rating.platform.discord.rest import DiscordOutboxEventPublisher
+from dxd_rating.platform.discord.ui import create_managed_ui_view
 from dxd_rating.platform.runtime import BotRuntime, MatchRuntime, OutboxDispatcher
 
 logger = logging.getLogger(__name__)
@@ -40,6 +42,7 @@ class BotClient(discord.Client):
             logger=logger,
         )
         register_app_commands(self.tree, self.command_handlers)
+        self._persistent_views_registered = False
         self._bot_runtime = bot_runtime
 
     @property
@@ -53,6 +56,7 @@ class BotClient(discord.Client):
         self.command_handlers.match_service = _match_runtime_for(runtime)
 
     async def setup_hook(self) -> None:
+        await self._register_persistent_views()
         synced_commands = await self.tree.sync()
         logger.info(
             "Synced application commands: %s",
@@ -70,6 +74,29 @@ class BotClient(discord.Client):
     async def on_ready(self) -> None:
         super_admin_user_ids = sorted(self.settings.super_admin_user_ids)
         logger.info("Super admin user IDs: %s", super_admin_user_ids)
+
+    async def _register_persistent_views(self) -> None:
+        if self._persistent_views_registered:
+            return
+
+        managed_ui_channels = await asyncio.to_thread(
+            self.command_handlers.managed_ui_service.list_managed_ui_channels
+        )
+        for managed_ui_channel in managed_ui_channels:
+            self.add_view(
+                create_managed_ui_view(
+                    managed_ui_channel.ui_type,
+                    self.command_handlers,
+                ),
+                message_id=managed_ui_channel.message_id,
+            )
+
+        self._persistent_views_registered = True
+        logger.info(
+            "Registered persistent managed UI views count=%s message_ids=%s",
+            len(managed_ui_channels),
+            [managed_ui_channel.message_id for managed_ui_channel in managed_ui_channels],
+        )
 
 
 def create_client(

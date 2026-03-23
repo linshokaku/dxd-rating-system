@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from dataclasses import dataclass
 from typing import Any, Protocol, cast
 
 import discord
@@ -50,8 +51,16 @@ from dxd_rating.contexts.restrictions.application import (
     PlayerAccessRestrictionService,
 )
 from dxd_rating.contexts.seasons.application import SeasonService
+from dxd_rating.contexts.ui.application import (
+    ManagedUiDefinition,
+    ManagedUiService,
+    get_managed_ui_definition,
+    get_required_managed_ui_definitions,
+)
 from dxd_rating.platform.config.bot import BotSettings
 from dxd_rating.platform.db.models import (
+    ManagedUiChannel,
+    ManagedUiType,
     MatchFormat,
     MatchReportInputResult,
     MatchResult,
@@ -59,6 +68,11 @@ from dxd_rating.platform.db.models import (
     PlayerAccessRestrictionType,
 )
 from dxd_rating.platform.db.session import session_scope
+from dxd_rating.platform.discord.ui import (
+    build_managed_ui_channel_overwrites,
+    is_valid_managed_ui_channel_name,
+    send_initial_managed_ui_message,
+)
 from dxd_rating.shared.constants import (
     MATCH_FORMAT_CHOICES,
     MATCH_QUEUE_NAME_CHOICES,
@@ -108,6 +122,28 @@ ADMIN_PENALTY_SUB_SUCCESS_MESSAGE = "ペナルティを減算しました。"
 ADMIN_PENALTY_FAILED_MESSAGE = "ペナルティ操作に失敗しました。管理者に確認してください。"
 ADMIN_RENAME_SEASON_SUCCESS_MESSAGE = "シーズン名を変更しました。"
 ADMIN_RENAME_SEASON_FAILED_MESSAGE = "シーズン名の変更に失敗しました。管理者に確認してください。"
+ADMIN_SETUP_CUSTOM_UI_CHANNEL_SUCCESS_MESSAGE = "UI 設置チャンネルを作成しました。"
+ADMIN_INVALID_UI_TYPE_MESSAGE = "指定した UI は存在しません。"
+ADMIN_INVALID_CHANNEL_NAME_MESSAGE = "channel_name が不正です。"
+ADMIN_DUPLICATE_CHANNEL_NAME_MESSAGE = "同名のチャンネルがすでに存在します。"
+ADMIN_UI_ALREADY_INSTALLED_MESSAGE = "指定した UI はすでに設置済みです。"
+ADMIN_MANAGED_UI_PERMISSION_MESSAGE = "Bot に必要な権限がありません。"
+ADMIN_SETUP_CUSTOM_UI_CHANNEL_FAILED_MESSAGE = (
+    "UI 設置チャンネルの作成に失敗しました。管理者に確認してください。"
+)
+ADMIN_SETUP_UI_CHANNELS_SUCCESS_MESSAGE = "必要な UI 設置チャンネルを作成しました。"
+ADMIN_SETUP_UI_CHANNELS_ALREADY_CREATED_MESSAGE = "必要な UI 設置チャンネルはすでに作成済みです。"
+ADMIN_RECOMMENDED_CHANNEL_NAME_CONFLICT_MESSAGE = "推奨チャンネル名のチャンネルがすでに存在します。"
+ADMIN_SETUP_UI_CHANNELS_FAILED_MESSAGE = (
+    "必要な UI 設置チャンネルの作成に失敗しました。管理者に確認してください。"
+)
+ADMIN_INVALID_TEARDOWN_CONFIRM_MESSAGE = "confirm が不正です。"
+ADMIN_TEARDOWN_UI_CHANNELS_SUCCESS_MESSAGE = "UI 設置チャンネルをすべて撤収しました。"
+ADMIN_TEARDOWN_UI_CHANNELS_EMPTY_MESSAGE = "撤収対象の UI 設置チャンネルはありません。"
+ADMIN_TEARDOWN_UI_CHANNELS_FAILED_MESSAGE = (
+    "UI 設置チャンネルの撤収に失敗しました。管理者に確認してください。"
+)
+ADMIN_TEARDOWN_CONFIRM_VALUE = "teardown"
 
 DEV_REGISTER_SUCCESS_MESSAGE = "ダミーユーザーを登録しました。"
 DEV_REGISTER_ALREADY_REGISTERED_MESSAGE = "指定したユーザーはすでに登録済みです。"
@@ -165,6 +201,18 @@ PLAYER_ACCESS_RESTRICTION_DURATION_LABELS = {
 }
 
 DUMMY_USER_REFERENCE_PATTERN = re.compile(r"<dummy_(\d+)>")
+
+
+@dataclass(frozen=True, slots=True)
+class ProvisionedManagedUiChannel:
+    definition: ManagedUiDefinition
+    channel: discord.abc.GuildChannel
+
+
+class ManagedUiProvisioningError(Exception):
+    def __init__(self, provisioned_channel: ProvisionedManagedUiChannel) -> None:
+        super().__init__(provisioned_channel.definition.ui_type.value)
+        self.provisioned_channel = provisioned_channel
 
 
 def is_super_admin(user_id: int, settings: BotSettings) -> bool:
@@ -301,6 +349,7 @@ class BotCommandHandlers:
         ):
             self._match_service = cast(MatchCommandService, matching_queue_service)
         self.player_lookup_service = player_lookup_service or PlayerLookupService(session_factory)
+        self.managed_ui_service = ManagedUiService(session_factory)
 
     @property
     def matching_queue_service(self) -> MatchingQueueCommandService | None:
@@ -321,22 +370,37 @@ class BotCommandHandlers:
         self._match_service = service
 
     async def register(self, interaction: discord.Interaction[Any]) -> None:
+        await self._run_register(interaction, ephemeral=False)
+
+    async def register_from_ui(self, interaction: discord.Interaction[Any]) -> None:
+        await self._run_register(interaction, ephemeral=True)
+
+    async def _run_register(
+        self,
+        interaction: discord.Interaction[Any],
+        *,
+        ephemeral: bool,
+    ) -> None:
         await self._sync_requesting_user_identity(interaction)
         try:
             await asyncio.to_thread(self._register_player, interaction.user.id)
         except PlayerAlreadyRegisteredError:
-            await self._send_message(interaction, REGISTER_ALREADY_REGISTERED_MESSAGE)
+            await self._send_message(
+                interaction,
+                REGISTER_ALREADY_REGISTERED_MESSAGE,
+                ephemeral=ephemeral,
+            )
             return
         except Exception:
             self.logger.exception(
                 "Failed to execute /register command discord_user_id=%s",
                 interaction.user.id,
             )
-            await self._send_message(interaction, REGISTER_FAILED_MESSAGE)
+            await self._send_message(interaction, REGISTER_FAILED_MESSAGE, ephemeral=ephemeral)
             return
 
         await self._sync_requesting_user_identity(interaction)
-        await self._send_message(interaction, REGISTER_SUCCESS_MESSAGE)
+        await self._send_message(interaction, REGISTER_SUCCESS_MESSAGE, ephemeral=ephemeral)
 
     async def join(
         self,
@@ -641,6 +705,397 @@ class BotCommandHandlers:
             return
 
         await self._send_message(interaction, ADMIN_RENAME_SEASON_SUCCESS_MESSAGE)
+
+    async def admin_setup_custom_ui_channel(
+        self,
+        interaction: discord.Interaction[Any],
+        ui_type: str,
+        channel_name: str,
+    ) -> None:
+        if not await self._ensure_admin(interaction):
+            return
+
+        try:
+            definition = get_managed_ui_definition(self._parse_managed_ui_type(ui_type))
+        except ValueError:
+            await self._send_message(
+                interaction,
+                ADMIN_INVALID_UI_TYPE_MESSAGE,
+                ephemeral=True,
+            )
+            return
+
+        if not is_valid_managed_ui_channel_name(channel_name):
+            await self._send_message(
+                interaction,
+                ADMIN_INVALID_CHANNEL_NAME_MESSAGE,
+                ephemeral=True,
+            )
+            return
+
+        try:
+            existing_managed_ui_channel = await asyncio.to_thread(
+                self._get_managed_ui_channel_by_type,
+                definition.ui_type,
+            )
+            if definition.singleton and existing_managed_ui_channel is not None:
+                await self._send_message(
+                    interaction,
+                    ADMIN_UI_ALREADY_INSTALLED_MESSAGE,
+                    ephemeral=True,
+                )
+                return
+
+            guild = self._require_guild(interaction)
+            if self._guild_has_channel_named(guild, channel_name):
+                await self._send_message(
+                    interaction,
+                    ADMIN_DUPLICATE_CHANNEL_NAME_MESSAGE,
+                    ephemeral=True,
+                )
+                return
+
+            try:
+                await self._provision_managed_ui_channel(
+                    guild=guild,
+                    definition=definition,
+                    channel_name=channel_name,
+                    created_by_discord_user_id=interaction.user.id,
+                )
+            except discord.Forbidden:
+                await self._send_message(
+                    interaction,
+                    ADMIN_MANAGED_UI_PERMISSION_MESSAGE,
+                    ephemeral=True,
+                )
+                return
+            except ManagedUiProvisioningError as exc:
+                rollback_succeeded = await self._rollback_provisioned_managed_ui_channels(
+                    [exc.provisioned_channel],
+                    log_context=(
+                        "admin_setup_custom_ui_channel "
+                        f"executor_discord_user_id={interaction.user.id} "
+                        f"ui_type={definition.ui_type.value}"
+                    ),
+                )
+                if not rollback_succeeded:
+                    await self._send_message(
+                        interaction,
+                        ADMIN_SETUP_CUSTOM_UI_CHANNEL_FAILED_MESSAGE,
+                        ephemeral=True,
+                    )
+                    return
+
+                if isinstance(exc.__cause__, discord.Forbidden):
+                    await self._send_message(
+                        interaction,
+                        ADMIN_MANAGED_UI_PERMISSION_MESSAGE,
+                        ephemeral=True,
+                    )
+                    return
+
+                self.logger.exception(
+                    "Failed to execute /admin_setup_custom_ui_channel command "
+                    "executor_discord_user_id=%s ui_type=%s channel_name=%s",
+                    interaction.user.id,
+                    definition.ui_type.value,
+                    channel_name,
+                )
+                await self._send_message(
+                    interaction,
+                    ADMIN_SETUP_CUSTOM_UI_CHANNEL_FAILED_MESSAGE,
+                    ephemeral=True,
+                )
+                return
+        except Exception:
+            self.logger.exception(
+                "Failed to execute /admin_setup_custom_ui_channel command "
+                "executor_discord_user_id=%s ui_type=%s channel_name=%s",
+                interaction.user.id,
+                ui_type,
+                channel_name,
+            )
+            await self._send_message(
+                interaction,
+                ADMIN_SETUP_CUSTOM_UI_CHANNEL_FAILED_MESSAGE,
+                ephemeral=True,
+            )
+            return
+
+        await self._send_message(
+            interaction,
+            ADMIN_SETUP_CUSTOM_UI_CHANNEL_SUCCESS_MESSAGE,
+            ephemeral=True,
+        )
+
+    async def admin_setup_ui_channels(self, interaction: discord.Interaction[Any]) -> None:
+        if not await self._ensure_admin(interaction):
+            return
+
+        try:
+            guild = self._require_guild(interaction)
+            managed_ui_channels = await asyncio.to_thread(self._list_managed_ui_channels)
+            managed_ui_channel_by_type = {
+                managed_ui_channel.ui_type: managed_ui_channel
+                for managed_ui_channel in managed_ui_channels
+            }
+            missing_definitions = [
+                definition
+                for definition in get_required_managed_ui_definitions()
+                if definition.ui_type not in managed_ui_channel_by_type
+            ]
+            if not missing_definitions:
+                await self._send_message(
+                    interaction,
+                    ADMIN_SETUP_UI_CHANNELS_ALREADY_CREATED_MESSAGE,
+                    ephemeral=True,
+                )
+                return
+
+            managed_channel_ids = {
+                managed_ui_channel.channel_id for managed_ui_channel in managed_ui_channels
+            }
+            for definition in missing_definitions:
+                if self._guild_has_unmanaged_channel_named(
+                    guild,
+                    definition.recommended_channel_name,
+                    managed_channel_ids=managed_channel_ids,
+                ):
+                    await self._send_message(
+                        interaction,
+                        ADMIN_RECOMMENDED_CHANNEL_NAME_CONFLICT_MESSAGE,
+                        ephemeral=True,
+                    )
+                    return
+
+            provisioned_channels: list[ProvisionedManagedUiChannel] = []
+            for definition in missing_definitions:
+                try:
+                    provisioned_channel = await self._provision_managed_ui_channel(
+                        guild=guild,
+                        definition=definition,
+                        channel_name=definition.recommended_channel_name,
+                        created_by_discord_user_id=interaction.user.id,
+                    )
+                except discord.Forbidden:
+                    rollback_succeeded = await self._rollback_provisioned_managed_ui_channels(
+                        provisioned_channels,
+                        log_context=(
+                            "admin_setup_ui_channels "
+                            f"executor_discord_user_id={interaction.user.id}"
+                        ),
+                    )
+                    if not rollback_succeeded:
+                        await self._send_message(
+                            interaction,
+                            ADMIN_SETUP_UI_CHANNELS_FAILED_MESSAGE,
+                            ephemeral=True,
+                        )
+                        return
+
+                    await self._send_message(
+                        interaction,
+                        ADMIN_MANAGED_UI_PERMISSION_MESSAGE,
+                        ephemeral=True,
+                    )
+                    return
+                except ManagedUiProvisioningError as exc:
+                    rollback_succeeded = await self._rollback_provisioned_managed_ui_channels(
+                        [*provisioned_channels, exc.provisioned_channel],
+                        log_context=(
+                            "admin_setup_ui_channels "
+                            f"executor_discord_user_id={interaction.user.id}"
+                        ),
+                    )
+                    if not rollback_succeeded:
+                        await self._send_message(
+                            interaction,
+                            ADMIN_SETUP_UI_CHANNELS_FAILED_MESSAGE,
+                            ephemeral=True,
+                        )
+                        return
+
+                    if isinstance(exc.__cause__, discord.Forbidden):
+                        await self._send_message(
+                            interaction,
+                            ADMIN_MANAGED_UI_PERMISSION_MESSAGE,
+                            ephemeral=True,
+                        )
+                        return
+
+                    self.logger.exception(
+                        "Failed to execute /admin_setup_ui_channels command "
+                        "executor_discord_user_id=%s ui_type=%s",
+                        interaction.user.id,
+                        definition.ui_type.value,
+                    )
+                    await self._send_message(
+                        interaction,
+                        ADMIN_SETUP_UI_CHANNELS_FAILED_MESSAGE,
+                        ephemeral=True,
+                    )
+                    return
+                except Exception:
+                    rollback_succeeded = await self._rollback_provisioned_managed_ui_channels(
+                        provisioned_channels,
+                        log_context=(
+                            "admin_setup_ui_channels "
+                            f"executor_discord_user_id={interaction.user.id}"
+                        ),
+                    )
+                    if not rollback_succeeded:
+                        await self._send_message(
+                            interaction,
+                            ADMIN_SETUP_UI_CHANNELS_FAILED_MESSAGE,
+                            ephemeral=True,
+                        )
+                        return
+
+                    self.logger.exception(
+                        "Failed to execute /admin_setup_ui_channels command "
+                        "executor_discord_user_id=%s ui_type=%s",
+                        interaction.user.id,
+                        definition.ui_type.value,
+                    )
+                    await self._send_message(
+                        interaction,
+                        ADMIN_SETUP_UI_CHANNELS_FAILED_MESSAGE,
+                        ephemeral=True,
+                    )
+                    return
+
+                provisioned_channels.append(provisioned_channel)
+        except Exception:
+            self.logger.exception(
+                "Failed to execute /admin_setup_ui_channels command executor_discord_user_id=%s",
+                interaction.user.id,
+            )
+            await self._send_message(
+                interaction,
+                ADMIN_SETUP_UI_CHANNELS_FAILED_MESSAGE,
+                ephemeral=True,
+            )
+            return
+
+        await self._send_message(
+            interaction,
+            ADMIN_SETUP_UI_CHANNELS_SUCCESS_MESSAGE,
+            ephemeral=True,
+        )
+
+    async def admin_teardown_ui_channels(
+        self,
+        interaction: discord.Interaction[Any],
+        confirm: str,
+    ) -> None:
+        if not await self._ensure_admin(interaction):
+            return
+
+        if confirm != ADMIN_TEARDOWN_CONFIRM_VALUE:
+            await self._send_message(
+                interaction,
+                ADMIN_INVALID_TEARDOWN_CONFIRM_MESSAGE,
+                ephemeral=True,
+            )
+            return
+
+        try:
+            guild = self._require_guild(interaction)
+            managed_ui_channels = await asyncio.to_thread(self._list_managed_ui_channels)
+            if not managed_ui_channels:
+                await self._send_message(
+                    interaction,
+                    ADMIN_TEARDOWN_UI_CHANNELS_EMPTY_MESSAGE,
+                    ephemeral=True,
+                )
+                return
+
+            had_successful_cleanup = False
+            had_forbidden_failure = False
+            had_other_failure = False
+            for managed_ui_channel in managed_ui_channels:
+                channel = self._find_guild_channel_by_id(guild, managed_ui_channel.channel_id)
+                if channel is not None:
+                    try:
+                        await channel.delete(
+                            reason=(
+                                "Teardown managed UI channel "
+                                f"for {managed_ui_channel.ui_type.value}"
+                            ),
+                        )
+                    except discord.NotFound:
+                        pass
+                    except discord.Forbidden:
+                        had_forbidden_failure = True
+                        self.logger.exception(
+                            "Failed to delete managed UI channel during teardown "
+                            "executor_discord_user_id=%s ui_type=%s channel_id=%s",
+                            interaction.user.id,
+                            managed_ui_channel.ui_type.value,
+                            managed_ui_channel.channel_id,
+                        )
+                        continue
+                    except Exception:
+                        had_other_failure = True
+                        self.logger.exception(
+                            "Failed to delete managed UI channel during teardown "
+                            "executor_discord_user_id=%s ui_type=%s channel_id=%s",
+                            interaction.user.id,
+                            managed_ui_channel.ui_type.value,
+                            managed_ui_channel.channel_id,
+                        )
+                        continue
+
+                try:
+                    await asyncio.to_thread(
+                        self._delete_managed_ui_channel_record,
+                        managed_ui_channel.channel_id,
+                    )
+                except Exception:
+                    had_other_failure = True
+                    self.logger.exception(
+                        "Failed to delete managed UI record during teardown "
+                        "executor_discord_user_id=%s ui_type=%s channel_id=%s",
+                        interaction.user.id,
+                        managed_ui_channel.ui_type.value,
+                        managed_ui_channel.channel_id,
+                    )
+                    continue
+
+                had_successful_cleanup = True
+
+            if had_forbidden_failure or had_other_failure:
+                if had_forbidden_failure and not had_other_failure and not had_successful_cleanup:
+                    await self._send_message(
+                        interaction,
+                        ADMIN_MANAGED_UI_PERMISSION_MESSAGE,
+                        ephemeral=True,
+                    )
+                    return
+
+                await self._send_message(
+                    interaction,
+                    ADMIN_TEARDOWN_UI_CHANNELS_FAILED_MESSAGE,
+                    ephemeral=True,
+                )
+                return
+        except Exception:
+            self.logger.exception(
+                "Failed to execute /admin_teardown_ui_channels command executor_discord_user_id=%s",
+                interaction.user.id,
+            )
+            await self._send_message(
+                interaction,
+                ADMIN_TEARDOWN_UI_CHANNELS_FAILED_MESSAGE,
+                ephemeral=True,
+            )
+            return
+
+        await self._send_message(
+            interaction,
+            ADMIN_TEARDOWN_UI_CHANNELS_SUCCESS_MESSAGE,
+            ephemeral=True,
+        )
 
     async def admin_add_penalty(
         self,
@@ -1438,6 +1893,35 @@ class BotCommandHandlers:
     def _rename_season(self, season_id: int, name: str) -> None:
         self.season_service.rename_season(season_id, name)
 
+    def _list_managed_ui_channels(self) -> list[ManagedUiChannel]:
+        return self.managed_ui_service.list_managed_ui_channels()
+
+    def _get_managed_ui_channel_by_type(
+        self,
+        ui_type: ManagedUiType,
+    ) -> ManagedUiChannel | None:
+        return self.managed_ui_service.get_managed_ui_channel_by_type(ui_type)
+
+    def _create_managed_ui_channel_record(
+        self,
+        ui_type: ManagedUiType,
+        channel_id: int,
+        message_id: int,
+        created_by_discord_user_id: int,
+    ) -> ManagedUiChannel:
+        return self.managed_ui_service.create_managed_ui_channel(
+            ui_type=ui_type,
+            channel_id=channel_id,
+            message_id=message_id,
+            created_by_discord_user_id=created_by_discord_user_id,
+        )
+
+    def _delete_managed_ui_channel_record(self, channel_id: int) -> bool:
+        return self.managed_ui_service.delete_managed_ui_channel_by_channel_id(channel_id)
+
+    def _delete_managed_ui_channel_records(self, channel_ids: list[int]) -> int:
+        return self.managed_ui_service.delete_managed_ui_channels_by_channel_ids(channel_ids)
+
     def _require_matching_queue_service(self) -> MatchingQueueCommandService:
         if self._matching_queue_service is None:
             raise RuntimeError("MatchingQueueService is not configured")
@@ -1561,6 +2045,9 @@ class BotCommandHandlers:
     def _parse_match_result(self, value: str) -> MatchResult:
         return MatchResult(value)
 
+    def _parse_managed_ui_type(self, value: str) -> ManagedUiType:
+        return ManagedUiType(value)
+
     def _parse_restriction_type(self, value: str) -> PlayerAccessRestrictionType:
         try:
             return PlayerAccessRestrictionType(value)
@@ -1608,12 +2095,138 @@ class BotCommandHandlers:
             )
         return "\n".join(lines)
 
+    def _require_guild(self, interaction: discord.Interaction[Any]) -> discord.Guild:
+        guild = interaction.guild
+        if guild is None:
+            raise ValueError("interaction.guild is required")
+        return guild
+
+    def _guild_has_channel_named(self, guild: discord.Guild, channel_name: str) -> bool:
+        return any(
+            getattr(channel, "name", None) == channel_name
+            for channel in getattr(guild, "channels", ())
+        )
+
+    def _guild_has_unmanaged_channel_named(
+        self,
+        guild: discord.Guild,
+        channel_name: str,
+        *,
+        managed_channel_ids: set[int],
+    ) -> bool:
+        return any(
+            getattr(channel, "name", None) == channel_name
+            and getattr(channel, "id", None) not in managed_channel_ids
+            for channel in getattr(guild, "channels", ())
+        )
+
+    def _find_guild_channel_by_id(
+        self,
+        guild: discord.Guild,
+        channel_id: int,
+    ) -> discord.abc.GuildChannel | None:
+        get_channel = getattr(guild, "get_channel", None)
+        if callable(get_channel):
+            channel = get_channel(channel_id)
+            if channel is not None:
+                return cast(discord.abc.GuildChannel, channel)
+
+        for channel in getattr(guild, "channels", ()):
+            if getattr(channel, "id", None) == channel_id:
+                return cast(discord.abc.GuildChannel, channel)
+        return None
+
+    async def _provision_managed_ui_channel(
+        self,
+        *,
+        guild: discord.Guild,
+        definition: ManagedUiDefinition,
+        channel_name: str,
+        created_by_discord_user_id: int,
+    ) -> ProvisionedManagedUiChannel:
+        channel = await guild.create_text_channel(
+            channel_name,
+            overwrites=cast(Any, build_managed_ui_channel_overwrites(guild, definition.ui_type)),
+            reason=f"Create managed UI channel for {definition.ui_type.value}",
+        )
+        provisioned_channel = ProvisionedManagedUiChannel(
+            definition=definition,
+            channel=channel,
+        )
+        try:
+            message = await send_initial_managed_ui_message(
+                cast(discord.TextChannel, channel),
+                ui_type=definition.ui_type,
+                interaction_handler=self,
+            )
+            await asyncio.to_thread(
+                self._create_managed_ui_channel_record,
+                definition.ui_type,
+                channel.id,
+                message.id,
+                created_by_discord_user_id,
+            )
+        except Exception as exc:
+            raise ManagedUiProvisioningError(provisioned_channel) from exc
+
+        return provisioned_channel
+
+    async def _rollback_provisioned_managed_ui_channels(
+        self,
+        provisioned_channels: list[ProvisionedManagedUiChannel],
+        *,
+        log_context: str,
+    ) -> bool:
+        if not provisioned_channels:
+            return True
+
+        rollback_succeeded = True
+        deleted_or_missing_channel_ids: list[int] = []
+        for provisioned_channel in reversed(provisioned_channels):
+            try:
+                await provisioned_channel.channel.delete(
+                    reason=(
+                        "Rollback managed UI channel creation "
+                        f"for {provisioned_channel.definition.ui_type.value}"
+                    ),
+                )
+            except discord.NotFound:
+                deleted_or_missing_channel_ids.append(provisioned_channel.channel.id)
+            except Exception:
+                rollback_succeeded = False
+                self.logger.exception(
+                    "Failed to rollback managed UI channel creation %s ui_type=%s channel_id=%s",
+                    log_context,
+                    provisioned_channel.definition.ui_type.value,
+                    provisioned_channel.channel.id,
+                )
+            else:
+                deleted_or_missing_channel_ids.append(provisioned_channel.channel.id)
+
+        if deleted_or_missing_channel_ids:
+            try:
+                await asyncio.to_thread(
+                    self._delete_managed_ui_channel_records,
+                    deleted_or_missing_channel_ids,
+                )
+            except Exception:
+                rollback_succeeded = False
+                self.logger.exception(
+                    "Failed to rollback managed UI records %s channel_ids=%s",
+                    log_context,
+                    deleted_or_missing_channel_ids,
+                )
+
+        return rollback_succeeded
+
     async def _send_message(
         self,
         interaction: discord.Interaction[Any],
         message: str,
+        *,
+        ephemeral: bool = False,
     ) -> None:
-        await interaction.response.send_message(message)
+        await interaction.response.send_message(message, ephemeral=ephemeral)
 
 
 def register_app_commands(
@@ -1653,6 +2266,10 @@ def register_app_commands(
             PlayerAccessRestrictionDuration.EIGHTY_FOUR_DAYS,
             PlayerAccessRestrictionDuration.PERMANENT,
         )
+    ]
+    managed_ui_type_choices = [
+        app_commands.Choice(name=definition.ui_type.value, value=definition.ui_type.value)
+        for definition in get_required_managed_ui_definitions()
     ]
 
     @tree.command(name="register", description="プレイヤー登録を行います")
@@ -1762,6 +2379,40 @@ def register_app_commands(
         name: str,
     ) -> None:
         await handlers.admin_rename_season(interaction, season_id, name)
+
+    @tree.command(
+        name="admin_setup_custom_ui_channel",
+        description="指定した UI 設置チャンネルを作成します",
+    )
+    @app_commands.describe(
+        ui_type="設置したい UI の種別",
+        channel_name="作成するチャンネル名",
+    )
+    @app_commands.choices(ui_type=managed_ui_type_choices)
+    async def admin_setup_custom_ui_channel_command(
+        interaction: discord.Interaction[Any],
+        ui_type: str,
+        channel_name: str,
+    ) -> None:
+        await handlers.admin_setup_custom_ui_channel(interaction, ui_type, channel_name)
+
+    @tree.command(
+        name="admin_setup_ui_channels",
+        description="必要な UI 設置チャンネルをまとめて作成します",
+    )
+    async def admin_setup_ui_channels_command(interaction: discord.Interaction[Any]) -> None:
+        await handlers.admin_setup_ui_channels(interaction)
+
+    @tree.command(
+        name="admin_teardown_ui_channels",
+        description="管理対象の UI 設置チャンネルをまとめて撤収します",
+    )
+    @app_commands.describe(confirm="撤収する場合は teardown を入力")
+    async def admin_teardown_ui_channels_command(
+        interaction: discord.Interaction[Any],
+        confirm: str,
+    ) -> None:
+        await handlers.admin_teardown_ui_channels(interaction, confirm)
 
     @tree.command(name="admin_restrict_user", description="ユーザーの利用権限を制限します")
     @app_commands.describe(

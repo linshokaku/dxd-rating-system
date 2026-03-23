@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import cast
+from typing import Any, cast
 
 import discord
 import pytest
@@ -23,6 +23,8 @@ from dxd_rating.contexts.restrictions.application import (
 from dxd_rating.contexts.seasons.application import ensure_active_and_upcoming_seasons
 from dxd_rating.platform.config.bot import BotSettings
 from dxd_rating.platform.db.models import (
+    ManagedUiChannel,
+    ManagedUiType,
     MatchFormat,
     MatchQueueEntry,
     MatchQueueEntryStatus,
@@ -36,6 +38,7 @@ from dxd_rating.platform.db.models import (
     Season,
 )
 from dxd_rating.platform.discord.gateway.commands import BotCommandHandlers, register_app_commands
+from dxd_rating.platform.discord.ui import REGISTER_PANEL_BUTTON_LABEL, REGISTER_PANEL_MESSAGE
 from dxd_rating.platform.runtime import MatchRuntime
 
 DEFAULT_MATCH_FORMAT = MatchFormat.THREE_VS_THREE
@@ -57,9 +60,135 @@ class FakeUser:
 @dataclass
 class FakeInteractionResponse:
     messages: list[str] = field(default_factory=list)
+    ephemeral_flags: list[bool] = field(default_factory=list)
 
-    async def send_message(self, content: str) -> None:
+    async def send_message(self, content: str, *, ephemeral: bool = False, **_: Any) -> None:
         self.messages.append(content)
+        self.ephemeral_flags.append(ephemeral)
+
+
+@dataclass(frozen=True)
+class FakeRole:
+    id: int
+    name: str = "@everyone"
+
+
+@dataclass(frozen=True)
+class FakeGuildMember:
+    id: int
+
+
+@dataclass
+class FakeHttpResponse:
+    status: int
+    reason: str
+    text: str
+
+
+def make_forbidden() -> discord.Forbidden:
+    return discord.Forbidden(
+        FakeHttpResponse(status=403, reason="Forbidden", text="Forbidden"),
+        "Forbidden",
+    )
+
+
+def make_not_found() -> discord.NotFound:
+    return discord.NotFound(
+        FakeHttpResponse(status=404, reason="Not Found", text="Not Found"),
+        "Not Found",
+    )
+
+
+@dataclass
+class FakeMessage:
+    id: int
+    content: str
+    view: discord.ui.View | None = None
+
+
+@dataclass
+class FakeTextChannel:
+    id: int
+    name: str
+    guild: FakeGuild
+    overwrites: dict[object, discord.PermissionOverwrite] = field(default_factory=dict)
+    sent_messages: list[FakeMessage] = field(default_factory=list)
+    fail_send_with: Exception | None = None
+    fail_delete_with: Exception | None = None
+    deleted: bool = False
+
+    async def send(
+        self,
+        content: str | None = None,
+        *,
+        view: discord.ui.View | None = None,
+        **_: Any,
+    ) -> discord.Message:
+        if self.fail_send_with is not None:
+            raise self.fail_send_with
+
+        message = FakeMessage(
+            id=self.guild.next_message_id,
+            content="" if content is None else content,
+            view=view,
+        )
+        self.guild.next_message_id += 1
+        self.sent_messages.append(message)
+        return cast(discord.Message, message)
+
+    async def delete(self, *_: Any, **__: Any) -> None:
+        if self.fail_delete_with is not None:
+            raise self.fail_delete_with
+
+        self.deleted = True
+        self.guild.channels = [
+            existing_channel
+            for existing_channel in self.guild.channels
+            if existing_channel.id != self.id
+        ]
+
+
+@dataclass
+class FakeGuild:
+    id: int
+    channels: list[FakeTextChannel] = field(default_factory=list)
+    default_role: FakeRole = field(default_factory=lambda: FakeRole(id=0))
+    me: FakeGuildMember | None = field(default_factory=lambda: FakeGuildMember(id=999_999))
+    next_channel_id: int = 20_001
+    next_message_id: int = 30_001
+    create_channel_error: Exception | None = None
+    next_channel_fail_send_with: Exception | None = None
+    next_channel_fail_delete_with: Exception | None = None
+
+    async def create_text_channel(
+        self,
+        name: str,
+        *,
+        overwrites: dict[object, discord.PermissionOverwrite] | None = None,
+        **_: Any,
+    ) -> discord.TextChannel:
+        if self.create_channel_error is not None:
+            raise self.create_channel_error
+
+        channel = FakeTextChannel(
+            id=self.next_channel_id,
+            name=name,
+            guild=self,
+            overwrites={} if overwrites is None else dict(overwrites),
+            fail_send_with=self.next_channel_fail_send_with,
+            fail_delete_with=self.next_channel_fail_delete_with,
+        )
+        self.next_channel_id += 1
+        self.next_channel_fail_send_with = None
+        self.next_channel_fail_delete_with = None
+        self.channels.append(channel)
+        return cast(discord.TextChannel, channel)
+
+    def get_channel(self, channel_id: int) -> FakeTextChannel | None:
+        for channel in self.channels:
+            if channel.id == channel_id:
+                return channel
+        return None
 
 
 @dataclass
@@ -67,6 +196,7 @@ class FakeInteraction:
     user: FakeUser
     channel_id: int | None = 1_001
     guild_id: int | None = 2_001
+    guild: FakeGuild | None = None
     response: FakeInteractionResponse = field(default_factory=FakeInteractionResponse)
 
 
@@ -1048,6 +1178,188 @@ def test_admin_rename_season_updates_target_season_name(
     assert refreshed_pair.upcoming.name == "spring-cup"
 
 
+def test_admin_setup_custom_ui_channel_creates_register_panel_and_button_registers_player(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    executor_discord_user_id = 10
+    target_discord_user_id = 123_456_789_012_345_800
+    guild = FakeGuild(id=2_100)
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({executor_discord_user_id}),
+    )
+    interaction = FakeInteraction(
+        user=FakeUser(id=executor_discord_user_id),
+        guild_id=guild.id,
+        guild=guild,
+    )
+
+    asyncio.run(
+        handlers.admin_setup_custom_ui_channel(
+            as_interaction(interaction),
+            ManagedUiType.REGISTER_PANEL.value,
+            "レート戦はこちらから",
+        )
+    )
+
+    session.expire_all()
+    managed_ui_channel = session.scalar(select(ManagedUiChannel))
+    persisted_channel = guild.channels[0]
+    persisted_message = persisted_channel.sent_messages[0]
+
+    assert interaction.response.messages == ["UI 設置チャンネルを作成しました。"]
+    assert interaction.response.ephemeral_flags == [True]
+    assert managed_ui_channel is not None
+    assert managed_ui_channel.ui_type == ManagedUiType.REGISTER_PANEL
+    assert managed_ui_channel.channel_id == persisted_channel.id
+    assert managed_ui_channel.message_id == persisted_message.id
+    assert managed_ui_channel.created_by_discord_user_id == executor_discord_user_id
+    assert persisted_channel.overwrites[guild.default_role].view_channel is True
+    assert persisted_channel.overwrites[guild.default_role].send_messages is False
+    assert persisted_message.content == REGISTER_PANEL_MESSAGE
+    assert persisted_message.view is not None
+    button = cast(discord.ui.Button[Any], persisted_message.view.children[0])
+    assert button.label == REGISTER_PANEL_BUTTON_LABEL
+
+    button_interaction = FakeInteraction(
+        user=FakeUser(id=target_discord_user_id),
+        guild_id=guild.id,
+        guild=guild,
+    )
+    asyncio.run(button.callback(as_interaction(button_interaction)))
+
+    session.expire_all()
+    persisted_player = session.scalar(
+        select(Player).where(Player.discord_user_id == target_discord_user_id)
+    )
+
+    assert button_interaction.response.messages == ["登録が完了しました。"]
+    assert button_interaction.response.ephemeral_flags == [True]
+    assert persisted_player is not None
+
+
+def test_admin_setup_custom_ui_channel_rolls_back_created_channel_when_ui_send_fails(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    guild = FakeGuild(id=2_101, next_channel_fail_send_with=RuntimeError("boom"))
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({10}),
+    )
+    interaction = FakeInteraction(user=FakeUser(id=10), guild_id=guild.id, guild=guild)
+
+    asyncio.run(
+        handlers.admin_setup_custom_ui_channel(
+            as_interaction(interaction),
+            ManagedUiType.REGISTER_PANEL.value,
+            "レート戦はこちらから",
+        )
+    )
+
+    session.expire_all()
+
+    assert interaction.response.messages == [
+        "UI 設置チャンネルの作成に失敗しました。管理者に確認してください。"
+    ]
+    assert interaction.response.ephemeral_flags == [True]
+    assert guild.channels == []
+    assert session.scalar(select(ManagedUiChannel)) is None
+
+
+def test_admin_setup_ui_channels_returns_already_created_when_required_ui_exists(
+    session_factory: sessionmaker[Session],
+) -> None:
+    guild = FakeGuild(id=2_102)
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({10}),
+    )
+    handlers.managed_ui_service.create_managed_ui_channel(
+        ui_type=ManagedUiType.REGISTER_PANEL,
+        channel_id=40_001,
+        message_id=50_001,
+        created_by_discord_user_id=10,
+    )
+    interaction = FakeInteraction(user=FakeUser(id=10), guild_id=guild.id, guild=guild)
+
+    asyncio.run(handlers.admin_setup_ui_channels(as_interaction(interaction)))
+
+    assert interaction.response.messages == ["必要な UI 設置チャンネルはすでに作成済みです。"]
+    assert interaction.response.ephemeral_flags == [True]
+
+
+def test_admin_teardown_ui_channels_deletes_managed_channels_and_records(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    executor_discord_user_id = 10
+    guild = FakeGuild(id=2_103)
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({executor_discord_user_id}),
+    )
+    setup_interaction = FakeInteraction(
+        user=FakeUser(id=executor_discord_user_id),
+        guild_id=guild.id,
+        guild=guild,
+    )
+
+    asyncio.run(
+        handlers.admin_setup_custom_ui_channel(
+            as_interaction(setup_interaction),
+            ManagedUiType.REGISTER_PANEL.value,
+            "レート戦はこちらから",
+        )
+    )
+
+    teardown_interaction = FakeInteraction(
+        user=FakeUser(id=executor_discord_user_id),
+        guild_id=guild.id,
+        guild=guild,
+    )
+    asyncio.run(
+        handlers.admin_teardown_ui_channels(
+            as_interaction(teardown_interaction),
+            "teardown",
+        )
+    )
+
+    session.expire_all()
+
+    assert teardown_interaction.response.messages == ["UI 設置チャンネルをすべて撤収しました。"]
+    assert teardown_interaction.response.ephemeral_flags == [True]
+    assert guild.channels == []
+    assert session.scalar(select(ManagedUiChannel)) is None
+
+
+def test_admin_teardown_ui_channels_removes_record_when_channel_is_missing(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({10}),
+    )
+    handlers.managed_ui_service.create_managed_ui_channel(
+        ui_type=ManagedUiType.REGISTER_PANEL,
+        channel_id=60_001,
+        message_id=70_001,
+        created_by_discord_user_id=10,
+    )
+    guild = FakeGuild(id=2_104)
+    interaction = FakeInteraction(user=FakeUser(id=10), guild_id=guild.id, guild=guild)
+
+    asyncio.run(handlers.admin_teardown_ui_channels(as_interaction(interaction), "teardown"))
+
+    session.expire_all()
+
+    assert interaction.response.messages == ["UI 設置チャンネルをすべて撤収しました。"]
+    assert interaction.response.ephemeral_flags == [True]
+    assert session.scalar(select(ManagedUiChannel)) is None
+
+
 def test_admin_restrict_and_unrestrict_user_commands_manage_restrictions(
     session: Session,
     session_factory: sessionmaker[Session],
@@ -1282,6 +1594,31 @@ def test_admin_penalty_commands_are_registered_with_expected_parameters() -> Non
     assert sub_command is not None
     assert [parameter.name for parameter in add_command.parameters] == ["user", "dummy_user"]
     assert [parameter.name for parameter in sub_command.parameters] == ["user", "dummy_user"]
+
+
+def test_admin_managed_ui_commands_are_registered_with_expected_parameters() -> None:
+    handlers = BotCommandHandlers(
+        settings=create_settings(),
+        session_factory=sessionmaker(),
+    )
+    client = discord.Client(intents=discord.Intents.none())
+    tree = discord.app_commands.CommandTree(client)
+
+    register_app_commands(tree, handlers)
+
+    setup_custom_command = tree.get_command("admin_setup_custom_ui_channel")
+    setup_all_command = tree.get_command("admin_setup_ui_channels")
+    teardown_command = tree.get_command("admin_teardown_ui_channels")
+
+    assert setup_custom_command is not None
+    assert setup_all_command is not None
+    assert teardown_command is not None
+    assert [parameter.name for parameter in setup_custom_command.parameters] == [
+        "ui_type",
+        "channel_name",
+    ]
+    assert [parameter.name for parameter in setup_all_command.parameters] == []
+    assert [parameter.name for parameter in teardown_command.parameters] == ["confirm"]
 
 
 def test_match_spectate_command_is_registered_with_match_id_parameter() -> None:

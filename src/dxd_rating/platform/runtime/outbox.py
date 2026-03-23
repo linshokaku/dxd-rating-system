@@ -56,6 +56,7 @@ class ScheduledRetry:
 @dataclass(frozen=True, slots=True)
 class _DispatchCycleResult:
     published_event_ids: tuple[int, ...]
+    discarded_event_ids: tuple[int, ...]
     scheduled_retries: tuple[ScheduledRetry, ...]
     reached_batch_size: bool
 
@@ -63,6 +64,7 @@ class _DispatchCycleResult:
 @dataclass(frozen=True, slots=True)
 class _DispatchSingleResult:
     published_event_id: int | None = None
+    discarded_event_id: int | None = None
     scheduled_retry: ScheduledRetry | None = None
 
 
@@ -78,6 +80,10 @@ class NoopOutboxEventPublisher:
 
     def publish(self, event: PendingOutboxEvent) -> None:
         del event
+
+
+class NonRetryableOutboxPublishError(Exception):
+    pass
 
 
 class NoopOutboxDispatcher:
@@ -310,7 +316,7 @@ class OutboxDispatcher:
         async with self._dispatch_lock:
             result = await asyncio.to_thread(self._dispatch_due_sync)
 
-        for event_id in result.published_event_ids:
+        for event_id in [*result.published_event_ids, *result.discarded_event_ids]:
             self._cancel_retry_task(event_id)
 
         for scheduled_retry in result.scheduled_retries:
@@ -357,23 +363,31 @@ class OutboxDispatcher:
 
     def _dispatch_due_sync(self) -> _DispatchCycleResult:
         published_event_ids: list[int] = []
+        discarded_event_ids: list[int] = []
         scheduled_retries: list[ScheduledRetry] = []
 
-        while len(published_event_ids) + len(scheduled_retries) < self.batch_size:
+        while (
+            len(published_event_ids) + len(discarded_event_ids) + len(scheduled_retries)
+            < self.batch_size
+        ):
             result = self._dispatch_single_due_event_sync()
             if result is None:
                 break
 
             if result.published_event_id is not None:
                 published_event_ids.append(result.published_event_id)
+            if result.discarded_event_id is not None:
+                discarded_event_ids.append(result.discarded_event_id)
             if result.scheduled_retry is not None:
                 scheduled_retries.append(result.scheduled_retry)
 
         return _DispatchCycleResult(
             published_event_ids=tuple(published_event_ids),
+            discarded_event_ids=tuple(discarded_event_ids),
             scheduled_retries=tuple(scheduled_retries),
             reached_batch_size=(
-                len(published_event_ids) + len(scheduled_retries) >= self.batch_size
+                len(published_event_ids) + len(discarded_event_ids) + len(scheduled_retries)
+                >= self.batch_size
             ),
         )
 
@@ -383,6 +397,7 @@ class OutboxDispatcher:
                 select(OutboxEvent)
                 .where(
                     OutboxEvent.published_at.is_(None),
+                    OutboxEvent.discarded_at.is_(None),
                     OutboxEvent.next_attempt_at <= func.now(),
                 )
                 .order_by(OutboxEvent.next_attempt_at, OutboxEvent.id)
@@ -402,6 +417,17 @@ class OutboxDispatcher:
 
             try:
                 self.publisher.publish(pending_event)
+            except NonRetryableOutboxPublishError as exc:
+                current_time = self._get_database_now(session)
+                event.discarded_at = current_time
+                event.last_error = self._format_publish_error(exc)
+                event.last_failed_at = current_time
+                self.logger.info(
+                    "Discarded outbox event id=%s reason=%s",
+                    event.id,
+                    event.last_error,
+                )
+                return _DispatchSingleResult(discarded_event_id=event.id)
             except Exception as exc:
                 current_time = self._get_database_now(session)
                 event.failure_count += 1
@@ -435,6 +461,7 @@ class OutboxDispatcher:
                 select(OutboxEvent.id, OutboxEvent.next_attempt_at)
                 .where(
                     OutboxEvent.published_at.is_(None),
+                    OutboxEvent.discarded_at.is_(None),
                     OutboxEvent.next_attempt_at > func.now(),
                 )
                 .order_by(OutboxEvent.next_attempt_at, OutboxEvent.id)

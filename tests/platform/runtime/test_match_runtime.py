@@ -60,6 +60,7 @@ from dxd_rating.platform.runtime import (
     BotRuntimeStartResult,
     MatchRuntime,
     MatchRuntimeSyncResult,
+    NonRetryableOutboxPublishError,
     NoopOutboxDispatcher,
     OutboxDispatcher,
     OutboxStartupResult,
@@ -112,6 +113,18 @@ class FlakyOutboxPublisher:
 
 
 @dataclass
+class DiscardingOutboxPublisher:
+    attempts: int = 0
+
+    def bind_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        del loop
+
+    def publish(self, event: PendingOutboxEvent) -> None:
+        self.attempts += 1
+        raise NonRetryableOutboxPublishError(f"Discord channel not found: {event.id}")
+
+
+@dataclass
 class FakeOutboxNotificationListener:
     on_notification: Callable[[], None]
     on_reconnected: Callable[[], None]
@@ -152,6 +165,20 @@ class FakeDiscordGuild:
     id: int
 
 
+@dataclass(frozen=True)
+class FakeHttpResponse:
+    status: int
+    reason: str
+    text: str
+
+
+def make_not_found() -> discord.NotFound:
+    return discord.NotFound(
+        FakeHttpResponse(status=404, reason="Not Found", text="Not Found"),
+        "Not Found",
+    )
+
+
 @dataclass
 class FakeDiscordChannel:
     id: int
@@ -174,6 +201,7 @@ class FakeDiscordClient:
     channels: dict[int, FakeDiscordChannel] = field(default_factory=dict)
     uncached_channel_ids: set[int] = field(default_factory=set)
     fetched_channel_ids: list[int] = field(default_factory=list)
+    fetch_errors: dict[int, Exception] = field(default_factory=dict)
 
     def get_channel(self, channel_id: int) -> object | None:
         if channel_id in self.uncached_channel_ids:
@@ -182,6 +210,9 @@ class FakeDiscordClient:
 
     async def fetch_channel(self, channel_id: int) -> object:
         self.fetched_channel_ids.append(channel_id)
+        fetch_error = self.fetch_errors.get(channel_id)
+        if fetch_error is not None:
+            raise fetch_error
         channel = self.channels.get(channel_id)
         if channel is None:
             raise LookupError(f"Unknown channel: {channel_id}")
@@ -1552,6 +1583,37 @@ def test_outbox_dispatcher_retries_temporary_failures_with_backoff_timer(
     assert outbox_event.last_failed_at is None
 
 
+def test_outbox_dispatcher_discards_non_retryable_failures(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    session.add(
+        OutboxEvent(
+            event_type=OutboxEventType.MATCH_CREATED,
+            dedupe_key="match-created:discard",
+            payload={"match_id": 99},
+        )
+    )
+    session.commit()
+
+    publisher = DiscardingOutboxPublisher()
+    dispatcher = OutboxDispatcher(session_factory=session_factory, publisher=publisher)
+
+    published_event_ids = asyncio.run(dispatcher.dispatch_once())
+
+    session.expire_all()
+    outbox_event = session.scalar(select(OutboxEvent))
+
+    assert published_event_ids == tuple()
+    assert outbox_event is not None
+    assert publisher.attempts == 1
+    assert outbox_event.failure_count == 0
+    assert outbox_event.published_at is None
+    assert outbox_event.discarded_at is not None
+    assert outbox_event.last_error == "NonRetryableOutboxPublishError: Discord channel not found: 1"
+    assert outbox_event.last_failed_at is not None
+
+
 def test_outbox_dispatcher_rebuilds_retry_timers_on_start(
     session: Session,
     session_factory: sessionmaker[Session],
@@ -1667,6 +1729,42 @@ def test_discord_outbox_publisher_fetches_uncached_channel_for_queue_expired() -
     assert channel.sent_messages == [
         f"<@{mention_discord_user_id}> {QUEUE_EXPIRED_NOTIFICATION_MESSAGE}",
     ]
+
+
+def test_discord_outbox_publisher_raises_non_retryable_error_when_channel_is_missing() -> None:
+    channel_id = 900_099
+    client = FakeDiscordClient(
+        uncached_channel_ids={channel_id},
+        fetch_errors={channel_id: make_not_found()},
+    )
+    publisher = DiscordOutboxEventPublisher(client=client)
+
+    with pytest.raises(
+        NonRetryableOutboxPublishError,
+        match=f"Discord channel not found: {channel_id}",
+    ):
+        asyncio.run(
+            publish_with_bound_loop(
+                publisher,
+                PendingOutboxEvent(
+                    id=99,
+                    event_type=OutboxEventType.QUEUE_EXPIRED,
+                    dedupe_key="queue_expired:missing-channel",
+                    payload={
+                        "queue_entry_id": 199,
+                        "player_id": 80_099,
+                        "revision": 1,
+                        "expire_at": datetime.now(timezone.utc).isoformat(),
+                        "destination": {
+                            "channel_id": channel_id,
+                            "guild_id": 910_099,
+                        },
+                        "mention_discord_user_id": 920_099,
+                    },
+                    created_at=datetime.now(timezone.utc),
+                ),
+            )
+        )
 
 
 def test_discord_outbox_publisher_renders_dummy_prefix_for_dummy_user_id() -> None:

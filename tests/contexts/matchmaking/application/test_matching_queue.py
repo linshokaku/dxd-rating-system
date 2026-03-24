@@ -133,6 +133,9 @@ def create_queue_entry(
     last_reminded_revision: int | None = None,
     notification_channel_id: int | None = None,
     notification_guild_id: int | None = None,
+    notification_dm_discord_user_id: int | None = None,
+    notification_interaction_application_id: int | None = None,
+    notification_interaction_token: str | None = None,
     notification_mention_discord_user_id: int | None = None,
     notification_recorded_at: datetime | None = None,
     removed_at: datetime | None = None,
@@ -179,6 +182,9 @@ def create_queue_entry(
         last_reminded_revision=last_reminded_revision,
         notification_channel_id=resolved_notification_channel_id,
         notification_guild_id=resolved_notification_guild_id,
+        notification_dm_discord_user_id=notification_dm_discord_user_id,
+        notification_interaction_application_id=notification_interaction_application_id,
+        notification_interaction_token=notification_interaction_token,
         notification_mention_discord_user_id=resolved_notification_mention_discord_user_id,
         notification_recorded_at=resolved_notification_recorded_at,
         removed_at=removed_at,
@@ -373,9 +379,11 @@ def test_join_queue_stores_notification_context(
     assert result.queue_entry_id == entry.id
     assert entry.notification_channel_id == 333_001
     assert entry.notification_guild_id == 444_001
+    assert entry.notification_dm_discord_user_id is None
+    assert entry.notification_interaction_application_id is None
+    assert entry.notification_interaction_token is None
     assert entry.notification_mention_discord_user_id == 555_001
     assert entry.notification_recorded_at == entry.joined_at
-
 
 # 有効な `waiting` 行がある状態での重複 `join` が失敗すること
 def test_join_queue_raises_when_player_is_already_waiting(
@@ -484,6 +492,9 @@ def test_present_overwrites_notification_context(
     assert result.queue_entry_id == entry.id
     assert entry.notification_channel_id == 333_011
     assert entry.notification_guild_id == 444_011
+    assert entry.notification_dm_discord_user_id is None
+    assert entry.notification_interaction_application_id is None
+    assert entry.notification_interaction_token is None
     assert entry.notification_mention_discord_user_id == 555_011
     assert entry.notification_recorded_at == entry.last_present_at
     assert entry.notification_recorded_at != initial_recorded_at
@@ -1090,3 +1101,61 @@ def test_matching_queue_outbox_event_types_are_generated_for_supported_flows(
         OutboxEventType.QUEUE_EXPIRED,
     ]
     assert event_types[2:] == [OutboxEventType.MATCH_CREATED] * expected_match_created_event_count
+
+
+def test_process_presence_reminder_uses_channel_destination_even_if_dm_snapshot_exists(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    player = create_player(session, 50_210)
+    now = get_database_now(session)
+    entry = create_queue_entry(
+        session,
+        player_id=player.id,
+        expire_at=now + timedelta(seconds=30),
+        notification_channel_id=601_210,
+        notification_guild_id=701_210,
+        notification_dm_discord_user_id=801_210,
+    )
+    service = create_matching_queue_service(session_factory)
+
+    result = service.process_presence_reminder(entry.id, expected_revision=1)
+
+    outbox_event = get_outbox_events(session)[0]
+
+    assert result.reminded is True
+    assert outbox_event.payload["destination"] == {
+        "kind": "channel",
+        "channel_id": 601_210,
+        "guild_id": 701_210,
+    }
+
+
+def test_process_presence_reminder_uses_channel_destination_for_legacy_interaction_context(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    player = create_player(session, 50_211)
+    now = get_database_now(session)
+    entry = create_queue_entry(
+        session,
+        player_id=player.id,
+        expire_at=now + timedelta(seconds=30),
+        notification_channel_id=601_211,
+        notification_guild_id=701_211,
+        notification_interaction_application_id=801_211,
+        notification_interaction_token="legacy-interaction-token",
+        notification_mention_discord_user_id=901_211,
+    )
+    service = create_matching_queue_service(session_factory)
+
+    result = service.process_presence_reminder(entry.id, expected_revision=1)
+
+    outbox_event = get_outbox_events(session)[0]
+
+    assert result.reminded is True
+    assert outbox_event.payload["destination"] == {
+        "kind": "channel",
+        "channel_id": 601_211,
+        "guild_id": 701_211,
+    }

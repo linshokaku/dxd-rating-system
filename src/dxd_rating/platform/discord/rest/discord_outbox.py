@@ -39,16 +39,39 @@ class DiscordSendableChannel(Protocol):
     ) -> object: ...
 
 
+class DiscordSendableUser(Protocol):
+    id: int
+
+    async def send(
+        self,
+        content: str,
+        *,
+        allowed_mentions: discord.AllowedMentions,
+    ) -> object: ...
+
+
 class DiscordChannelClient(Protocol):
     def get_channel(self, channel_id: int) -> object | None: ...
 
     async def fetch_channel(self, channel_id: int) -> object: ...
 
+    def get_user(self, user_id: int) -> object | None: ...
+
+    async def fetch_user(self, user_id: int) -> object: ...
+
 
 @dataclass(frozen=True, slots=True)
-class NotificationDestination:
+class ChannelNotificationDestination:
     channel_id: int
     guild_id: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class DirectMessageNotificationDestination:
+    discord_user_id: int
+
+
+NotificationDestination = ChannelNotificationDestination | DirectMessageNotificationDestination
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,21 +119,19 @@ class DiscordOutboxEventPublisher:
 
     async def _publish_event(self, event: PendingOutboxEvent) -> None:
         notification = await asyncio.to_thread(self._resolve_notification, event)
-        channel = await self._resolve_channel(notification.destination.channel_id)
-        self._log_channel_guild_mismatch(
-            destination=notification.destination,
-            channel=channel,
-            event=event,
-        )
-        try:
-            await channel.send(
-                notification.content,
-                allowed_mentions=self._allowed_mentions,
+        if isinstance(notification.destination, DirectMessageNotificationDestination):
+            await self._send_direct_message_notification(
+                event=event,
+                destination=notification.destination,
+                content=notification.content,
             )
-        except discord.NotFound as exc:
-            raise NonRetryableOutboxPublishError(
-                f"Discord channel was deleted before send: {notification.destination.channel_id}"
-            ) from exc
+            return
+
+        await self._send_channel_notification(
+            event=event,
+            destination=notification.destination,
+            content=notification.content,
+        )
 
     def _resolve_notification(self, event: PendingOutboxEvent) -> ResolvedNotification:
         return ResolvedNotification(
@@ -136,6 +157,68 @@ class DiscordOutboxEventPublisher:
                 f"Fetched Discord channel is not sendable: {channel_id}"
             )
         return fetched_channel
+
+    async def _resolve_user(self, user_id: int) -> DiscordSendableUser:
+        user = self._as_sendable_user(self.client.get_user(user_id))
+        if user is not None:
+            return user
+
+        try:
+            fetched_user_object = await self.client.fetch_user(user_id)
+        except discord.NotFound as exc:
+            raise NonRetryableOutboxPublishError(f"Discord user not found: {user_id}") from exc
+
+        fetched_user = self._as_sendable_user(fetched_user_object)
+        if fetched_user is None:
+            raise NonRetryableOutboxPublishError(
+                f"Fetched Discord user is not sendable: {user_id}"
+            )
+        return fetched_user
+
+    async def _send_channel_notification(
+        self,
+        *,
+        event: PendingOutboxEvent,
+        destination: ChannelNotificationDestination,
+        content: str,
+    ) -> None:
+        channel = await self._resolve_channel(destination.channel_id)
+        self._log_channel_guild_mismatch(
+            destination=destination,
+            channel=channel,
+            event=event,
+        )
+        try:
+            await channel.send(
+                content,
+                allowed_mentions=self._allowed_mentions,
+            )
+        except discord.NotFound as exc:
+            raise NonRetryableOutboxPublishError(
+                f"Discord channel was deleted before send: {destination.channel_id}"
+            ) from exc
+
+    async def _send_direct_message_notification(
+        self,
+        *,
+        event: PendingOutboxEvent,
+        destination: DirectMessageNotificationDestination,
+        content: str,
+    ) -> None:
+        try:
+            user = await self._resolve_user(destination.discord_user_id)
+            await user.send(
+                content,
+                allowed_mentions=self._allowed_mentions,
+            )
+        except discord.NotFound as exc:
+            raise NonRetryableOutboxPublishError(
+                f"Discord user was deleted before DM send: {destination.discord_user_id}"
+            ) from exc
+        except discord.Forbidden as exc:
+            raise NonRetryableOutboxPublishError(
+                f"Discord DM destination is forbidden: {destination.discord_user_id}"
+            ) from exc
 
     def _render_content(
         self,
@@ -166,14 +249,16 @@ class DiscordOutboxEventPublisher:
         self._raise_publish_error(f"Unsupported outbox event type: {event_type}")
 
     def _render_presence_reminder_content(self, payload: dict[str, object]) -> str:
-        mention_discord_user_id = self._require_payload_int(payload, "mention_discord_user_id")
-        mention_text = format_discord_user_mention(mention_discord_user_id)
-        return f"{mention_text} {PRESENCE_REMINDER_NOTIFICATION_MESSAGE}"
+        return self._render_channel_targeted_text_notification(
+            payload,
+            PRESENCE_REMINDER_NOTIFICATION_MESSAGE,
+        )
 
     def _render_queue_expired_content(self, payload: dict[str, object]) -> str:
-        mention_discord_user_id = self._require_payload_int(payload, "mention_discord_user_id")
-        mention_text = format_discord_user_mention(mention_discord_user_id)
-        return f"{mention_text} {QUEUE_EXPIRED_NOTIFICATION_MESSAGE}"
+        return self._render_channel_targeted_text_notification(
+            payload,
+            QUEUE_EXPIRED_NOTIFICATION_MESSAGE,
+        )
 
     def _render_match_created_content(self, payload: dict[str, object]) -> str:
         match_id = self._require_payload_int(payload, "match_id")
@@ -209,6 +294,24 @@ class DiscordOutboxEventPublisher:
                 *indented_team_b_display_labels,
             ]
         )
+
+    def _render_channel_targeted_text_notification(
+        self,
+        payload: dict[str, object],
+        message: str,
+    ) -> str:
+        destination = payload.get("destination")
+        if not isinstance(destination, dict):
+            self._raise_publish_error(
+                f"Outbox payload 'destination' must be a dict[str, int | None]: {destination!r}"
+            )
+
+        if destination.get("kind", "channel") != "channel":
+            return message
+
+        mention_discord_user_id = self._require_payload_int(payload, "mention_discord_user_id")
+        mention_text = format_discord_user_mention(mention_discord_user_id)
+        return f"{mention_text} {message}"
 
     def _render_match_parent_assigned_content(self, payload: dict[str, object]) -> str:
         match_id = self._require_payload_int(payload, "match_id")
@@ -313,7 +416,7 @@ class DiscordOutboxEventPublisher:
     def _log_channel_guild_mismatch(
         self,
         *,
-        destination: NotificationDestination,
+        destination: ChannelNotificationDestination,
         channel: DiscordSendableChannel,
         event: PendingOutboxEvent,
     ) -> None:
@@ -449,6 +552,21 @@ class DiscordOutboxEventPublisher:
                 f"Outbox payload 'destination' must be a dict[str, int | None]: {value!r}"
             )
 
+        kind = value.get("kind", "channel")
+        if kind == "dm":
+            discord_user_id = value.get("discord_user_id")
+            if not isinstance(discord_user_id, int):
+                self._raise_publish_error(
+                    "Outbox payload destination.discord_user_id must be an int: "
+                    f"{discord_user_id!r}"
+                )
+            return DirectMessageNotificationDestination(discord_user_id=discord_user_id)
+
+        if kind != "channel":
+            self._raise_publish_error(
+                f"Outbox payload destination.kind must be 'channel' or 'dm': {kind!r}"
+            )
+
         channel_id = value.get("channel_id")
         guild_id = value.get("guild_id")
         if not isinstance(channel_id, int):
@@ -460,7 +578,7 @@ class DiscordOutboxEventPublisher:
                 f"Outbox payload destination.guild_id must be an int | None: {guild_id!r}"
             )
 
-        return NotificationDestination(
+        return ChannelNotificationDestination(
             channel_id=channel_id,
             guild_id=cast(int | None, guild_id),
         )
@@ -517,6 +635,17 @@ class DiscordOutboxEventPublisher:
             return None
 
         return cast(DiscordSendableChannel, channel)
+
+    def _as_sendable_user(self, user: object | None) -> DiscordSendableUser | None:
+        if user is None:
+            return None
+
+        send = getattr(user, "send", None)
+        user_id = getattr(user, "id", None)
+        if not callable(send) or not isinstance(user_id, int):
+            return None
+
+        return cast(DiscordSendableUser, user)
 
     def _raise_publish_error(self, message: str) -> NoReturn:
         self.logger.error(message)

@@ -41,7 +41,11 @@ from dxd_rating.platform.db.models import (
     PenaltyType,
 )
 from dxd_rating.platform.runtime.outbox import retry_delay_for_failure_count
-from dxd_rating.shared.constants import MATCH_PARENT_SELECTION_WINDOW, PRESENCE_REMINDER_LEAD_TIME
+from dxd_rating.shared.constants import (
+    MATCH_PARENT_SELECTION_WINDOW,
+    MATCH_QUEUE_TTL,
+    PRESENCE_REMINDER_LEAD_TIME,
+)
 
 DEFAULT_RECONCILE_INTERVAL = timedelta(minutes=5)
 P = ParamSpec("P")
@@ -212,6 +216,7 @@ class MatchRuntime:
         self._scheduled_tasks: dict[ScheduledTaskKey, asyncio.Task[None]] = {}
         self._scheduled_match_tasks: dict[MatchScheduledTaskKey, asyncio.Task[None]] = {}
         self._reconcile_task: asyncio.Task[None] | None = None
+        self._database_clock_offset = timedelta()
         self._closed = False
         self._state_lock = asyncio.Lock()
 
@@ -257,6 +262,7 @@ class MatchRuntime:
             queue_name,
             notification_context=notification_context,
         )
+        self._observe_database_time(result.expire_at - MATCH_QUEUE_TTL)
         self._schedule_task(
             key=self._presence_reminder_task_key(result.queue_entry_id),
             task_name="presence reminder",
@@ -308,6 +314,7 @@ class MatchRuntime:
                 "present result for waiting entry must include revision and expire_at"
             )
 
+        self._observe_database_time(result.expire_at - MATCH_QUEUE_TTL)
         self._cancel_scheduled_task(self._presence_reminder_task_key(result.queue_entry_id))
         self._cancel_scheduled_task(self._expire_task_key(result.queue_entry_id))
         self._schedule_task(
@@ -590,6 +597,7 @@ class MatchRuntime:
         snapshot_time, waiting_entries = await asyncio.to_thread(
             self.service.load_waiting_entry_timer_states,
         )
+        self._observe_database_time(snapshot_time)
 
         reminded_queue_entry_ids: list[int] = []
         rescheduled_reminder_queue_entry_ids: list[int] = []
@@ -667,6 +675,7 @@ class MatchRuntime:
         snapshot_time, active_matches = await asyncio.to_thread(
             self.match_service.load_active_match_timer_states
         )
+        self._observe_database_time(snapshot_time)
         auto_assigned_parent_match_ids: list[int] = []
         opened_report_match_ids: list[int] = []
         started_approval_match_ids: list[int] = []
@@ -1171,13 +1180,19 @@ class MatchRuntime:
         )
 
     def _seconds_until(self, scheduled_at: datetime) -> float:
-        if scheduled_at.tzinfo is None:
-            current_time = datetime.now()
-        else:
-            current_time = datetime.now(tz=scheduled_at.tzinfo)
+        current_time = self._database_now_for(scheduled_at)
         return max((scheduled_at - current_time).total_seconds(), 0.0)
 
     def _current_time_for(self, reference: datetime) -> datetime:
+        return self._database_now_for(reference)
+
+    def _database_now_for(self, reference: datetime) -> datetime:
+        return self._app_now_for_reference(reference) + self._database_clock_offset
+
+    def _observe_database_time(self, database_time: datetime) -> None:
+        self._database_clock_offset = database_time - self._app_now_for_reference(database_time)
+
+    def _app_now_for_reference(self, reference: datetime) -> datetime:
         if reference.tzinfo is None:
             return datetime.now()
         return datetime.now(tz=reference.tzinfo)

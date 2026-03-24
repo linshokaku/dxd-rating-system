@@ -172,7 +172,8 @@ class MatchingQueueNotificationContext:
     mention_discord_user_id: int
 
 
-class NotificationDestinationPayload(TypedDict):
+class NotificationDestinationPayload(TypedDict, total=False):
+    kind: str
     channel_id: int
     guild_id: int | None
 
@@ -749,7 +750,7 @@ class MatchingQueueService:
         )
         destinations_by_channel_id: dict[int, NotificationDestinationPayload] = {}
         for queue_entry in all_entries:
-            destination = self._build_notification_destination_payload(
+            destination = self._build_channel_destination_payload(
                 queue_entry,
                 event_context="match_created",
             )
@@ -946,6 +947,9 @@ class MatchingQueueService:
 
         entry.notification_channel_id = notification_context.channel_id
         entry.notification_guild_id = notification_context.guild_id
+        entry.notification_dm_discord_user_id = None
+        entry.notification_interaction_application_id = None
+        entry.notification_interaction_token = None
         entry.notification_mention_discord_user_id = notification_context.mention_discord_user_id
         entry.notification_recorded_at = recorded_at
 
@@ -955,7 +959,7 @@ class MatchingQueueService:
             "player_id": entry.player_id,
             "revision": entry.revision,
             "expire_at": entry.expire_at.isoformat(),
-            "destination": self._build_notification_destination_payload(
+            "destination": self._build_player_operation_destination_payload(
                 entry,
                 event_context="presence_reminder",
             ),
@@ -968,14 +972,22 @@ class MatchingQueueService:
             "player_id": entry.player_id,
             "revision": entry.revision,
             "expire_at": entry.expire_at.isoformat(),
-            "destination": self._build_notification_destination_payload(
+            "destination": self._build_player_operation_destination_payload(
                 entry,
                 event_context="queue_expired",
             ),
             "mention_discord_user_id": entry.notification_mention_discord_user_id,
         }
 
-    def _build_notification_destination_payload(
+    def _build_player_operation_destination_payload(
+        self,
+        entry: MatchQueueEntry,
+        *,
+        event_context: str,
+    ) -> NotificationDestinationPayload:
+        return self._build_channel_destination_payload(entry, event_context=event_context)
+
+    def _build_channel_destination_payload(
         self,
         entry: MatchQueueEntry,
         *,
@@ -986,6 +998,7 @@ class MatchingQueueService:
                 f"notification_channel_id is missing for {event_context} queue_entry_id={entry.id}"
             )
         return {
+            "kind": "channel",
             "channel_id": entry.notification_channel_id,
             "guild_id": entry.notification_guild_id,
         }

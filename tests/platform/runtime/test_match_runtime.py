@@ -67,6 +67,7 @@ from dxd_rating.platform.runtime import (
     PendingOutboxEvent,
 )
 from dxd_rating.shared.constants import (
+    MATCH_QUEUE_TTL,
     PRESENCE_REMINDER_LEAD_TIME,
     get_match_queue_class_definition_by_name,
 )
@@ -180,9 +181,38 @@ def make_not_found() -> discord.NotFound:
 
 
 @dataclass
+class FakeDiscordHttpClientState:
+    _HTTPClient__session: object = field(default_factory=object)
+    proxy_auth: object | None = None
+    proxy: str | None = None
+    token: str = "bot-token"
+
+
+@dataclass
+class FakeDiscordConnectionState:
+    http: FakeDiscordHttpClientState = field(default_factory=FakeDiscordHttpClientState)
+
+
+@dataclass
 class FakeDiscordChannel:
     id: int
     guild: FakeDiscordGuild | None = None
+    sent_messages: list[str] = field(default_factory=list)
+    allowed_mentions_history: list[discord.AllowedMentions] = field(default_factory=list)
+
+    async def send(
+        self,
+        content: str,
+        *,
+        allowed_mentions: discord.AllowedMentions,
+    ) -> None:
+        self.sent_messages.append(content)
+        self.allowed_mentions_history.append(allowed_mentions)
+
+
+@dataclass
+class FakeDiscordUser:
+    id: int
     sent_messages: list[str] = field(default_factory=list)
     allowed_mentions_history: list[discord.AllowedMentions] = field(default_factory=list)
 
@@ -202,6 +232,11 @@ class FakeDiscordClient:
     uncached_channel_ids: set[int] = field(default_factory=set)
     fetched_channel_ids: list[int] = field(default_factory=list)
     fetch_errors: dict[int, Exception] = field(default_factory=dict)
+    users: dict[int, FakeDiscordUser] = field(default_factory=dict)
+    uncached_user_ids: set[int] = field(default_factory=set)
+    fetched_user_ids: list[int] = field(default_factory=list)
+    user_fetch_errors: dict[int, Exception] = field(default_factory=dict)
+    _connection: FakeDiscordConnectionState = field(default_factory=FakeDiscordConnectionState)
 
     def get_channel(self, channel_id: int) -> object | None:
         if channel_id in self.uncached_channel_ids:
@@ -217,6 +252,21 @@ class FakeDiscordClient:
         if channel is None:
             raise LookupError(f"Unknown channel: {channel_id}")
         return channel
+
+    def get_user(self, user_id: int) -> object | None:
+        if user_id in self.uncached_user_ids:
+            return None
+        return self.users.get(user_id)
+
+    async def fetch_user(self, user_id: int) -> object:
+        self.fetched_user_ids.append(user_id)
+        fetch_error = self.user_fetch_errors.get(user_id)
+        if fetch_error is not None:
+            raise fetch_error
+        user = self.users.get(user_id)
+        if user is None:
+            raise LookupError(f"Unknown user: {user_id}")
+        return user
 
 
 def create_player(session: Session, discord_user_id: int) -> int:
@@ -517,6 +567,31 @@ def test_match_runtime_present_calls_service_and_replaces_timers(
             "handler_call": None,
         },
     ]
+
+
+def test_match_runtime_present_updates_database_clock_offset_from_expire_at(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = Mock()
+    expected_database_now = datetime(2026, 3, 24, 12, 0, tzinfo=timezone.utc)
+    sampled_at = expected_database_now + timedelta(milliseconds=120)
+    present_result = PresentQueueResult(
+        queue_entry_id=211,
+        revision=4,
+        expire_at=expected_database_now + MATCH_QUEUE_TTL,
+        expired=False,
+        message="updated",
+    )
+    service.present.return_value = present_result
+    runtime = MatchRuntime(service=service)
+
+    monkeypatch.setattr(runtime, "_app_now_for_reference", lambda reference: sampled_at)
+    monkeypatch.setattr(runtime, "_cancel_scheduled_task", lambda key: None)
+    monkeypatch.setattr(runtime, "_schedule_task", lambda **kwargs: True)
+
+    asyncio.run(runtime.present(5005))
+
+    assert runtime._database_clock_offset == expected_database_now - sampled_at
 
 
 def test_match_runtime_present_cancels_timers_when_entry_already_expired(
@@ -867,6 +942,30 @@ def test_match_runtime_run_startup_sync_calls_service_and_reschedules(
     ]
 
 
+def test_match_runtime_run_startup_sync_updates_database_clock_offset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = Mock()
+    snapshot_time = datetime(2026, 3, 24, 12, 10, tzinfo=timezone.utc)
+    sampled_at = snapshot_time + timedelta(milliseconds=90)
+    service.cleanup_expired_entries.return_value = tuple()
+    service.try_create_matches.return_value = tuple()
+    service.load_waiting_entry_timer_states.return_value = (snapshot_time, tuple())
+    runtime = MatchRuntime(service=service)
+
+    monkeypatch.setattr(runtime, "_app_now_for_reference", lambda reference: sampled_at)
+    result = asyncio.run(runtime.run_startup_sync())
+
+    assert result == MatchRuntimeSyncResult(
+        cleaned_up_queue_entry_ids=tuple(),
+        reminded_queue_entry_ids=tuple(),
+        rescheduled_reminder_queue_entry_ids=tuple(),
+        rescheduled_expire_queue_entry_ids=tuple(),
+        created_match_ids=tuple(),
+    )
+    assert runtime._database_clock_offset == snapshot_time - sampled_at
+
+
 def test_match_runtime_run_reconcile_cycle_passes_warn_on_cleanup() -> None:
     service = Mock()
     snapshot_time = datetime.now(timezone.utc)
@@ -1209,6 +1308,20 @@ def test_match_runtime_replaces_pending_retry_when_rescheduled(
     asyncio.run(scenario())
 
     assert calls == [(501, 1), (501, 2)]
+
+
+def test_match_runtime_seconds_until_uses_database_clock_offset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = MatchRuntime(service=Mock())
+    app_now = datetime(2026, 3, 24, 12, 20, tzinfo=timezone.utc)
+    scheduled_at = datetime(2026, 3, 24, 12, 20, 10, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(runtime, "_app_now_for_reference", lambda reference: app_now)
+    runtime._database_clock_offset = timedelta(seconds=-30)
+
+    assert runtime._seconds_until(scheduled_at) == 40.0
+    assert runtime._current_time_for(scheduled_at) == app_now - timedelta(seconds=30)
 
 
 def test_match_runtime_runs_startup_sync_and_reconcile_loop() -> None:
@@ -1654,10 +1767,10 @@ def test_outbox_dispatcher_rebuilds_retry_timers_on_start(
     assert [event.event_type for event in publisher.events] == [OutboxEventType.MATCH_CREATED]
 
 
-def test_discord_outbox_publisher_sends_presence_reminder_to_payload_destination() -> None:
+def test_discord_outbox_publisher_sends_presence_reminder_to_channel_destination() -> None:
+    discord_user_id = 930_001
     channel_id = 900_001
     guild_id = 910_001
-    mention_discord_user_id = 920_001
     channel = FakeDiscordChannel(id=channel_id, guild=FakeDiscordGuild(id=guild_id))
     client = FakeDiscordClient(channels={channel.id: channel})
     publisher = DiscordOutboxEventPublisher(client=client)
@@ -1675,10 +1788,11 @@ def test_discord_outbox_publisher_sends_presence_reminder_to_payload_destination
                     "revision": 1,
                     "expire_at": datetime.now(timezone.utc).isoformat(),
                     "destination": {
+                        "kind": "channel",
                         "channel_id": channel_id,
                         "guild_id": guild_id,
                     },
-                    "mention_discord_user_id": mention_discord_user_id,
+                    "mention_discord_user_id": discord_user_id,
                 },
                 created_at=datetime.now(timezone.utc),
             ),
@@ -1686,15 +1800,17 @@ def test_discord_outbox_publisher_sends_presence_reminder_to_payload_destination
     )
 
     assert channel.sent_messages == [
-        f"<@{mention_discord_user_id}> {PRESENCE_REMINDER_NOTIFICATION_MESSAGE}",
+        f"<@{discord_user_id}> {PRESENCE_REMINDER_NOTIFICATION_MESSAGE}"
     ]
-    assert channel.allowed_mentions_history[0].users is True
+    allowed_mentions = channel.allowed_mentions_history[0]
+    assert isinstance(allowed_mentions, discord.AllowedMentions)
+    assert allowed_mentions.users is True
 
 
 def test_discord_outbox_publisher_fetches_uncached_channel_for_queue_expired() -> None:
-    channel_id = 900_002
-    guild_id = 910_002
-    mention_discord_user_id = 920_002
+    discord_user_id = 930_011
+    channel_id = 900_011
+    guild_id = 910_011
     channel = FakeDiscordChannel(id=channel_id, guild=FakeDiscordGuild(id=guild_id))
     client = FakeDiscordClient(
         channels={channel.id: channel},
@@ -1706,19 +1822,20 @@ def test_discord_outbox_publisher_fetches_uncached_channel_for_queue_expired() -
         publish_with_bound_loop(
             publisher,
             PendingOutboxEvent(
-                id=2,
+                id=11,
                 event_type=OutboxEventType.QUEUE_EXPIRED,
-                dedupe_key="queue_expired:1:2",
+                dedupe_key="queue_expired:11:1",
                 payload={
-                    "queue_entry_id": 102,
-                    "player_id": 80_002,
-                    "revision": 2,
+                    "queue_entry_id": 111,
+                    "player_id": 80_011,
+                    "revision": 1,
                     "expire_at": datetime.now(timezone.utc).isoformat(),
                     "destination": {
+                        "kind": "channel",
                         "channel_id": channel_id,
                         "guild_id": guild_id,
                     },
-                    "mention_discord_user_id": mention_discord_user_id,
+                    "mention_discord_user_id": discord_user_id,
                 },
                 created_at=datetime.now(timezone.utc),
             ),
@@ -1727,8 +1844,11 @@ def test_discord_outbox_publisher_fetches_uncached_channel_for_queue_expired() -
 
     assert client.fetched_channel_ids == [channel.id]
     assert channel.sent_messages == [
-        f"<@{mention_discord_user_id}> {QUEUE_EXPIRED_NOTIFICATION_MESSAGE}",
+        f"<@{discord_user_id}> {QUEUE_EXPIRED_NOTIFICATION_MESSAGE}"
     ]
+    allowed_mentions = channel.allowed_mentions_history[0]
+    assert isinstance(allowed_mentions, discord.AllowedMentions)
+    assert allowed_mentions.users is True
 
 
 def test_discord_outbox_publisher_raises_non_retryable_error_when_channel_is_missing() -> None:
@@ -1767,10 +1887,10 @@ def test_discord_outbox_publisher_raises_non_retryable_error_when_channel_is_mis
         )
 
 
-def test_discord_outbox_publisher_renders_dummy_prefix_for_dummy_user_id() -> None:
+def test_discord_outbox_publisher_prefixes_channel_reminder_with_target_user_mention() -> None:
     channel_id = 900_020
     guild_id = 910_020
-    dummy_discord_user_id = 777
+    discord_user_id = 930_020
     channel = FakeDiscordChannel(id=channel_id, guild=FakeDiscordGuild(id=guild_id))
     client = FakeDiscordClient(channels={channel.id: channel})
     publisher = DiscordOutboxEventPublisher(client=client)
@@ -1788,10 +1908,11 @@ def test_discord_outbox_publisher_renders_dummy_prefix_for_dummy_user_id() -> No
                     "revision": 1,
                     "expire_at": datetime.now(timezone.utc).isoformat(),
                     "destination": {
+                        "kind": "channel",
                         "channel_id": channel_id,
                         "guild_id": guild_id,
                     },
-                    "mention_discord_user_id": dummy_discord_user_id,
+                    "mention_discord_user_id": discord_user_id,
                 },
                 created_at=datetime.now(timezone.utc),
             ),
@@ -1799,7 +1920,7 @@ def test_discord_outbox_publisher_renders_dummy_prefix_for_dummy_user_id() -> No
     )
 
     assert channel.sent_messages == [
-        f"<dummy_{dummy_discord_user_id}> {PRESENCE_REMINDER_NOTIFICATION_MESSAGE}",
+        f"<@{discord_user_id}> {PRESENCE_REMINDER_NOTIFICATION_MESSAGE}"
     ]
 
 

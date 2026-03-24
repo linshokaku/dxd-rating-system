@@ -60,8 +60,9 @@
 
 現時点では、後続通知の配送先は以下の方針とする。
 
-- 通知は、関連するマッチングキュー系コマンドを打った channel に送る
-- `presence_reminder` と `queue_expired` は、そのコマンドを実行した人への mention を付ける
+- `presence_reminder` と `queue_expired` は、通常ユーザー操作でも開発者コマンド操作でも、最新のコマンド実行または button 押下が発生した `channel_id` 宛てに送る
+- `presence_reminder` と `queue_expired` は、対象ユーザーへの mention を先頭に付けた通常のテキストメッセージとして送る
+- `match_created` は、参加者ごとの通知先コンテキストから決定した channel に送る
 - `match_created` は特定プレイヤーへの mention を付けない
 - mention 形式は `<@discord_user_id>` を用いる
 
@@ -69,7 +70,7 @@
 
 - thread も Discord 上では channel として扱い、`channel_id` で識別する
 - `guild_id` は送信先の検証やログ用途のため保持してよい
-- このポリシーは暫定であり、将来は固定通知 channel や DM へ拡張する可能性がある
+- 将来 button UI を導入した場合は、button interaction が発生した channel をタイマー通知の最新送信先として扱う
 
 ## 通知先コンテキスト
 
@@ -80,10 +81,17 @@
 
 ### 最低限必要な情報
 
+タイマー通知と `match_created` を channel 宛てに送るため、通知先コンテキストは少なくとも以下を保持できる必要がある。
+
 - `channel_id`
 - `guild_id` または `NULL`
 - `mention_discord_user_id`
 - `recorded_at`
+
+補足:
+
+- `channel_id` は、`presence_reminder`、`queue_expired`、`match_created` の配送先決定に使う。
+- `mention_discord_user_id` は、`presence_reminder` と `queue_expired` の先頭 mention に使う。
 
 ### 保存単位
 
@@ -101,13 +109,16 @@
 ### join
 
 - `join` 成功時に、新しく作成された `waiting` 行へ通知先コンテキストを保存する
-- 保存する `channel_id` は `join` を実行した channel とする
-- 保存する `mention_discord_user_id` は `join` を実行した Discord user ID とする
+- `presence_reminder` と `queue_expired` の送信先として、この `join` が実行された `channel_id` を保存する
+- `match_created` の送信先としては、引き続き `join` を実行した `channel_id` を保存する
+- 保存する `mention_discord_user_id` は、通常ユーザー操作では `join` を実行した Discord user ID、開発者コマンド操作では対象ユーザーの Discord user ID とする
+- 将来 button UI を導入した場合は、button 押下時も同じ形式で最新 `channel_id` を保存できるようにする
 
 ### present
 
 - `present` 成功時に、対象の `waiting` 行の通知先コンテキストを上書きする
 - 上書き後は、新しい reminder / expire はその最新コンテキストを使う
+- `presence_reminder` と `queue_expired` の送信先を、この `present` コマンドが実行された `channel_id` に上書きする
 
 ### leave
 
@@ -118,21 +129,23 @@
 
 ### `presence_reminder`
 
-- service 層は、対象 `queue_entry_id` に紐づく最新の通知先コンテキストを使って event を作成する
+- service 層は、対象 `queue_entry_id` に紐づく最新の通知先コンテキストの `channel_id` を使って event を作成する
 - outbox payload には、その時点の送信先スナップショットを含める
 - 送信先は payload 内の `destination.channel_id`
-- mention 対象は payload 内の `mention_discord_user_id`
+- 表示対象ユーザーは payload 内の `mention_discord_user_id`
+- 通知は対象ユーザーへの mention を先頭に付けた通常のテキストメッセージとして送る
 - メッセージ例:
-  - `<@123456789012345678> 在席確認です。1分以内に在席更新がない場合はマッチングキューから外れます。`
+  - `在席確認です。1分以内に在席更新がない場合はマッチングキューから外れます。`
 
 ### `queue_expired`
 
-- service 層は、対象 `queue_entry_id` に紐づく最新の通知先コンテキストを使って event を作成する
+- service 層は、対象 `queue_entry_id` に紐づく最新の通知先コンテキストの `channel_id` を使って event を作成する
 - outbox payload には、その時点の送信先スナップショットを含める
 - 送信先は payload 内の `destination.channel_id`
-- mention 対象は payload 内の `mention_discord_user_id`
+- 表示対象ユーザーは payload 内の `mention_discord_user_id`
+- 通知は対象ユーザーへの mention を先頭に付けた通常のテキストメッセージとして送る
 - メッセージ例:
-  - `<@123456789012345678> 期限切れでマッチングキューから外れました。`
+  - `期限切れでマッチングキューから外れました。`
 
 ### `match_created`
 
@@ -200,6 +213,7 @@ Team B
 
 - `queue_entry` 側の通知先コンテキストは、`present` 後の最新状態管理と startup sync のために引き続き保持する
 - publish 時の Discord 送信先解決は、基本的に outbox payload のスナップショットだけで完結させる
+- `presence_reminder` と `queue_expired` の `destination` には、保存済み通知先コンテキストの channel スナップショットを入れる
 
 ## `LISTEN/NOTIFY` と保険用 polling
 
@@ -321,8 +335,8 @@ warning log の意図:
 
 ## startup sync / 再起動との関係
 
-- startup sync によって reminder / expire / match_created が回収されても、通知先は保存済みコンテキストから決定できる必要がある
-- `join` commit 後にプロセスが落ちた場合でも、通知先コンテキストが DB に残っていれば再起動後に reminder / expire を送れる
+- startup sync によって reminder / expire / match_created が回収されても、`presence_reminder`、`queue_expired`、`match_created` は保存済み通知先コンテキストから通知先を決定できる必要がある
+- `join` commit 後にプロセスが落ちた場合でも、通知先コンテキストが DB に残っていれば、再起動後に reminder / expire を送れる
 - `join` commit 後にマッチング試行前にプロセスが落ちた場合でも、参加者ごとの通知先コンテキストが残っていれば、startup sync が作成した `match_created` 通知を配送できる
 - runtime 再起動時は、listener 待受開始後の catch-up、retry timer の再構築、保険用 polling により未配送 event を回収できるようにする
 
@@ -330,9 +344,10 @@ warning log の意図:
 
 - マッチングキュー系コマンドは、成功時に通知先コンテキストを service 層へ渡す
 - 最低限、以下を取得できること
+  - `interaction.user.id`
   - `interaction.channel_id`
   - `interaction.guild_id`
-  - `interaction.user.id`
+- 通常ユーザーの `join` / `present` でも開発者コマンドでも、タイマー系通知と `match_created` の channel 送信先として `interaction.channel_id` を保存できること
 
 ## 未決定事項
 
@@ -341,4 +356,3 @@ warning log の意図:
 - `match_created` を 1 channel に集約するか、参加者ごとに個別 channel へ送るか
 - 同じ match に対して複数 channel へ送る際の文面を統一するか
 - mention 対象を「コマンド実行者」に固定するか、「プレイヤー本人」に寄せるか
-- 将来 DM 通知を導入するか

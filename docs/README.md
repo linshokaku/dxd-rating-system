@@ -47,7 +47,7 @@
 - [outbox.md](outbox.md)
   - 非同期通知配送
 - [commands/user-commands.md](commands/user-commands.md)
-  - ユーザー向け slash command
+  - ユーザー向け slash command。プレイヤー操作コマンドと試合操作コマンドを含む
 - [commands/dev-commands.md](commands/dev-commands.md)
   - 開発者向け slash command
 - [ui/common.md](ui/common.md)

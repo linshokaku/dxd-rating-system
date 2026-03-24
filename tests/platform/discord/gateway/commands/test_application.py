@@ -196,12 +196,24 @@ class FakeInteraction:
     user: FakeUser
     channel_id: int | None = 1_001
     guild_id: int | None = 2_001
+    application_id: int | None = 3_001
+    token: str = "interaction-token"
     guild: FakeGuild | None = None
     response: FakeInteractionResponse = field(default_factory=FakeInteractionResponse)
 
 
 def as_interaction(fake_interaction: FakeInteraction) -> discord.Interaction[discord.Client]:
     return cast(discord.Interaction[discord.Client], fake_interaction)
+
+
+def assert_response(
+    interaction: FakeInteraction,
+    expected_messages: list[str],
+    *,
+    ephemeral: bool,
+) -> None:
+    assert interaction.response.messages == expected_messages
+    assert interaction.response.ephemeral_flags == [ephemeral] * len(expected_messages)
 
 
 @pytest.fixture(autouse=True)
@@ -351,7 +363,7 @@ def test_register_command_registers_requesting_user(
         select(Player).where(Player.discord_user_id == interaction.user.id)
     )
 
-    assert interaction.response.messages == ["登録が完了しました。"]
+    assert_response(interaction, ["登録が完了しました。"], ephemeral=True)
     assert persisted_player is not None
     assert persisted_player.display_name == f"user-{discord_user_id}"
     assert persisted_player.display_name_updated_at is not None
@@ -369,7 +381,7 @@ def test_register_command_returns_duplicate_message_for_registered_user(
 
     asyncio.run(handlers.register(as_interaction(interaction)))
 
-    assert interaction.response.messages == ["すでに登録済みです。"]
+    assert_response(interaction, ["すでに登録済みです。"], ephemeral=True)
     session.expire_all()
     persisted_player = session.scalar(
         select(Player).where(Player.discord_user_id == discord_user_id)
@@ -391,7 +403,11 @@ def test_register_command_returns_internal_error_message_when_seasons_are_missin
 
     asyncio.run(handlers.register(as_interaction(interaction)))
 
-    assert interaction.response.messages == ["登録に失敗しました。管理者に確認してください。"]
+    assert_response(
+        interaction,
+        ["登録に失敗しました。管理者に確認してください。"],
+        ephemeral=True,
+    )
 
 
 def test_join_command_joins_requesting_player_and_stores_notification_context(
@@ -429,9 +445,16 @@ def test_join_command_joins_requesting_player_and_stores_notification_context(
         select(Player).where(Player.discord_user_id == discord_user_id)
     )
 
-    assert interaction.response.messages == ["キューに参加しました。5分間マッチングします。"]
+    assert_response(
+        interaction,
+        ["キューに参加しました。5分間マッチングします。"],
+        ephemeral=True,
+    )
     assert queue_entry.notification_channel_id == 3_001
     assert queue_entry.notification_guild_id == 4_001
+    assert queue_entry.notification_dm_discord_user_id is None
+    assert queue_entry.notification_interaction_application_id is None
+    assert queue_entry.notification_interaction_token is None
     assert queue_entry.notification_mention_discord_user_id == discord_user_id
     assert persisted_player is not None
     assert persisted_player.display_name == "queue-guild"
@@ -454,9 +477,11 @@ def test_join_command_requires_registered_player(session_factory: sessionmaker[S
         )
     )
 
-    assert interaction.response.messages == [
-        "プレイヤー登録が必要です。先に /register を実行してください。"
-    ]
+    assert_response(
+        interaction,
+        ["プレイヤー登録が必要です。先に /register を実行してください。"],
+        ephemeral=True,
+    )
 
 
 def test_join_command_returns_internal_error_message_when_seasons_are_missing(
@@ -482,7 +507,11 @@ def test_join_command_returns_internal_error_message_when_seasons_are_missing(
         )
     )
 
-    assert interaction.response.messages == ["キュー参加に失敗しました。管理者に確認してください。"]
+    assert_response(
+        interaction,
+        ["キュー参加に失敗しました。管理者に確認してください。"],
+        ephemeral=True,
+    )
 
 
 def test_join_command_returns_restricted_message_for_queue_join_restricted_player(
@@ -512,7 +541,7 @@ def test_join_command_returns_restricted_message_for_queue_join_restricted_playe
         )
     )
 
-    assert interaction.response.messages == ["現在キュー参加を制限されています。"]
+    assert_response(interaction, ["現在キュー参加を制限されています。"], ephemeral=True)
 
 
 def test_present_command_updates_waiting_entry_and_notification_context(
@@ -546,9 +575,16 @@ def test_present_command_updates_waiting_entry_and_notification_context(
 
     queue_entry = get_queue_entry(session, player.id)
 
-    assert interaction.response.messages == ["在席を更新しました。次の期限は5分後です。"]
+    assert_response(
+        interaction,
+        ["在席を更新しました。次の期限は5分後です。"],
+        ephemeral=True,
+    )
     assert queue_entry.notification_channel_id == 8_001
     assert queue_entry.notification_guild_id == 9_001
+    assert queue_entry.notification_dm_discord_user_id is None
+    assert queue_entry.notification_interaction_application_id is None
+    assert queue_entry.notification_interaction_token is None
     assert queue_entry.notification_mention_discord_user_id == discord_user_id
 
 
@@ -566,7 +602,7 @@ def test_present_command_returns_not_joined_message_for_non_waiting_player(
 
     asyncio.run(handlers.present(as_interaction(interaction)))
 
-    assert interaction.response.messages == ["キューに参加していません。"]
+    assert_response(interaction, ["キューに参加していません。"], ephemeral=True)
 
 
 def test_leave_command_is_idempotent_for_registered_player_without_waiting_entry(
@@ -583,7 +619,7 @@ def test_leave_command_is_idempotent_for_registered_player_without_waiting_entry
 
     asyncio.run(handlers.leave(as_interaction(interaction)))
 
-    assert interaction.response.messages == ["キューから退出しました。"]
+    assert_response(interaction, ["キューから退出しました。"], ephemeral=True)
 
 
 def test_player_info_command_returns_requesting_player_stats(
@@ -605,22 +641,26 @@ def test_player_info_command_returns_requesting_player_stats(
 
     asyncio.run(handlers.player_info(as_interaction(interaction)))
 
-    assert interaction.response.messages == [
-        format_player_info_message(
-            {
-                MatchFormat.ONE_VS_ONE: (1500.0, 0, 0, 0, 0, None),
-                MatchFormat.TWO_VS_TWO: (1500.0, 0, 0, 0, 0, None),
-                MatchFormat.THREE_VS_THREE: (
-                    1512.5,
-                    8,
-                    5,
-                    2,
-                    1,
-                    datetime(2026, 3, 20, 12, 34, 56, tzinfo=timezone.utc),
-                ),
-            }
-        )
-    ]
+    assert_response(
+        interaction,
+        [
+            format_player_info_message(
+                {
+                    MatchFormat.ONE_VS_ONE: (1500.0, 0, 0, 0, 0, None),
+                    MatchFormat.TWO_VS_TWO: (1500.0, 0, 0, 0, 0, None),
+                    MatchFormat.THREE_VS_THREE: (
+                        1512.5,
+                        8,
+                        5,
+                        2,
+                        1,
+                        datetime(2026, 3, 20, 12, 34, 56, tzinfo=timezone.utc),
+                    ),
+                }
+            )
+        ],
+        ephemeral=True,
+    )
 
 
 def test_player_info_season_command_returns_requested_season_stats(
@@ -649,17 +689,21 @@ def test_player_info_season_command_returns_requested_season_stats(
 
     asyncio.run(handlers.player_info_season(as_interaction(interaction), season_pair.upcoming.id))
 
-    assert interaction.response.messages == [
-        format_player_info_message(
-            {
-                MatchFormat.ONE_VS_ONE: (1500.0, 0, 0, 0, 0, None),
-                MatchFormat.TWO_VS_TWO: (1500.0, 0, 0, 0, 0, None),
-                MatchFormat.THREE_VS_THREE: (1601.0, 4, 3, 1, 0, None),
-            },
-            season_id=season_pair.upcoming.id,
-            season_name="next-spring",
-        )
-    ]
+    assert_response(
+        interaction,
+        [
+            format_player_info_message(
+                {
+                    MatchFormat.ONE_VS_ONE: (1500.0, 0, 0, 0, 0, None),
+                    MatchFormat.TWO_VS_TWO: (1500.0, 0, 0, 0, 0, None),
+                    MatchFormat.THREE_VS_THREE: (1601.0, 4, 3, 1, 0, None),
+                },
+                season_id=season_pair.upcoming.id,
+                season_name="next-spring",
+            )
+        ],
+        ephemeral=True,
+    )
 
 
 def test_player_info_command_requires_registered_player(
@@ -670,9 +714,11 @@ def test_player_info_command_requires_registered_player(
 
     asyncio.run(handlers.player_info(as_interaction(interaction)))
 
-    assert interaction.response.messages == [
-        "プレイヤー登録が必要です。先に /register を実行してください。"
-    ]
+    assert_response(
+        interaction,
+        ["プレイヤー登録が必要です。先に /register を実行してください。"],
+        ephemeral=True,
+    )
 
 
 def test_player_info_command_returns_internal_error_message_when_seasons_are_missing(
@@ -689,9 +735,11 @@ def test_player_info_command_returns_internal_error_message_when_seasons_are_mis
 
     asyncio.run(handlers.player_info(as_interaction(interaction)))
 
-    assert interaction.response.messages == [
-        "プレイヤー情報の取得に失敗しました。管理者に確認してください。"
-    ]
+    assert_response(
+        interaction,
+        ["プレイヤー情報の取得に失敗しました。管理者に確認してください。"],
+        ephemeral=True,
+    )
 
 
 def test_match_spectate_command_registers_requesting_player_as_spectator(
@@ -936,9 +984,12 @@ def test_dev_join_targets_provided_user_and_uses_target_for_notification_context
 
     queue_entry = get_queue_entry(session, player.id)
 
-    assert interaction.response.messages == ["指定したユーザーをキューに参加させました。"]
+    assert_response(interaction, ["指定したユーザーをキューに参加させました。"], ephemeral=False)
     assert queue_entry.notification_channel_id == 11_001
     assert queue_entry.notification_guild_id == 12_001
+    assert queue_entry.notification_dm_discord_user_id is None
+    assert queue_entry.notification_interaction_application_id is None
+    assert queue_entry.notification_interaction_token is None
     assert queue_entry.notification_mention_discord_user_id == target_discord_user_id
 
 

@@ -157,16 +157,16 @@ DEV_JOIN_NOT_ALLOWED_MESSAGE = (
     "指定したユーザーは現在のレーティングではそのキューに参加できません。"
 )
 DEV_JOIN_RESTRICTED_MESSAGE = "指定したユーザーは現在キュー参加を制限されています。"
-DEV_JOIN_FAILED_MESSAGE = "ダミーユーザーのキュー参加に失敗しました。管理者に確認してください。"
+DEV_JOIN_FAILED_MESSAGE = "指定したユーザーのキュー参加に失敗しました。管理者に確認してください。"
 
 DEV_PRESENT_SUCCESS_MESSAGE = "指定したユーザーの在席を更新しました。"
 DEV_PRESENT_NOT_JOINED_MESSAGE = "指定したユーザーはキューに参加していません。"
 DEV_PRESENT_EXPIRED_MESSAGE = "指定したユーザーは期限切れのためキューから外れました。"
-DEV_PRESENT_FAILED_MESSAGE = "ダミーユーザーの在席更新に失敗しました。管理者に確認してください。"
+DEV_PRESENT_FAILED_MESSAGE = "指定したユーザーの在席更新に失敗しました。管理者に確認してください。"
 
 DEV_LEAVE_SUCCESS_MESSAGE = "指定したユーザーをキューから退出させました。"
 DEV_LEAVE_EXPIRED_MESSAGE = "指定したユーザーはすでに期限切れでキューから外れています。"
-DEV_LEAVE_FAILED_MESSAGE = "ダミーユーザーのキュー退出に失敗しました。管理者に確認してください。"
+DEV_LEAVE_FAILED_MESSAGE = "指定したユーザーのキュー退出に失敗しました。管理者に確認してください。"
 DEV_PLAYER_INFO_FAILED_MESSAGE = (
     "指定したユーザーのプレイヤー情報取得に失敗しました。管理者に確認してください。"
 )
@@ -370,7 +370,7 @@ class BotCommandHandlers:
         self._match_service = service
 
     async def register(self, interaction: discord.Interaction[Any]) -> None:
-        await self._run_register(interaction, ephemeral=False)
+        await self._run_register(interaction, ephemeral=True)
 
     async def register_from_ui(self, interaction: discord.Interaction[Any]) -> None:
         await self._run_register(interaction, ephemeral=True)
@@ -385,10 +385,9 @@ class BotCommandHandlers:
         try:
             await asyncio.to_thread(self._register_player, interaction.user.id)
         except PlayerAlreadyRegisteredError:
-            await self._send_message(
+            await self._send_player_operation_message(
                 interaction,
                 REGISTER_ALREADY_REGISTERED_MESSAGE,
-                ephemeral=ephemeral,
             )
             return
         except Exception:
@@ -396,11 +395,17 @@ class BotCommandHandlers:
                 "Failed to execute /register command discord_user_id=%s",
                 interaction.user.id,
             )
-            await self._send_message(interaction, REGISTER_FAILED_MESSAGE, ephemeral=ephemeral)
+            if ephemeral:
+                await self._send_player_operation_message(interaction, REGISTER_FAILED_MESSAGE)
+            else:
+                await self._send_message(interaction, REGISTER_FAILED_MESSAGE, ephemeral=False)
             return
 
         await self._sync_requesting_user_identity(interaction)
-        await self._send_message(interaction, REGISTER_SUCCESS_MESSAGE, ephemeral=ephemeral)
+        if ephemeral:
+            await self._send_player_operation_message(interaction, REGISTER_SUCCESS_MESSAGE)
+        else:
+            await self._send_message(interaction, REGISTER_SUCCESS_MESSAGE, ephemeral=False)
 
     async def join(
         self,
@@ -410,7 +415,9 @@ class BotCommandHandlers:
     ) -> None:
         await self._sync_requesting_user_identity(interaction)
         try:
-            notification_context = self._build_notification_context(interaction)
+            notification_context = self._build_player_operation_notification_context(
+                interaction,
+            )
             player_id = await asyncio.to_thread(self._lookup_player_id, interaction.user.id)
             service = self._require_matching_queue_service()
             result = await service.join_queue(
@@ -420,22 +427,34 @@ class BotCommandHandlers:
                 notification_context=notification_context,
             )
         except PlayerNotRegisteredError:
-            await self._send_message(interaction, PLAYER_REGISTRATION_REQUIRED_MESSAGE)
+            await self._send_player_operation_message(
+                interaction,
+                PLAYER_REGISTRATION_REQUIRED_MESSAGE,
+            )
             return
         except InvalidMatchFormatError:
-            await self._send_message(interaction, "指定したフォーマットは存在しません。")
+            await self._send_player_operation_message(
+                interaction,
+                "指定したフォーマットは存在しません。",
+            )
             return
         except InvalidQueueNameError:
-            await self._send_message(interaction, INVALID_QUEUE_NAME_MESSAGE)
+            await self._send_player_operation_message(interaction, INVALID_QUEUE_NAME_MESSAGE)
             return
         except QueueJoinNotAllowedError:
-            await self._send_message(interaction, QUEUE_JOIN_NOT_ALLOWED_MESSAGE)
+            await self._send_player_operation_message(
+                interaction,
+                QUEUE_JOIN_NOT_ALLOWED_MESSAGE,
+            )
             return
         except QueueJoinRestrictedError:
-            await self._send_message(interaction, QUEUE_JOIN_RESTRICTED_MESSAGE)
+            await self._send_player_operation_message(
+                interaction,
+                QUEUE_JOIN_RESTRICTED_MESSAGE,
+            )
             return
         except QueueAlreadyJoinedError:
-            await self._send_message(interaction, JOIN_ALREADY_JOINED_MESSAGE)
+            await self._send_player_operation_message(interaction, JOIN_ALREADY_JOINED_MESSAGE)
             return
         except Exception:
             self.logger.exception(
@@ -447,15 +466,17 @@ class BotCommandHandlers:
                 interaction.channel_id,
                 interaction.guild_id,
             )
-            await self._send_message(interaction, JOIN_FAILED_MESSAGE)
+            await self._send_player_operation_message(interaction, JOIN_FAILED_MESSAGE)
             return
 
-        await self._send_message(interaction, result.message)
+        await self._send_player_operation_message(interaction, result.message)
 
     async def present(self, interaction: discord.Interaction[Any]) -> None:
         await self._sync_requesting_user_identity(interaction)
         try:
-            notification_context = self._build_notification_context(interaction)
+            notification_context = self._build_player_operation_notification_context(
+                interaction,
+            )
             player_id = await asyncio.to_thread(self._lookup_player_id, interaction.user.id)
             service = self._require_matching_queue_service()
             result = await service.present(
@@ -463,10 +484,13 @@ class BotCommandHandlers:
                 notification_context=notification_context,
             )
         except PlayerNotRegisteredError:
-            await self._send_message(interaction, PLAYER_REGISTRATION_REQUIRED_MESSAGE)
+            await self._send_player_operation_message(
+                interaction,
+                PLAYER_REGISTRATION_REQUIRED_MESSAGE,
+            )
             return
         except QueueNotJoinedError:
-            await self._send_message(interaction, PRESENT_NOT_JOINED_MESSAGE)
+            await self._send_player_operation_message(interaction, PRESENT_NOT_JOINED_MESSAGE)
             return
         except Exception:
             self.logger.exception(
@@ -475,10 +499,10 @@ class BotCommandHandlers:
                 interaction.channel_id,
                 interaction.guild_id,
             )
-            await self._send_message(interaction, PRESENT_FAILED_MESSAGE)
+            await self._send_player_operation_message(interaction, PRESENT_FAILED_MESSAGE)
             return
 
-        await self._send_message(interaction, result.message)
+        await self._send_player_operation_message(interaction, result.message)
 
     async def leave(self, interaction: discord.Interaction[Any]) -> None:
         await self._sync_requesting_user_identity(interaction)
@@ -487,17 +511,20 @@ class BotCommandHandlers:
             service = self._require_matching_queue_service()
             result = await service.leave(player_id)
         except PlayerNotRegisteredError:
-            await self._send_message(interaction, PLAYER_REGISTRATION_REQUIRED_MESSAGE)
+            await self._send_player_operation_message(
+                interaction,
+                PLAYER_REGISTRATION_REQUIRED_MESSAGE,
+            )
             return
         except Exception:
             self.logger.exception(
                 "Failed to execute /leave command discord_user_id=%s",
                 interaction.user.id,
             )
-            await self._send_message(interaction, LEAVE_FAILED_MESSAGE)
+            await self._send_player_operation_message(interaction, LEAVE_FAILED_MESSAGE)
             return
 
-        await self._send_message(interaction, result.message)
+        await self._send_player_operation_message(interaction, result.message)
 
     async def player_info(self, interaction: discord.Interaction[Any]) -> None:
         await self._sync_requesting_user_identity(interaction)
@@ -507,17 +534,23 @@ class BotCommandHandlers:
                 interaction.user.id,
             )
         except PlayerNotRegisteredError:
-            await self._send_message(interaction, PLAYER_REGISTRATION_REQUIRED_MESSAGE)
+            await self._send_player_operation_message(
+                interaction,
+                PLAYER_REGISTRATION_REQUIRED_MESSAGE,
+            )
             return
         except Exception:
             self.logger.exception(
                 "Failed to execute /player_info command discord_user_id=%s",
                 interaction.user.id,
             )
-            await self._send_message(interaction, PLAYER_INFO_FAILED_MESSAGE)
+            await self._send_player_operation_message(interaction, PLAYER_INFO_FAILED_MESSAGE)
             return
 
-        await self._send_message(interaction, self._format_player_info_message(player_info))
+        await self._send_player_operation_message(
+            interaction,
+            self._format_player_info_message(player_info),
+        )
 
     async def player_info_season(
         self,
@@ -532,10 +565,13 @@ class BotCommandHandlers:
                 season_id,
             )
         except PlayerNotRegisteredError:
-            await self._send_message(interaction, PLAYER_REGISTRATION_REQUIRED_MESSAGE)
+            await self._send_player_operation_message(
+                interaction,
+                PLAYER_REGISTRATION_REQUIRED_MESSAGE,
+            )
             return
         except (SeasonNotFoundError, PlayerSeasonStatsNotFoundError) as exc:
-            await self._send_message(interaction, str(exc))
+            await self._send_player_operation_message(interaction, str(exc))
             return
         except Exception:
             self.logger.exception(
@@ -543,10 +579,13 @@ class BotCommandHandlers:
                 interaction.user.id,
                 season_id,
             )
-            await self._send_message(interaction, PLAYER_SEASON_INFO_FAILED_MESSAGE)
+            await self._send_player_operation_message(
+                interaction,
+                PLAYER_SEASON_INFO_FAILED_MESSAGE,
+            )
             return
 
-        await self._send_message(
+        await self._send_player_operation_message(
             interaction,
             self._format_player_info_message(player_info, include_season=True),
         )
@@ -1294,7 +1333,7 @@ class BotCommandHandlers:
 
         try:
             target_discord_user_id = self._parse_discord_user_id(discord_user_id)
-            notification_context = self._build_notification_context(
+            notification_context = self._build_player_operation_notification_context(
                 interaction,
                 mention_discord_user_id=target_discord_user_id,
             )
@@ -1355,7 +1394,7 @@ class BotCommandHandlers:
 
         try:
             target_discord_user_id = self._parse_discord_user_id(discord_user_id)
-            notification_context = self._build_notification_context(
+            notification_context = self._build_player_operation_notification_context(
                 interaction,
                 mention_discord_user_id=target_discord_user_id,
             )
@@ -1954,6 +1993,25 @@ class BotCommandHandlers:
             ),
         )
 
+    def _build_player_operation_notification_context(
+        self,
+        interaction: discord.Interaction[Any],
+        *,
+        mention_discord_user_id: int | None = None,
+    ) -> MatchingQueueNotificationContext:
+        if interaction.channel_id is None:
+            raise ValueError("interaction.channel_id is required")
+
+        resolved_mention_discord_user_id = (
+            interaction.user.id if mention_discord_user_id is None else mention_discord_user_id
+        )
+
+        return MatchingQueueNotificationContext(
+            channel_id=interaction.channel_id,
+            guild_id=interaction.guild_id,
+            mention_discord_user_id=resolved_mention_discord_user_id,
+        )
+
     async def _ensure_admin(self, interaction: discord.Interaction[Any]) -> bool:
         await self._sync_requesting_user_identity(interaction)
         if is_super_admin(interaction.user.id, self.settings):
@@ -2227,6 +2285,13 @@ class BotCommandHandlers:
         ephemeral: bool = False,
     ) -> None:
         await interaction.response.send_message(message, ephemeral=ephemeral)
+
+    async def _send_player_operation_message(
+        self,
+        interaction: discord.Interaction[Any],
+        message: str,
+    ) -> None:
+        await self._send_message(interaction, message, ephemeral=True)
 
 
 def register_app_commands(

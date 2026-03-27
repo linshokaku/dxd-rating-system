@@ -1843,9 +1843,7 @@ def test_discord_outbox_publisher_fetches_uncached_channel_for_queue_expired() -
     )
 
     assert client.fetched_channel_ids == [channel.id]
-    assert channel.sent_messages == [
-        f"<@{discord_user_id}> {QUEUE_EXPIRED_NOTIFICATION_MESSAGE}"
-    ]
+    assert channel.sent_messages == [f"<@{discord_user_id}> {QUEUE_EXPIRED_NOTIFICATION_MESSAGE}"]
     allowed_mentions = channel.allowed_mentions_history[0]
     assert isinstance(allowed_mentions, discord.AllowedMentions)
     assert allowed_mentions.users is True

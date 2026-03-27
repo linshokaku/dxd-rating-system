@@ -170,9 +170,7 @@ class DiscordOutboxEventPublisher:
 
         fetched_user = self._as_sendable_user(fetched_user_object)
         if fetched_user is None:
-            raise NonRetryableOutboxPublishError(
-                f"Fetched Discord user is not sendable: {user_id}"
-            )
+            raise NonRetryableOutboxPublishError(f"Fetched Discord user is not sendable: {user_id}")
         return fetched_user
 
     async def _send_channel_notification(

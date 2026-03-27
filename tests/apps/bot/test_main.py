@@ -54,3 +54,31 @@ def test_setup_hook_restores_persistent_register_panel_view(
     button = persistent_views[0].children[0]
     assert isinstance(button, discord.ui.Button)
     assert button.label == REGISTER_PANEL_BUTTON_LABEL
+
+
+def test_setup_hook_skips_managed_channels_without_persistent_view(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    settings = BotSettings.model_construct(
+        discord_bot_token="discord-token",
+        database_url="postgresql+psycopg://user:password@localhost:5432/dxd_rating",
+        log_level="INFO",
+        super_admin_user_ids=frozenset(),
+    )
+    session.add(
+        ManagedUiChannel(
+            ui_type=ManagedUiType.ADMIN_CONTACT_CHANNEL,
+            channel_id=1002,
+            message_id=2002,
+            created_by_discord_user_id=3002,
+        )
+    )
+    session.commit()
+
+    client = create_client(settings, session_factory)
+    client.tree.sync = AsyncMock(return_value=[])  # type: ignore[method-assign]
+
+    asyncio.run(client.setup_hook())
+
+    assert client.persistent_views == []

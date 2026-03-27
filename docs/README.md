@@ -50,10 +50,16 @@
   - ユーザー向け slash command。プレイヤー操作コマンドと試合操作コマンドを含む
 - [commands/dev-commands.md](commands/dev-commands.md)
   - 開発者向け slash command
+- [discord_permissions.md](discord_permissions.md)
+  - Discord Bot の OAuth scope、Gateway Intents、必要権限
 - [ui/common.md](ui/common.md)
   - Discord UI の共通仕様
+- [ui/registered_channels.md](ui/registered_channels.md)
+  - 登録済みユーザーが利用できるチャンネル構成と権限
 - [ui/register.md](ui/register.md)
   - 公開チャンネルに設置する登録 UI
+- [ui/matchmaking_channel.md](ui/matchmaking_channel.md)
+  - `レート戦マッチング` チャンネルに設置するキュー参加 UI
 - [ui/setup_channel.md](ui/setup_channel.md)
   - UI 設置チャンネルの作成・撤収コマンド
 
@@ -71,6 +77,9 @@
 10. [leaderboard/ranking.md](leaderboard/ranking.md)
 11. [leaderboard/snapshots.md](leaderboard/snapshots.md)
 12. [commands/user-commands.md](commands/user-commands.md)
-13. [ui/common.md](ui/common.md)
-14. [ui/setup_channel.md](ui/setup_channel.md)
-15. 必要な UI 別仕様
+13. [discord_permissions.md](discord_permissions.md)
+14. [ui/common.md](ui/common.md)
+15. [ui/registered_channels.md](ui/registered_channels.md)
+16. [ui/setup_channel.md](ui/setup_channel.md)
+17. [ui/register.md](ui/register.md)
+18. [ui/matchmaking_channel.md](ui/matchmaking_channel.md)

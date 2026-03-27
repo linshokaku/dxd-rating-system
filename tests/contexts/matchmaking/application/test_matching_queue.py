@@ -385,6 +385,7 @@ def test_join_queue_stores_notification_context(
     assert entry.notification_mention_discord_user_id == 555_001
     assert entry.notification_recorded_at == entry.joined_at
 
+
 # 有効な `waiting` 行がある状態での重複 `join` が失敗すること
 def test_join_queue_raises_when_player_is_already_waiting(
     session: Session,

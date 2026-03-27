@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol, cast
 
@@ -52,6 +53,7 @@ from dxd_rating.contexts.restrictions.application import (
 )
 from dxd_rating.contexts.seasons.application import SeasonService
 from dxd_rating.contexts.ui.application import (
+    REGISTERED_PLAYER_ROLE_NAME,
     ManagedUiDefinition,
     ManagedUiService,
     get_managed_ui_definition,
@@ -128,6 +130,8 @@ ADMIN_INVALID_CHANNEL_NAME_MESSAGE = "channel_name が不正です。"
 ADMIN_DUPLICATE_CHANNEL_NAME_MESSAGE = "同名のチャンネルがすでに存在します。"
 ADMIN_UI_ALREADY_INSTALLED_MESSAGE = "指定した UI はすでに設置済みです。"
 ADMIN_MANAGED_UI_PERMISSION_MESSAGE = "Bot に必要な権限がありません。"
+MANAGED_UI_PERMISSION_LABEL_MANAGE_CHANNELS = "チャンネルの管理"
+MANAGED_UI_PERMISSION_LABEL_MANAGE_ROLES = "ロールの管理"
 ADMIN_SETUP_CUSTOM_UI_CHANNEL_FAILED_MESSAGE = (
     "UI 設置チャンネルの作成に失敗しました。管理者に確認してください。"
 )
@@ -402,6 +406,7 @@ class BotCommandHandlers:
             return
 
         await self._sync_requesting_user_identity(interaction)
+        await self._best_effort_assign_registered_player_role(interaction)
         if ephemeral:
             await self._send_player_operation_message(interaction, REGISTER_SUCCESS_MESSAGE)
         else:
@@ -772,6 +777,8 @@ class BotCommandHandlers:
             )
             return
 
+        await self._defer_message_response(interaction, ephemeral=True)
+
         try:
             existing_managed_ui_channel = await asyncio.to_thread(
                 self._get_managed_ui_channel_by_type,
@@ -794,6 +801,18 @@ class BotCommandHandlers:
                 )
                 return
 
+            missing_permissions = self._find_missing_managed_ui_setup_permissions(
+                guild,
+                [definition],
+            )
+            if missing_permissions:
+                await self._send_message(
+                    interaction,
+                    self._format_managed_ui_permission_message(missing_permissions),
+                    ephemeral=True,
+                )
+                return
+
             try:
                 await self._provision_managed_ui_channel(
                     guild=guild,
@@ -801,10 +820,19 @@ class BotCommandHandlers:
                     channel_name=channel_name,
                     created_by_discord_user_id=interaction.user.id,
                 )
-            except discord.Forbidden:
+            except discord.Forbidden as exc:
+                self._log_managed_ui_forbidden(
+                    action="admin_setup_custom_ui_channel",
+                    executor_discord_user_id=interaction.user.id,
+                    ui_type=definition.ui_type.value,
+                    exc=exc,
+                )
                 await self._send_message(
                     interaction,
-                    ADMIN_MANAGED_UI_PERMISSION_MESSAGE,
+                    self._format_managed_ui_permission_message(
+                        self._find_missing_managed_ui_setup_permissions(guild, [definition]),
+                        forbidden_error=exc,
+                    ),
                     ephemeral=True,
                 )
                 return
@@ -825,10 +853,20 @@ class BotCommandHandlers:
                     )
                     return
 
-                if isinstance(exc.__cause__, discord.Forbidden):
+                forbidden_cause = exc.__cause__
+                if isinstance(forbidden_cause, discord.Forbidden):
+                    self._log_managed_ui_forbidden(
+                        action="admin_setup_custom_ui_channel",
+                        executor_discord_user_id=interaction.user.id,
+                        ui_type=definition.ui_type.value,
+                        exc=forbidden_cause,
+                    )
                     await self._send_message(
                         interaction,
-                        ADMIN_MANAGED_UI_PERMISSION_MESSAGE,
+                        self._format_managed_ui_permission_message(
+                            self._find_missing_managed_ui_setup_permissions(guild, [definition]),
+                            forbidden_error=forbidden_cause,
+                        ),
                         ephemeral=True,
                     )
                     return
@@ -871,6 +909,8 @@ class BotCommandHandlers:
         if not await self._ensure_admin(interaction):
             return
 
+        await self._defer_message_response(interaction, ephemeral=True)
+
         try:
             guild = self._require_guild(interaction)
             managed_ui_channels = await asyncio.to_thread(self._list_managed_ui_channels)
@@ -907,6 +947,18 @@ class BotCommandHandlers:
                     )
                     return
 
+            missing_permissions = self._find_missing_managed_ui_setup_permissions(
+                guild,
+                missing_definitions,
+            )
+            if missing_permissions:
+                await self._send_message(
+                    interaction,
+                    self._format_managed_ui_permission_message(missing_permissions),
+                    ephemeral=True,
+                )
+                return
+
             provisioned_channels: list[ProvisionedManagedUiChannel] = []
             for definition in missing_definitions:
                 try:
@@ -916,7 +968,7 @@ class BotCommandHandlers:
                         channel_name=definition.recommended_channel_name,
                         created_by_discord_user_id=interaction.user.id,
                     )
-                except discord.Forbidden:
+                except discord.Forbidden as exc:
                     rollback_succeeded = await self._rollback_provisioned_managed_ui_channels(
                         provisioned_channels,
                         log_context=(
@@ -932,9 +984,21 @@ class BotCommandHandlers:
                         )
                         return
 
+                    self._log_managed_ui_forbidden(
+                        action="admin_setup_ui_channels",
+                        executor_discord_user_id=interaction.user.id,
+                        ui_type=definition.ui_type.value,
+                        exc=exc,
+                    )
                     await self._send_message(
                         interaction,
-                        ADMIN_MANAGED_UI_PERMISSION_MESSAGE,
+                        self._format_managed_ui_permission_message(
+                            self._find_missing_managed_ui_setup_permissions(
+                                guild,
+                                missing_definitions,
+                            ),
+                            forbidden_error=exc,
+                        ),
                         ephemeral=True,
                     )
                     return
@@ -954,10 +1018,23 @@ class BotCommandHandlers:
                         )
                         return
 
-                    if isinstance(exc.__cause__, discord.Forbidden):
+                    forbidden_cause = exc.__cause__
+                    if isinstance(forbidden_cause, discord.Forbidden):
+                        self._log_managed_ui_forbidden(
+                            action="admin_setup_ui_channels",
+                            executor_discord_user_id=interaction.user.id,
+                            ui_type=definition.ui_type.value,
+                            exc=forbidden_cause,
+                        )
                         await self._send_message(
                             interaction,
-                            ADMIN_MANAGED_UI_PERMISSION_MESSAGE,
+                            self._format_managed_ui_permission_message(
+                                self._find_missing_managed_ui_setup_permissions(
+                                    guild,
+                                    missing_definitions,
+                                ),
+                                forbidden_error=forbidden_cause,
+                            ),
                             ephemeral=True,
                         )
                         return
@@ -1038,6 +1115,8 @@ class BotCommandHandlers:
             )
             return
 
+        await self._defer_message_response(interaction, ephemeral=True)
+
         try:
             guild = self._require_guild(interaction)
             managed_ui_channels = await asyncio.to_thread(self._list_managed_ui_channels)
@@ -1049,8 +1128,18 @@ class BotCommandHandlers:
                 )
                 return
 
+            missing_permissions = self._find_missing_managed_ui_teardown_permissions(guild)
+            if missing_permissions:
+                await self._send_message(
+                    interaction,
+                    self._format_managed_ui_permission_message(missing_permissions),
+                    ephemeral=True,
+                )
+                return
+
             had_successful_cleanup = False
             had_forbidden_failure = False
+            last_forbidden_error: discord.Forbidden | None = None
             had_other_failure = False
             for managed_ui_channel in managed_ui_channels:
                 channel = self._find_guild_channel_by_id(guild, managed_ui_channel.channel_id)
@@ -1064,14 +1153,15 @@ class BotCommandHandlers:
                         )
                     except discord.NotFound:
                         pass
-                    except discord.Forbidden:
+                    except discord.Forbidden as exc:
                         had_forbidden_failure = True
-                        self.logger.exception(
-                            "Failed to delete managed UI channel during teardown "
-                            "executor_discord_user_id=%s ui_type=%s channel_id=%s",
-                            interaction.user.id,
-                            managed_ui_channel.ui_type.value,
-                            managed_ui_channel.channel_id,
+                        last_forbidden_error = exc
+                        self._log_managed_ui_forbidden(
+                            action="admin_teardown_ui_channels",
+                            executor_discord_user_id=interaction.user.id,
+                            ui_type=managed_ui_channel.ui_type.value,
+                            channel_id=managed_ui_channel.channel_id,
+                            exc=exc,
                         )
                         continue
                     except Exception:
@@ -1107,7 +1197,10 @@ class BotCommandHandlers:
                 if had_forbidden_failure and not had_other_failure and not had_successful_cleanup:
                     await self._send_message(
                         interaction,
-                        ADMIN_MANAGED_UI_PERMISSION_MESSAGE,
+                        self._format_managed_ui_permission_message(
+                            self._find_missing_managed_ui_teardown_permissions(guild),
+                            forbidden_error=last_forbidden_error,
+                        ),
                         ephemeral=True,
                     )
                     return
@@ -2194,6 +2287,167 @@ class BotCommandHandlers:
                 return cast(discord.abc.GuildChannel, channel)
         return None
 
+    def _find_guild_role_by_name(
+        self,
+        guild: discord.Guild,
+        role_name: str,
+    ) -> discord.Role | None:
+        for role in getattr(guild, "roles", ()):
+            if getattr(role, "name", None) == role_name:
+                return cast(discord.Role, role)
+        return None
+
+    def _find_missing_managed_ui_setup_permissions(
+        self,
+        guild: discord.Guild,
+        definitions: Sequence[ManagedUiDefinition],
+    ) -> tuple[str, ...]:
+        guild_permissions = self._get_bot_guild_permissions(guild)
+        if guild_permissions is None:
+            return ()
+
+        missing_permissions: list[str] = []
+        if not guild_permissions.manage_channels:
+            missing_permissions.append(MANAGED_UI_PERMISSION_LABEL_MANAGE_CHANNELS)
+
+        requires_registered_player_role = any(
+            definition.requires_registered_player_role for definition in definitions
+        )
+        registered_player_role = self._find_guild_role_by_name(guild, REGISTERED_PLAYER_ROLE_NAME)
+        if (
+            requires_registered_player_role
+            and registered_player_role is None
+            and not guild_permissions.manage_roles
+        ):
+            missing_permissions.append(MANAGED_UI_PERMISSION_LABEL_MANAGE_ROLES)
+
+        return tuple(missing_permissions)
+
+    def _find_missing_managed_ui_teardown_permissions(
+        self,
+        guild: discord.Guild,
+    ) -> tuple[str, ...]:
+        guild_permissions = self._get_bot_guild_permissions(guild)
+        if guild_permissions is None:
+            return ()
+
+        if guild_permissions.manage_channels:
+            return ()
+
+        return (MANAGED_UI_PERMISSION_LABEL_MANAGE_CHANNELS,)
+
+    def _get_bot_guild_permissions(self, guild: discord.Guild) -> discord.Permissions | None:
+        bot_member = guild.me
+        if bot_member is None:
+            return None
+
+        guild_permissions = getattr(bot_member, "guild_permissions", None)
+        if not isinstance(guild_permissions, discord.Permissions):
+            return None
+
+        return guild_permissions
+
+    def _format_discord_forbidden_detail(
+        self,
+        exc: discord.Forbidden,
+    ) -> str:
+        reason = getattr(exc.response, "reason", "Forbidden")
+        normalized_text = self._normalize_discord_http_exception_text(exc.text)
+        detail = f"Discord API: {exc.status} {reason} (error code: {exc.code})"
+        if not normalized_text:
+            return detail
+
+        return f"{detail}: {normalized_text}"
+
+    def _normalize_discord_http_exception_text(self, text: str) -> str:
+        return " ".join(text.splitlines()).strip()
+
+    def _log_managed_ui_forbidden(
+        self,
+        *,
+        action: str,
+        executor_discord_user_id: int,
+        exc: discord.Forbidden,
+        ui_type: str | None = None,
+        channel_id: int | None = None,
+    ) -> None:
+        self.logger.warning(
+            "Discord forbidden during managed UI operation action=%s "
+            "executor_discord_user_id=%s ui_type=%s channel_id=%s "
+            "status=%s code=%s reason=%s text=%s",
+            action,
+            executor_discord_user_id,
+            ui_type,
+            channel_id,
+            exc.status,
+            exc.code,
+            getattr(exc.response, "reason", None),
+            self._normalize_discord_http_exception_text(exc.text),
+        )
+
+    def _format_managed_ui_permission_message(
+        self,
+        missing_permissions: Sequence[str] = (),
+        *,
+        forbidden_error: discord.Forbidden | None = None,
+    ) -> str:
+        parts = [ADMIN_MANAGED_UI_PERMISSION_MESSAGE]
+        if missing_permissions:
+            parts.append(f"不足している権限: {', '.join(missing_permissions)}")
+        if forbidden_error is not None:
+            parts.append(self._format_discord_forbidden_detail(forbidden_error))
+
+        return " ".join(parts)
+
+    async def _ensure_registered_player_role(
+        self,
+        guild: discord.Guild,
+    ) -> discord.Role:
+        existing_role = self._find_guild_role_by_name(guild, REGISTERED_PLAYER_ROLE_NAME)
+        if existing_role is not None:
+            return existing_role
+
+        created_role = await guild.create_role(
+            name=REGISTERED_PLAYER_ROLE_NAME,
+            mentionable=False,
+            reason="Create registered player role for managed UI channels",
+        )
+        return cast(discord.Role, created_role)
+
+    async def _best_effort_assign_registered_player_role(
+        self,
+        interaction: discord.Interaction[Any],
+    ) -> None:
+        guild = interaction.guild
+        if guild is None:
+            return
+
+        role = self._find_guild_role_by_name(guild, REGISTERED_PLAYER_ROLE_NAME)
+        if role is None:
+            return
+
+        member = interaction.user
+        add_roles = getattr(member, "add_roles", None)
+        if not callable(add_roles):
+            return
+
+        member_roles = getattr(member, "roles", ())
+        if any(getattr(existing_role, "id", None) == role.id for existing_role in member_roles):
+            return
+
+        try:
+            await add_roles(
+                role,
+                reason="Grant registered player role after successful registration",
+            )
+        except Exception:
+            self.logger.exception(
+                "Failed to grant registered player role discord_user_id=%s guild_id=%s role_id=%s",
+                interaction.user.id,
+                interaction.guild_id,
+                role.id,
+            )
+
     async def _provision_managed_ui_channel(
         self,
         *,
@@ -2202,9 +2456,20 @@ class BotCommandHandlers:
         channel_name: str,
         created_by_discord_user_id: int,
     ) -> ProvisionedManagedUiChannel:
+        registered_player_role = None
+        if definition.requires_registered_player_role:
+            registered_player_role = await self._ensure_registered_player_role(guild)
+
         channel = await guild.create_text_channel(
             channel_name,
-            overwrites=cast(Any, build_managed_ui_channel_overwrites(guild, definition.ui_type)),
+            overwrites=cast(
+                Any,
+                build_managed_ui_channel_overwrites(
+                    guild,
+                    definition.ui_type,
+                    registered_player_role=registered_player_role,
+                ),
+            ),
             reason=f"Create managed UI channel for {definition.ui_type.value}",
         )
         provisioned_channel = ProvisionedManagedUiChannel(
@@ -2284,7 +2549,26 @@ class BotCommandHandlers:
         *,
         ephemeral: bool = False,
     ) -> None:
-        await interaction.response.send_message(message, ephemeral=ephemeral)
+        response = interaction.response
+        is_done = getattr(response, "is_done", None)
+        if callable(is_done) and is_done():
+            await interaction.followup.send(message, ephemeral=ephemeral)
+            return
+
+        await response.send_message(message, ephemeral=ephemeral)
+
+    async def _defer_message_response(
+        self,
+        interaction: discord.Interaction[Any],
+        *,
+        ephemeral: bool,
+    ) -> None:
+        response = interaction.response
+        is_done = getattr(response, "is_done", None)
+        if callable(is_done) and is_done():
+            return
+
+        await response.defer(ephemeral=ephemeral, thinking=True)
 
     async def _send_player_operation_message(
         self,

@@ -21,6 +21,10 @@ from dxd_rating.contexts.restrictions.application import (
     PlayerAccessRestrictionService,
 )
 from dxd_rating.contexts.seasons.application import ensure_active_and_upcoming_seasons
+from dxd_rating.contexts.ui.application import (
+    REGISTERED_PLAYER_ROLE_NAME,
+    get_required_managed_ui_definitions,
+)
 from dxd_rating.platform.config.bot import BotSettings
 from dxd_rating.platform.db.models import (
     ManagedUiChannel,
@@ -38,7 +42,18 @@ from dxd_rating.platform.db.models import (
     Season,
 )
 from dxd_rating.platform.discord.gateway.commands import BotCommandHandlers, register_app_commands
-from dxd_rating.platform.discord.ui import REGISTER_PANEL_BUTTON_LABEL, REGISTER_PANEL_MESSAGE
+from dxd_rating.platform.discord.ui import (
+    ADMIN_CONTACT_CHANNEL_MESSAGE,
+    MATCHMAKING_CHANNEL_JOIN_HIGH_BUTTON_LABEL,
+    MATCHMAKING_CHANNEL_JOIN_LOW_BUTTON_LABEL,
+    MATCHMAKING_CHANNEL_LEAVE_BUTTON_LABEL,
+    MATCHMAKING_CHANNEL_MESSAGE,
+    MATCHMAKING_CHANNEL_PRESENT_BUTTON_LABEL,
+    MATCHMAKING_NEWS_CHANNEL_MESSAGE,
+    REGISTER_PANEL_BUTTON_LABEL,
+    REGISTER_PANEL_MESSAGE,
+    SYSTEM_ANNOUNCEMENTS_CHANNEL_MESSAGE,
+)
 from dxd_rating.platform.runtime import MatchRuntime
 
 DEFAULT_MATCH_FORMAT = MatchFormat.THREE_VS_THREE
@@ -58,13 +73,60 @@ class FakeUser:
 
 
 @dataclass
+class FakeMember:
+    id: int
+    name: str | None = None
+    global_name: str | None = None
+    nick: str | None = None
+    roles: list[FakeRole] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if self.name is None:
+            self.name = f"user-{self.id}"
+
+    async def add_roles(self, *roles: FakeRole, **_: Any) -> None:
+        existing_role_ids = {role.id for role in self.roles}
+        for role in roles:
+            if role.id not in existing_role_ids:
+                self.roles.append(role)
+                existing_role_ids.add(role.id)
+
+
+@dataclass
 class FakeInteractionResponse:
     messages: list[str] = field(default_factory=list)
     ephemeral_flags: list[bool] = field(default_factory=list)
+    deferred: bool = False
+    defer_ephemeral: bool | None = None
+    defer_thinking: bool | None = None
 
     async def send_message(self, content: str, *, ephemeral: bool = False, **_: Any) -> None:
+        self.deferred = True
         self.messages.append(content)
         self.ephemeral_flags.append(ephemeral)
+
+    async def defer(
+        self,
+        *,
+        ephemeral: bool = False,
+        thinking: bool = False,
+        **_: Any,
+    ) -> None:
+        self.deferred = True
+        self.defer_ephemeral = ephemeral
+        self.defer_thinking = thinking
+
+    def is_done(self) -> bool:
+        return self.deferred
+
+
+@dataclass
+class FakeInteractionFollowup:
+    response: FakeInteractionResponse
+
+    async def send(self, content: str, *, ephemeral: bool = False, **_: Any) -> None:
+        self.response.messages.append(content)
+        self.response.ephemeral_flags.append(ephemeral)
 
 
 @dataclass(frozen=True)
@@ -73,9 +135,15 @@ class FakeRole:
     name: str = "@everyone"
 
 
-@dataclass(frozen=True)
+@dataclass
 class FakeGuildMember:
     id: int
+    guild_permissions: discord.Permissions = field(
+        default_factory=lambda: discord.Permissions(manage_channels=True, manage_roles=True)
+    )
+
+    def __hash__(self) -> int:
+        return hash(self.id)
 
 
 @dataclass
@@ -153,12 +221,21 @@ class FakeGuild:
     id: int
     channels: list[FakeTextChannel] = field(default_factory=list)
     default_role: FakeRole = field(default_factory=lambda: FakeRole(id=0))
-    me: FakeGuildMember | None = field(default_factory=lambda: FakeGuildMember(id=999_999))
+    roles: list[FakeRole] = field(default_factory=list)
+    me: FakeGuildMember | None = None
     next_channel_id: int = 20_001
     next_message_id: int = 30_001
+    next_role_id: int = 40_001
     create_channel_error: Exception | None = None
+    create_role_error: Exception | None = None
     next_channel_fail_send_with: Exception | None = None
     next_channel_fail_delete_with: Exception | None = None
+
+    def __post_init__(self) -> None:
+        if self.me is None:
+            self.me = FakeGuildMember(id=999_999)
+        if not any(role.id == self.default_role.id for role in self.roles):
+            self.roles.insert(0, self.default_role)
 
     async def create_text_channel(
         self,
@@ -184,6 +261,15 @@ class FakeGuild:
         self.channels.append(channel)
         return cast(discord.TextChannel, channel)
 
+    async def create_role(self, name: str, **_: Any) -> discord.Role:
+        if self.create_role_error is not None:
+            raise self.create_role_error
+
+        role = FakeRole(id=self.next_role_id, name=name)
+        self.next_role_id += 1
+        self.roles.append(role)
+        return cast(discord.Role, role)
+
     def get_channel(self, channel_id: int) -> FakeTextChannel | None:
         for channel in self.channels:
             if channel.id == channel_id:
@@ -200,6 +286,10 @@ class FakeInteraction:
     token: str = "interaction-token"
     guild: FakeGuild | None = None
     response: FakeInteractionResponse = field(default_factory=FakeInteractionResponse)
+    followup: FakeInteractionFollowup = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.followup = FakeInteractionFollowup(response=self.response)
 
 
 def as_interaction(fake_interaction: FakeInteraction) -> discord.Interaction[discord.Client]:
@@ -259,6 +349,20 @@ def create_player(session: Session, discord_user_id: int) -> Player:
 
 def get_active_season_id(session: Session) -> int:
     return ensure_active_and_upcoming_seasons(session).active.id
+
+
+def find_role_by_name(guild: FakeGuild, role_name: str) -> FakeRole | None:
+    for role in guild.roles:
+        if role.name == role_name:
+            return role
+    return None
+
+
+def find_channel_by_name(guild: FakeGuild, channel_name: str) -> FakeTextChannel:
+    for channel in guild.channels:
+        if channel.name == channel_name:
+            return channel
+    raise AssertionError(f"Channel not found: {channel_name}")
 
 
 def get_player_format_stats(
@@ -1261,6 +1365,8 @@ def test_admin_setup_custom_ui_channel_creates_register_panel_and_button_registe
 
     assert interaction.response.messages == ["UI 設置チャンネルを作成しました。"]
     assert interaction.response.ephemeral_flags == [True]
+    assert interaction.response.defer_ephemeral is True
+    assert interaction.response.defer_thinking is True
     assert managed_ui_channel is not None
     assert managed_ui_channel.ui_type == ManagedUiType.REGISTER_PANEL
     assert managed_ui_channel.channel_id == persisted_channel.id
@@ -1288,6 +1394,27 @@ def test_admin_setup_custom_ui_channel_creates_register_panel_and_button_registe
     assert button_interaction.response.messages == ["登録が完了しました。"]
     assert button_interaction.response.ephemeral_flags == [True]
     assert persisted_player is not None
+
+
+def test_register_command_assigns_registered_role_when_present(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    guild = FakeGuild(id=2_109)
+    registered_role = FakeRole(id=55_001, name=REGISTERED_PLAYER_ROLE_NAME)
+    guild.roles.append(registered_role)
+    member = FakeMember(id=123_456_789_012_345_801)
+    handlers = create_handlers(session_factory)
+    interaction = FakeInteraction(
+        user=cast(Any, member),
+        guild_id=guild.id,
+        guild=guild,
+    )
+
+    asyncio.run(handlers.register(as_interaction(interaction)))
+
+    assert_response(interaction, ["登録が完了しました。"], ephemeral=True)
+    assert {role.id for role in member.roles} == {registered_role.id}
 
 
 def test_admin_setup_custom_ui_channel_rolls_back_created_channel_when_ui_send_fails(
@@ -1319,6 +1446,102 @@ def test_admin_setup_custom_ui_channel_rolls_back_created_channel_when_ui_send_f
     assert session.scalar(select(ManagedUiChannel)) is None
 
 
+def test_admin_setup_custom_ui_channel_reports_missing_permissions(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    guild = FakeGuild(
+        id=2_101_5,
+        me=FakeGuildMember(
+            id=999_999,
+            guild_permissions=discord.Permissions.none(),
+        ),
+    )
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({10}),
+    )
+    interaction = FakeInteraction(user=FakeUser(id=10), guild_id=guild.id, guild=guild)
+
+    asyncio.run(
+        handlers.admin_setup_custom_ui_channel(
+            as_interaction(interaction),
+            ManagedUiType.MATCHMAKING_CHANNEL.value,
+            "レート戦マッチング",
+        )
+    )
+
+    session.expire_all()
+
+    assert_response(
+        interaction,
+        ["Bot に必要な権限がありません。 不足している権限: チャンネルの管理, ロールの管理"],
+        ephemeral=True,
+    )
+    assert guild.channels == []
+    assert session.scalar(select(ManagedUiChannel)) is None
+
+
+def test_admin_setup_custom_ui_channel_reports_discord_forbidden_detail(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    guild = FakeGuild(id=2_101_6, create_channel_error=make_forbidden())
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({10}),
+    )
+    interaction = FakeInteraction(user=FakeUser(id=10), guild_id=guild.id, guild=guild)
+
+    asyncio.run(
+        handlers.admin_setup_custom_ui_channel(
+            as_interaction(interaction),
+            ManagedUiType.REGISTER_PANEL.value,
+            "レート戦はこちらから",
+        )
+    )
+
+    session.expire_all()
+
+    assert_response(
+        interaction,
+        ["Bot に必要な権限がありません。 Discord API: 403 Forbidden (error code: 0): Forbidden"],
+        ephemeral=True,
+    )
+    assert guild.channels == []
+    assert session.scalar(select(ManagedUiChannel)) is None
+
+
+def test_admin_setup_custom_ui_channel_reports_discord_forbidden_detail_when_initial_send_fails(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    guild = FakeGuild(id=2_101_7, next_channel_fail_send_with=make_forbidden())
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({10}),
+    )
+    interaction = FakeInteraction(user=FakeUser(id=10), guild_id=guild.id, guild=guild)
+
+    asyncio.run(
+        handlers.admin_setup_custom_ui_channel(
+            as_interaction(interaction),
+            ManagedUiType.REGISTER_PANEL.value,
+            "レート戦はこちらから",
+        )
+    )
+
+    session.expire_all()
+
+    assert_response(
+        interaction,
+        ["Bot に必要な権限がありません。 Discord API: 403 Forbidden (error code: 0): Forbidden"],
+        ephemeral=True,
+    )
+    assert guild.channels == []
+    assert session.scalar(select(ManagedUiChannel)) is None
+
+
 def test_admin_setup_ui_channels_returns_already_created_when_required_ui_exists(
     session_factory: sessionmaker[Session],
 ) -> None:
@@ -1327,18 +1550,128 @@ def test_admin_setup_ui_channels_returns_already_created_when_required_ui_exists
         session_factory,
         super_admin_user_ids=frozenset({10}),
     )
-    handlers.managed_ui_service.create_managed_ui_channel(
-        ui_type=ManagedUiType.REGISTER_PANEL,
-        channel_id=40_001,
-        message_id=50_001,
-        created_by_discord_user_id=10,
-    )
+    for offset, definition in enumerate(get_required_managed_ui_definitions()):
+        handlers.managed_ui_service.create_managed_ui_channel(
+            ui_type=definition.ui_type,
+            channel_id=40_001 + offset,
+            message_id=50_001 + offset,
+            created_by_discord_user_id=10,
+        )
     interaction = FakeInteraction(user=FakeUser(id=10), guild_id=guild.id, guild=guild)
 
     asyncio.run(handlers.admin_setup_ui_channels(as_interaction(interaction)))
 
     assert interaction.response.messages == ["必要な UI 設置チャンネルはすでに作成済みです。"]
     assert interaction.response.ephemeral_flags == [True]
+
+
+def test_admin_setup_ui_channels_creates_registered_channel_set(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    executor_discord_user_id = 10
+    guild = FakeGuild(id=2_102_5)
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({executor_discord_user_id}),
+    )
+    interaction = FakeInteraction(
+        user=FakeUser(id=executor_discord_user_id),
+        guild_id=guild.id,
+        guild=guild,
+    )
+
+    asyncio.run(handlers.admin_setup_ui_channels(as_interaction(interaction)))
+
+    session.expire_all()
+    managed_ui_channels = session.scalars(
+        select(ManagedUiChannel).order_by(ManagedUiChannel.id.asc())
+    ).all()
+
+    assert_response(interaction, ["必要な UI 設置チャンネルを作成しました。"], ephemeral=True)
+    assert interaction.response.defer_ephemeral is True
+    assert interaction.response.defer_thinking is True
+    assert [definition.ui_type for definition in get_required_managed_ui_definitions()] == [
+        managed_ui_channel.ui_type for managed_ui_channel in managed_ui_channels
+    ]
+    expected_channel_names = [
+        definition.recommended_channel_name for definition in get_required_managed_ui_definitions()
+    ]
+    assert expected_channel_names == [channel.name for channel in guild.channels]
+
+    registered_role = find_role_by_name(guild, REGISTERED_PLAYER_ROLE_NAME)
+    assert registered_role is not None
+
+    register_channel = find_channel_by_name(guild, "レート戦はこちらから")
+    assert register_channel.overwrites[guild.default_role].view_channel is True
+    assert register_channel.overwrites[guild.default_role].send_messages is False
+    assert register_channel.sent_messages[0].content == REGISTER_PANEL_MESSAGE
+
+    matchmaking_channel = find_channel_by_name(guild, "レート戦マッチング")
+    assert matchmaking_channel.overwrites[guild.default_role].view_channel is False
+    assert matchmaking_channel.overwrites[registered_role].view_channel is True
+    assert matchmaking_channel.overwrites[registered_role].send_messages is False
+    assert matchmaking_channel.sent_messages[0].content == MATCHMAKING_CHANNEL_MESSAGE
+    assert matchmaking_channel.sent_messages[0].view is not None
+    matchmaking_button_labels = [
+        cast(discord.ui.Button[Any], child).label
+        for child in matchmaking_channel.sent_messages[0].view.children
+    ]
+    assert matchmaking_button_labels == [
+        MATCHMAKING_CHANNEL_JOIN_HIGH_BUTTON_LABEL,
+        MATCHMAKING_CHANNEL_JOIN_LOW_BUTTON_LABEL,
+        MATCHMAKING_CHANNEL_PRESENT_BUTTON_LABEL,
+        MATCHMAKING_CHANNEL_LEAVE_BUTTON_LABEL,
+    ]
+
+    matchmaking_news_channel = find_channel_by_name(guild, "レート戦マッチ速報")
+    assert matchmaking_news_channel.overwrites[guild.default_role].view_channel is False
+    assert matchmaking_news_channel.overwrites[registered_role].view_channel is True
+    assert matchmaking_news_channel.sent_messages[0].content == MATCHMAKING_NEWS_CHANNEL_MESSAGE
+    assert matchmaking_news_channel.sent_messages[0].view is None
+
+    system_announcements_channel = find_channel_by_name(guild, "レート戦アナウンス")
+    assert system_announcements_channel.overwrites[guild.default_role].view_channel is False
+    assert system_announcements_channel.overwrites[registered_role].view_channel is True
+    assert (
+        system_announcements_channel.sent_messages[0].content
+        == SYSTEM_ANNOUNCEMENTS_CHANNEL_MESSAGE
+    )
+
+    admin_contact_channel = find_channel_by_name(guild, "運営連絡・フィードバック")
+    assert admin_contact_channel.overwrites[guild.default_role].view_channel is True
+    assert admin_contact_channel.overwrites[guild.default_role].send_messages is True
+    assert admin_contact_channel.sent_messages[0].content == ADMIN_CONTACT_CHANNEL_MESSAGE
+
+
+def test_admin_setup_ui_channels_reports_missing_manage_roles_permission(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    guild = FakeGuild(
+        id=2_102_6,
+        me=FakeGuildMember(
+            id=999_999,
+            guild_permissions=discord.Permissions(manage_channels=True),
+        ),
+    )
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({10}),
+    )
+    interaction = FakeInteraction(user=FakeUser(id=10), guild_id=guild.id, guild=guild)
+
+    asyncio.run(handlers.admin_setup_ui_channels(as_interaction(interaction)))
+
+    session.expire_all()
+
+    assert_response(
+        interaction,
+        ["Bot に必要な権限がありません。 不足している権限: ロールの管理"],
+        ephemeral=True,
+    )
+    assert guild.channels == []
+    assert session.scalar(select(ManagedUiChannel)) is None
 
 
 def test_admin_teardown_ui_channels_deletes_managed_channels_and_records(
@@ -1381,6 +1714,8 @@ def test_admin_teardown_ui_channels_deletes_managed_channels_and_records(
 
     assert teardown_interaction.response.messages == ["UI 設置チャンネルをすべて撤収しました。"]
     assert teardown_interaction.response.ephemeral_flags == [True]
+    assert teardown_interaction.response.defer_ephemeral is True
+    assert teardown_interaction.response.defer_thinking is True
     assert guild.channels == []
     assert session.scalar(select(ManagedUiChannel)) is None
 
@@ -1409,6 +1744,81 @@ def test_admin_teardown_ui_channels_removes_record_when_channel_is_missing(
     assert interaction.response.messages == ["UI 設置チャンネルをすべて撤収しました。"]
     assert interaction.response.ephemeral_flags == [True]
     assert session.scalar(select(ManagedUiChannel)) is None
+
+
+def test_admin_teardown_ui_channels_reports_missing_manage_channels_permission(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    guild = FakeGuild(
+        id=2_104_5,
+        me=FakeGuildMember(
+            id=999_999,
+            guild_permissions=discord.Permissions.none(),
+        ),
+    )
+    channel = FakeTextChannel(id=60_002, name="レート戦はこちらから", guild=guild)
+    guild.channels.append(channel)
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({10}),
+    )
+    handlers.managed_ui_service.create_managed_ui_channel(
+        ui_type=ManagedUiType.REGISTER_PANEL,
+        channel_id=channel.id,
+        message_id=70_002,
+        created_by_discord_user_id=10,
+    )
+    interaction = FakeInteraction(user=FakeUser(id=10), guild_id=guild.id, guild=guild)
+
+    asyncio.run(handlers.admin_teardown_ui_channels(as_interaction(interaction), "teardown"))
+
+    session.expire_all()
+
+    assert_response(
+        interaction,
+        ["Bot に必要な権限がありません。 不足している権限: チャンネルの管理"],
+        ephemeral=True,
+    )
+    assert channel.deleted is False
+    assert session.scalar(select(ManagedUiChannel)) is not None
+
+
+def test_admin_teardown_ui_channels_reports_discord_forbidden_detail(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    guild = FakeGuild(id=2_104_6)
+    channel = FakeTextChannel(
+        id=60_003,
+        name="レート戦はこちらから",
+        guild=guild,
+        fail_delete_with=make_forbidden(),
+    )
+    guild.channels.append(channel)
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({10}),
+    )
+    handlers.managed_ui_service.create_managed_ui_channel(
+        ui_type=ManagedUiType.REGISTER_PANEL,
+        channel_id=channel.id,
+        message_id=70_003,
+        created_by_discord_user_id=10,
+    )
+    interaction = FakeInteraction(user=FakeUser(id=10), guild_id=guild.id, guild=guild)
+
+    asyncio.run(handlers.admin_teardown_ui_channels(as_interaction(interaction), "teardown"))
+
+    session.expire_all()
+
+    assert_response(
+        interaction,
+        ["Bot に必要な権限がありません。 Discord API: 403 Forbidden (error code: 0): Forbidden"],
+        ephemeral=True,
+    )
+    assert channel.deleted is False
+    assert session.scalar(select(ManagedUiChannel)) is not None
 
 
 def test_admin_restrict_and_unrestrict_user_commands_manage_restrictions(

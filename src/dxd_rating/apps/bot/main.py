@@ -12,7 +12,7 @@ from dxd_rating.platform.config.common import configure_logging, raise_settings_
 from dxd_rating.platform.db.session import create_db_engine, create_session_factory, session_scope
 from dxd_rating.platform.discord.gateway.commands import BotCommandHandlers, register_app_commands
 from dxd_rating.platform.discord.rest import DiscordOutboxEventPublisher
-from dxd_rating.platform.discord.ui import create_managed_ui_view
+from dxd_rating.platform.discord.ui import create_managed_ui_view, has_persistent_managed_ui_view
 from dxd_rating.platform.runtime import BotRuntime, MatchRuntime, OutboxDispatcher
 
 logger = logging.getLogger(__name__)
@@ -82,7 +82,10 @@ class BotClient(discord.Client):
         managed_ui_channels = await asyncio.to_thread(
             self.command_handlers.managed_ui_service.list_managed_ui_channels
         )
+        registered_message_ids: list[int] = []
         for managed_ui_channel in managed_ui_channels:
+            if not has_persistent_managed_ui_view(managed_ui_channel.ui_type):
+                continue
             self.add_view(
                 create_managed_ui_view(
                     managed_ui_channel.ui_type,
@@ -90,12 +93,13 @@ class BotClient(discord.Client):
                 ),
                 message_id=managed_ui_channel.message_id,
             )
+            registered_message_ids.append(managed_ui_channel.message_id)
 
         self._persistent_views_registered = True
         logger.info(
             "Registered persistent managed UI views count=%s message_ids=%s",
-            len(managed_ui_channels),
-            [managed_ui_channel.message_id for managed_ui_channel in managed_ui_channels],
+            len(registered_message_ids),
+            registered_message_ids,
         )
 
 

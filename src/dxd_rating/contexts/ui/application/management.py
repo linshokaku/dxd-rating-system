@@ -9,6 +9,11 @@ from dxd_rating.platform.db.models import ManagedUiChannel, ManagedUiType
 from dxd_rating.platform.db.session import session_scope
 
 REGISTER_PANEL_RECOMMENDED_CHANNEL_NAME = "レート戦はこちらから"
+MATCHMAKING_CHANNEL_RECOMMENDED_CHANNEL_NAME = "レート戦マッチング"
+MATCHMAKING_NEWS_CHANNEL_RECOMMENDED_CHANNEL_NAME = "レート戦マッチ速報"
+SYSTEM_ANNOUNCEMENTS_CHANNEL_RECOMMENDED_CHANNEL_NAME = "レート戦アナウンス"
+ADMIN_CONTACT_CHANNEL_RECOMMENDED_CHANNEL_NAME = "運営連絡・フィードバック"
+REGISTERED_PLAYER_ROLE_NAME = "レート戦参加者"
 
 
 @dataclass(frozen=True, slots=True)
@@ -16,6 +21,8 @@ class ManagedUiDefinition:
     ui_type: ManagedUiType
     recommended_channel_name: str
     singleton: bool
+    requires_registered_player_role: bool
+    installs_persistent_view: bool
 
 
 MANAGED_UI_DEFINITIONS = {
@@ -23,9 +30,45 @@ MANAGED_UI_DEFINITIONS = {
         ui_type=ManagedUiType.REGISTER_PANEL,
         recommended_channel_name=REGISTER_PANEL_RECOMMENDED_CHANNEL_NAME,
         singleton=True,
+        requires_registered_player_role=False,
+        installs_persistent_view=True,
+    ),
+    ManagedUiType.MATCHMAKING_CHANNEL: ManagedUiDefinition(
+        ui_type=ManagedUiType.MATCHMAKING_CHANNEL,
+        recommended_channel_name=MATCHMAKING_CHANNEL_RECOMMENDED_CHANNEL_NAME,
+        singleton=True,
+        requires_registered_player_role=True,
+        installs_persistent_view=True,
+    ),
+    ManagedUiType.MATCHMAKING_NEWS_CHANNEL: ManagedUiDefinition(
+        ui_type=ManagedUiType.MATCHMAKING_NEWS_CHANNEL,
+        recommended_channel_name=MATCHMAKING_NEWS_CHANNEL_RECOMMENDED_CHANNEL_NAME,
+        singleton=True,
+        requires_registered_player_role=True,
+        installs_persistent_view=False,
+    ),
+    ManagedUiType.SYSTEM_ANNOUNCEMENTS_CHANNEL: ManagedUiDefinition(
+        ui_type=ManagedUiType.SYSTEM_ANNOUNCEMENTS_CHANNEL,
+        recommended_channel_name=SYSTEM_ANNOUNCEMENTS_CHANNEL_RECOMMENDED_CHANNEL_NAME,
+        singleton=True,
+        requires_registered_player_role=True,
+        installs_persistent_view=False,
+    ),
+    ManagedUiType.ADMIN_CONTACT_CHANNEL: ManagedUiDefinition(
+        ui_type=ManagedUiType.ADMIN_CONTACT_CHANNEL,
+        recommended_channel_name=ADMIN_CONTACT_CHANNEL_RECOMMENDED_CHANNEL_NAME,
+        singleton=True,
+        requires_registered_player_role=False,
+        installs_persistent_view=False,
     ),
 }
-REQUIRED_MANAGED_UI_TYPES = (ManagedUiType.REGISTER_PANEL,)
+REQUIRED_MANAGED_UI_TYPES = (
+    ManagedUiType.REGISTER_PANEL,
+    ManagedUiType.MATCHMAKING_CHANNEL,
+    ManagedUiType.MATCHMAKING_NEWS_CHANNEL,
+    ManagedUiType.SYSTEM_ANNOUNCEMENTS_CHANNEL,
+    ManagedUiType.ADMIN_CONTACT_CHANNEL,
+)
 
 
 def get_managed_ui_definition(ui_type: ManagedUiType) -> ManagedUiDefinition:

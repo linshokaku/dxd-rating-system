@@ -14,6 +14,10 @@ from dxd_rating.platform.db.models.enum_utils import enum_values
 
 class ManagedUiType(StrEnum):
     REGISTER_PANEL = "register_panel"
+    MATCHMAKING_CHANNEL = "matchmaking_channel"
+    MATCHMAKING_NEWS_CHANNEL = "matchmaking_news_channel"
+    SYSTEM_ANNOUNCEMENTS_CHANNEL = "system_announcements_channel"
+    ADMIN_CONTACT_CHANNEL = "admin_contact_channel"
 
 
 class ManagedUiChannel(Base):

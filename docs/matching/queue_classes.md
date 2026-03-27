@@ -38,10 +38,10 @@ DB に保存するための安定した内部識別子である。
 
 ### `queue_name`
 
-ユーザーが `/join` で指定する階級名である。
+ユーザーが `/join` またはマッチングチャンネル UI で指定する階級名である。
 
 同じ `queue_name` を複数フォーマットで再利用してよい。  
-ただし `/join` では `match_format` と組み合わせて解決する。
+ただし参加時は `match_format` と組み合わせて解決する。
 
 ## 初期構成
 
@@ -105,9 +105,9 @@ MATCH_FORMAT_DEFINITIONS = (
 
 ## キュー参加ルール
 
-### `/join` の入力
+### キュー参加時の入力
 
-`/join` は以下を引数に取る。
+`/join` と [../ui/matchmaking_channel.md](../ui/matchmaking_channel.md) の参加 UI は以下を入力として扱う。
 
 - `match_format`
 - `queue_name`

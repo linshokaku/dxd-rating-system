@@ -48,7 +48,7 @@ players_per_batch = team_size * 2 * batch_size
 
 - 1 人のプレイヤーが同時に参加できるキューは、全フォーマット・全階級を通して 1 つだけとする
 - したがって、`status = 'waiting'` のキュー行はプレイヤー単位で 1 件までとする
-- `/join` は `match_format` と `queue_name` を受け取り、その組み合わせで参加先キューを解決する
+- `/join` と `レート戦マッチング` チャンネルの参加 UI は `match_format` と `queue_name` を受け取り、その組み合わせで参加先キューを解決する
 
 ## バッチの考え方
 

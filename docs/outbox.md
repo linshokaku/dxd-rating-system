@@ -60,7 +60,7 @@
 
 現時点では、後続通知の配送先は以下の方針とする。
 
-- `presence_reminder` と `queue_expired` は、通常ユーザー操作でも開発者コマンド操作でも、最新のコマンド実行または button 押下が発生した `channel_id` 宛てに送る
+- `presence_reminder` と `queue_expired` は、通常ユーザー操作でも開発者コマンド操作でも、最新のコマンド実行または UI の参加ボタン押下が発生した `channel_id` 宛てに送る
 - `presence_reminder` と `queue_expired` は、対象ユーザーへの mention を先頭に付けた通常のテキストメッセージとして送る
 - `match_created` は、参加者ごとの通知先コンテキストから決定した channel に送る
 - `match_created` は特定プレイヤーへの mention を付けない
@@ -70,7 +70,7 @@
 
 - thread も Discord 上では channel として扱い、`channel_id` で識別する
 - `guild_id` は送信先の検証やログ用途のため保持してよい
-- 将来 button UI を導入した場合は、button interaction が発生した channel をタイマー通知の最新送信先として扱う
+- `レート戦マッチング` チャンネルの UI から参加した場合は、参加ボタンの interaction が発生した channel をタイマー通知の最新送信先として扱う
 
 ## 通知先コンテキスト
 
@@ -112,7 +112,7 @@
 - `presence_reminder` と `queue_expired` の送信先として、この `join` が実行された `channel_id` を保存する
 - `match_created` の送信先としては、引き続き `join` を実行した `channel_id` を保存する
 - 保存する `mention_discord_user_id` は、通常ユーザー操作では `join` を実行した Discord user ID、開発者コマンド操作では対象ユーザーの Discord user ID とする
-- 将来 button UI を導入した場合は、button 押下時も同じ形式で最新 `channel_id` を保存できるようにする
+- `レート戦マッチング` チャンネルの UI から参加した場合も、参加ボタン押下時に同じ形式で最新 `channel_id` を保存する
 
 ### present
 

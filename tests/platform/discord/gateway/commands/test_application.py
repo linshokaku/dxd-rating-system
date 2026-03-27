@@ -1674,6 +1674,153 @@ def test_admin_setup_ui_channels_reports_missing_manage_roles_permission(
     assert session.scalar(select(ManagedUiChannel)) is None
 
 
+def test_admin_cleanup_ui_channels_deletes_only_setup_blocking_unmanaged_channels(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    executor_discord_user_id = 10
+    guild = FakeGuild(id=2_102_7)
+    duplicate_register_channel = FakeTextChannel(
+        id=60_010,
+        name="レート戦はこちらから",
+        guild=guild,
+    )
+    blocking_matchmaking_channel = FakeTextChannel(
+        id=60_011,
+        name="レート戦マッチング",
+        guild=guild,
+    )
+    blocking_news_channel = FakeTextChannel(
+        id=60_012,
+        name="レート戦マッチ速報",
+        guild=guild,
+    )
+    unrelated_channel = FakeTextChannel(
+        id=60_013,
+        name="雑談",
+        guild=guild,
+    )
+    guild.channels.extend(
+        [
+            duplicate_register_channel,
+            blocking_matchmaking_channel,
+            blocking_news_channel,
+            unrelated_channel,
+        ]
+    )
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({executor_discord_user_id}),
+    )
+    handlers.managed_ui_service.create_managed_ui_channel(
+        ui_type=ManagedUiType.REGISTER_PANEL,
+        channel_id=99_001,
+        message_id=88_001,
+        created_by_discord_user_id=executor_discord_user_id,
+    )
+    cleanup_interaction = FakeInteraction(
+        user=FakeUser(id=executor_discord_user_id),
+        guild_id=guild.id,
+        guild=guild,
+    )
+
+    asyncio.run(
+        handlers.admin_cleanup_ui_channels(
+            as_interaction(cleanup_interaction),
+            "cleanup",
+        )
+    )
+
+    assert_response(
+        cleanup_interaction,
+        ["setup の障害となる重複チャンネルを削除しました。"],
+        ephemeral=True,
+    )
+    assert duplicate_register_channel.deleted is False
+    assert blocking_matchmaking_channel.deleted is True
+    assert blocking_news_channel.deleted is True
+    assert unrelated_channel.deleted is False
+
+    setup_interaction = FakeInteraction(
+        user=FakeUser(id=executor_discord_user_id),
+        guild_id=guild.id,
+        guild=guild,
+    )
+    asyncio.run(handlers.admin_setup_ui_channels(as_interaction(setup_interaction)))
+
+    assert_response(setup_interaction, ["必要な UI 設置チャンネルを作成しました。"], ephemeral=True)
+
+
+def test_admin_cleanup_ui_channels_returns_empty_when_no_blocking_channels(
+    session_factory: sessionmaker[Session],
+) -> None:
+    guild = FakeGuild(id=2_102_8)
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({10}),
+    )
+    interaction = FakeInteraction(user=FakeUser(id=10), guild_id=guild.id, guild=guild)
+
+    asyncio.run(handlers.admin_cleanup_ui_channels(as_interaction(interaction), "cleanup"))
+
+    assert_response(interaction, ["削除対象の重複チャンネルはありません。"], ephemeral=True)
+
+
+def test_admin_cleanup_ui_channels_reports_missing_manage_channels_permission(
+    session_factory: sessionmaker[Session],
+) -> None:
+    guild = FakeGuild(
+        id=2_102_9,
+        me=FakeGuildMember(
+            id=999_999,
+            guild_permissions=discord.Permissions.none(),
+        ),
+    )
+    channel = FakeTextChannel(id=60_014, name="レート戦マッチング", guild=guild)
+    guild.channels.append(channel)
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({10}),
+    )
+    interaction = FakeInteraction(user=FakeUser(id=10), guild_id=guild.id, guild=guild)
+
+    asyncio.run(handlers.admin_cleanup_ui_channels(as_interaction(interaction), "cleanup"))
+
+    assert_response(
+        interaction,
+        ["Bot に必要な権限がありません。 不足している権限: チャンネルの管理"],
+        ephemeral=True,
+    )
+    assert channel.deleted is False
+
+
+def test_admin_cleanup_ui_channels_reports_discord_forbidden_detail(
+    session_factory: sessionmaker[Session],
+) -> None:
+    guild = FakeGuild(id=2_103_0)
+    channel = FakeTextChannel(
+        id=60_015,
+        name="レート戦マッチング",
+        guild=guild,
+        fail_delete_with=make_forbidden(),
+    )
+    guild.channels.append(channel)
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({10}),
+    )
+    interaction = FakeInteraction(user=FakeUser(id=10), guild_id=guild.id, guild=guild)
+
+    asyncio.run(handlers.admin_cleanup_ui_channels(as_interaction(interaction), "cleanup"))
+
+    assert_response(
+        interaction,
+        ["Bot に必要な権限がありません。 Discord API: 403 Forbidden (error code: 0): Forbidden"],
+        ephemeral=True,
+    )
+    assert channel.deleted is False
+
+
 def test_admin_teardown_ui_channels_deletes_managed_channels_and_records(
     session: Session,
     session_factory: sessionmaker[Session],
@@ -2069,16 +2216,19 @@ def test_admin_managed_ui_commands_are_registered_with_expected_parameters() -> 
 
     setup_custom_command = tree.get_command("admin_setup_custom_ui_channel")
     setup_all_command = tree.get_command("admin_setup_ui_channels")
+    cleanup_command = tree.get_command("admin_cleanup_ui_channels")
     teardown_command = tree.get_command("admin_teardown_ui_channels")
 
     assert setup_custom_command is not None
     assert setup_all_command is not None
+    assert cleanup_command is not None
     assert teardown_command is not None
     assert [parameter.name for parameter in setup_custom_command.parameters] == [
         "ui_type",
         "channel_name",
     ]
     assert [parameter.name for parameter in setup_all_command.parameters] == []
+    assert [parameter.name for parameter in cleanup_command.parameters] == ["confirm"]
     assert [parameter.name for parameter in teardown_command.parameters] == ["confirm"]
 
 

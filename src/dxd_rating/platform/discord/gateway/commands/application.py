@@ -141,6 +141,13 @@ ADMIN_RECOMMENDED_CHANNEL_NAME_CONFLICT_MESSAGE = "推奨チャンネル名の�
 ADMIN_SETUP_UI_CHANNELS_FAILED_MESSAGE = (
     "必要な UI 設置チャンネルの作成に失敗しました。管理者に確認してください。"
 )
+ADMIN_INVALID_CLEANUP_CONFIRM_MESSAGE = "confirm が不正です。"
+ADMIN_CLEANUP_UI_CHANNELS_SUCCESS_MESSAGE = "setup の障害となる重複チャンネルを削除しました。"
+ADMIN_CLEANUP_UI_CHANNELS_EMPTY_MESSAGE = "削除対象の重複チャンネルはありません。"
+ADMIN_CLEANUP_UI_CHANNELS_FAILED_MESSAGE = (
+    "重複チャンネルの cleanup に失敗しました。管理者に確認してください。"
+)
+ADMIN_CLEANUP_CONFIRM_VALUE = "cleanup"
 ADMIN_INVALID_TEARDOWN_CONFIRM_MESSAGE = "confirm が不正です。"
 ADMIN_TEARDOWN_UI_CHANNELS_SUCCESS_MESSAGE = "UI 設置チャンネルをすべて撤収しました。"
 ADMIN_TEARDOWN_UI_CHANNELS_EMPTY_MESSAGE = "撤収対象の UI 設置チャンネルはありません。"
@@ -914,15 +921,9 @@ class BotCommandHandlers:
         try:
             guild = self._require_guild(interaction)
             managed_ui_channels = await asyncio.to_thread(self._list_managed_ui_channels)
-            managed_ui_channel_by_type = {
-                managed_ui_channel.ui_type: managed_ui_channel
-                for managed_ui_channel in managed_ui_channels
-            }
-            missing_definitions = [
-                definition
-                for definition in get_required_managed_ui_definitions()
-                if definition.ui_type not in managed_ui_channel_by_type
-            ]
+            missing_definitions = self._get_missing_required_managed_ui_definitions(
+                managed_ui_channels
+            )
             if not missing_definitions:
                 await self._send_message(
                     interaction,
@@ -934,18 +935,17 @@ class BotCommandHandlers:
             managed_channel_ids = {
                 managed_ui_channel.channel_id for managed_ui_channel in managed_ui_channels
             }
-            for definition in missing_definitions:
-                if self._guild_has_unmanaged_channel_named(
-                    guild,
-                    definition.recommended_channel_name,
-                    managed_channel_ids=managed_channel_ids,
-                ):
-                    await self._send_message(
-                        interaction,
-                        ADMIN_RECOMMENDED_CHANNEL_NAME_CONFLICT_MESSAGE,
-                        ephemeral=True,
-                    )
-                    return
+            if self._find_setup_blocking_unmanaged_channels(
+                guild,
+                missing_definitions=missing_definitions,
+                managed_channel_ids=managed_channel_ids,
+            ):
+                await self._send_message(
+                    interaction,
+                    ADMIN_RECOMMENDED_CHANNEL_NAME_CONFLICT_MESSAGE,
+                    ephemeral=True,
+                )
+                return
 
             missing_permissions = self._find_missing_managed_ui_setup_permissions(
                 guild,
@@ -1096,6 +1096,136 @@ class BotCommandHandlers:
         await self._send_message(
             interaction,
             ADMIN_SETUP_UI_CHANNELS_SUCCESS_MESSAGE,
+            ephemeral=True,
+        )
+
+    async def admin_cleanup_ui_channels(
+        self,
+        interaction: discord.Interaction[Any],
+        confirm: str,
+    ) -> None:
+        if not await self._ensure_admin(interaction):
+            return
+
+        if confirm != ADMIN_CLEANUP_CONFIRM_VALUE:
+            await self._send_message(
+                interaction,
+                ADMIN_INVALID_CLEANUP_CONFIRM_MESSAGE,
+                ephemeral=True,
+            )
+            return
+
+        await self._defer_message_response(interaction, ephemeral=True)
+
+        try:
+            guild = self._require_guild(interaction)
+            managed_ui_channels = await asyncio.to_thread(self._list_managed_ui_channels)
+            missing_definitions = self._get_missing_required_managed_ui_definitions(
+                managed_ui_channels
+            )
+            if not missing_definitions:
+                await self._send_message(
+                    interaction,
+                    ADMIN_CLEANUP_UI_CHANNELS_EMPTY_MESSAGE,
+                    ephemeral=True,
+                )
+                return
+
+            managed_channel_ids = {
+                managed_ui_channel.channel_id for managed_ui_channel in managed_ui_channels
+            }
+            blocking_channels = self._find_setup_blocking_unmanaged_channels(
+                guild,
+                missing_definitions=missing_definitions,
+                managed_channel_ids=managed_channel_ids,
+            )
+            if not blocking_channels:
+                await self._send_message(
+                    interaction,
+                    ADMIN_CLEANUP_UI_CHANNELS_EMPTY_MESSAGE,
+                    ephemeral=True,
+                )
+                return
+
+            missing_permissions = self._find_missing_managed_ui_teardown_permissions(guild)
+            if missing_permissions:
+                await self._send_message(
+                    interaction,
+                    self._format_managed_ui_permission_message(missing_permissions),
+                    ephemeral=True,
+                )
+                return
+
+            had_successful_cleanup = False
+            had_forbidden_failure = False
+            last_forbidden_error: discord.Forbidden | None = None
+            had_other_failure = False
+            for channel in blocking_channels:
+                channel_id = getattr(channel, "id", None)
+                channel_name = getattr(channel, "name", None)
+                try:
+                    await channel.delete(
+                        reason="Cleanup unmanaged channel blocking admin_setup_ui_channels",
+                    )
+                except discord.NotFound:
+                    had_successful_cleanup = True
+                    continue
+                except discord.Forbidden as exc:
+                    had_forbidden_failure = True
+                    last_forbidden_error = exc
+                    self._log_managed_ui_forbidden(
+                        action="admin_cleanup_ui_channels",
+                        executor_discord_user_id=interaction.user.id,
+                        channel_id=channel_id,
+                        exc=exc,
+                    )
+                    continue
+                except Exception:
+                    had_other_failure = True
+                    self.logger.exception(
+                        "Failed to delete blocking unmanaged channel during cleanup "
+                        "executor_discord_user_id=%s channel_id=%s channel_name=%s",
+                        interaction.user.id,
+                        channel_id,
+                        channel_name,
+                    )
+                    continue
+
+                had_successful_cleanup = True
+
+            if had_forbidden_failure or had_other_failure:
+                if had_forbidden_failure and not had_other_failure and not had_successful_cleanup:
+                    await self._send_message(
+                        interaction,
+                        self._format_managed_ui_permission_message(
+                            self._find_missing_managed_ui_teardown_permissions(guild),
+                            forbidden_error=last_forbidden_error,
+                        ),
+                        ephemeral=True,
+                    )
+                    return
+
+                await self._send_message(
+                    interaction,
+                    ADMIN_CLEANUP_UI_CHANNELS_FAILED_MESSAGE,
+                    ephemeral=True,
+                )
+                return
+        except Exception:
+            self.logger.exception(
+                "Failed to execute /admin_cleanup_ui_channels command executor_discord_user_id=%s",
+                interaction.user.id,
+            )
+            await self._send_message(
+                interaction,
+                ADMIN_CLEANUP_UI_CHANNELS_FAILED_MESSAGE,
+                ephemeral=True,
+            )
+            return
+
+        await self._send_message(
+            interaction,
+            ADMIN_CLEANUP_UI_CHANNELS_SUCCESS_MESSAGE,
             ephemeral=True,
         )
 
@@ -2258,18 +2388,47 @@ class BotCommandHandlers:
             for channel in getattr(guild, "channels", ())
         )
 
-    def _guild_has_unmanaged_channel_named(
+    def _get_missing_required_managed_ui_definitions(
+        self,
+        managed_ui_channels: Sequence[ManagedUiChannel],
+    ) -> list[ManagedUiDefinition]:
+        managed_ui_channel_by_type = {
+            managed_ui_channel.ui_type: managed_ui_channel
+            for managed_ui_channel in managed_ui_channels
+        }
+        return [
+            definition
+            for definition in get_required_managed_ui_definitions()
+            if definition.ui_type not in managed_ui_channel_by_type
+        ]
+
+    def _find_setup_blocking_unmanaged_channels(
         self,
         guild: discord.Guild,
-        channel_name: str,
         *,
+        missing_definitions: Sequence[ManagedUiDefinition],
         managed_channel_ids: set[int],
-    ) -> bool:
-        return any(
-            getattr(channel, "name", None) == channel_name
-            and getattr(channel, "id", None) not in managed_channel_ids
-            for channel in getattr(guild, "channels", ())
-        )
+    ) -> list[discord.abc.GuildChannel]:
+        blocking_channel_names = {
+            definition.recommended_channel_name for definition in missing_definitions
+        }
+        if not blocking_channel_names:
+            return []
+
+        blocking_channels_by_id: dict[int, discord.abc.GuildChannel] = {}
+        for channel in getattr(guild, "channels", ()):
+            channel_id = getattr(channel, "id", None)
+            channel_name = getattr(channel, "name", None)
+            if not isinstance(channel_id, int):
+                continue
+            if channel_id in managed_channel_ids:
+                continue
+            if channel_name not in blocking_channel_names:
+                continue
+
+            blocking_channels_by_id[channel_id] = cast(discord.abc.GuildChannel, channel)
+
+        return list(blocking_channels_by_id.values())
 
     def _find_guild_channel_by_id(
         self,
@@ -2751,6 +2910,17 @@ def register_app_commands(
     )
     async def admin_setup_ui_channels_command(interaction: discord.Interaction[Any]) -> None:
         await handlers.admin_setup_ui_channels(interaction)
+
+    @tree.command(
+        name="admin_cleanup_ui_channels",
+        description="setup の障害となる重複チャンネルを削除します",
+    )
+    @app_commands.describe(confirm="cleanup する場合は cleanup を入力")
+    async def admin_cleanup_ui_channels_command(
+        interaction: discord.Interaction[Any],
+        confirm: str,
+    ) -> None:
+        await handlers.admin_cleanup_ui_channels(interaction, confirm)
 
     @tree.command(
         name="admin_teardown_ui_channels",

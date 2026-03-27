@@ -50,7 +50,7 @@ Bot 招待時に少なくとも以下を付与する。
 
 | 権限 | 用途 | 理由 |
 | --- | --- | --- |
-| `Manage Channels` | `/admin_setup_custom_ui_channel`、`/admin_setup_ui_channels`、`/admin_teardown_ui_channels` | 管理対象チャンネルの作成、permission overwrite 設定、削除を行うため |
+| `Manage Channels` | `/admin_setup_custom_ui_channel`、`/admin_setup_ui_channels`、`/admin_cleanup_ui_channels`、`/admin_teardown_ui_channels` | 管理対象チャンネルの作成、permission overwrite 設定、cleanup、削除を行うため |
 | `Manage Roles` | 登録済みユーザー向け role の作成と付与 | `レート戦参加者` role を作成し、登録完了ユーザーへ自動付与するため |
 | `Manage Threads` | 管理 UI チャンネルの初期 permission overwrite 設定 | 現行実装が Bot 自身の channel overwrite に `manage_threads=True` を含めているため |
 
@@ -90,7 +90,7 @@ Bot 招待時に少なくとも以下を付与する。
 - Bot 内でいう `admin` は Discord の `Administrator` 権限ではなく、環境変数 `SUPER_ADMIN_USER_IDS` に含めた Discord user ID で判定する。
 - `Manage Roles` を使って `レート戦参加者` role を付与するには、Bot の role をその role より上位に置く必要がある。
 - UI チャンネルの実際の閲覧可否は、Bot のサーバー権限に加えて channel permission overwrite の影響を受ける。
-- `/admin_setup_custom_ui_channel`、`/admin_setup_ui_channels`、`/admin_teardown_ui_channels` は、事前に判定できた不足権限をレスポンスへ表示してよい。
+- `/admin_setup_custom_ui_channel`、`/admin_setup_ui_channels`、`/admin_cleanup_ui_channels`、`/admin_teardown_ui_channels` は、事前に判定できた不足権限をレスポンスへ表示してよい。
 - これらのコマンドは、Discord API が返した `403 Forbidden` の `status` / `error code` / `text` をレスポンスへ補足表示してよい。
 
 ## 関連仕様

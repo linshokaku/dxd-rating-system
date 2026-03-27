@@ -8,6 +8,7 @@ import discord
 
 from dxd_rating.contexts.ui.application import ManagedUiType
 from dxd_rating.platform.db.models import MatchFormat
+from dxd_rating.shared.constants import REGULAR_QUEUE_BASELINE_RATING
 
 REGISTER_PANEL_MESSAGE = "\n".join(
     [
@@ -23,17 +24,28 @@ MATCHMAKING_CHANNEL_MESSAGE = "\n".join(
     [
         "3v3 のマッチングキュー参加、在席更新、退出はこちらから行えます。",
         (
+            f"beginner はレート {int(REGULAR_QUEUE_BASELINE_RATING)} 未満、"
+            f"master は {int(REGULAR_QUEUE_BASELINE_RATING)} 以上、"
+            "regular は誰でも参加できます。"
+        ),
+        (
             "通常メッセージは送信できません。"
             "連絡が必要な場合は Bot が作成する private thread を利用します。"
         ),
     ]
 )
-MATCHMAKING_CHANNEL_JOIN_HIGH_BUTTON_LABEL = "3v3 high に参加"
-MATCHMAKING_CHANNEL_JOIN_LOW_BUTTON_LABEL = "3v3 low に参加"
+MATCHMAKING_CHANNEL_JOIN_BEGINNER_BUTTON_LABEL = "3v3 beginner に参加"
+MATCHMAKING_CHANNEL_JOIN_REGULAR_BUTTON_LABEL = "3v3 regular に参加"
+MATCHMAKING_CHANNEL_JOIN_MASTER_BUTTON_LABEL = "3v3 master に参加"
 MATCHMAKING_CHANNEL_PRESENT_BUTTON_LABEL = "在席更新"
 MATCHMAKING_CHANNEL_LEAVE_BUTTON_LABEL = "キュー退出"
-MATCHMAKING_CHANNEL_JOIN_HIGH_BUTTON_CUSTOM_ID = "dxd_rating:matchmaking_channel:join:3v3:high"
-MATCHMAKING_CHANNEL_JOIN_LOW_BUTTON_CUSTOM_ID = "dxd_rating:matchmaking_channel:join:3v3:low"
+MATCHMAKING_CHANNEL_JOIN_BEGINNER_BUTTON_CUSTOM_ID = (
+    "dxd_rating:matchmaking_channel:join:3v3:beginner"
+)
+MATCHMAKING_CHANNEL_JOIN_REGULAR_BUTTON_CUSTOM_ID = (
+    "dxd_rating:matchmaking_channel:join:3v3:regular"
+)
+MATCHMAKING_CHANNEL_JOIN_MASTER_BUTTON_CUSTOM_ID = "dxd_rating:matchmaking_channel:join:3v3:master"
 MATCHMAKING_CHANNEL_PRESENT_BUTTON_CUSTOM_ID = "dxd_rating:matchmaking_channel:present"
 MATCHMAKING_CHANNEL_LEAVE_BUTTON_CUSTOM_ID = "dxd_rating:matchmaking_channel:leave"
 MATCHMAKING_NEWS_CHANNEL_MESSAGE = "\n".join(
@@ -122,12 +134,12 @@ class MatchmakingPanelView(discord.ui.View):
         self._interaction_handler = interaction_handler
 
     @discord.ui.button(
-        label=MATCHMAKING_CHANNEL_JOIN_HIGH_BUTTON_LABEL,
+        label=MATCHMAKING_CHANNEL_JOIN_BEGINNER_BUTTON_LABEL,
         style=discord.ButtonStyle.primary,
-        custom_id=MATCHMAKING_CHANNEL_JOIN_HIGH_BUTTON_CUSTOM_ID,
+        custom_id=MATCHMAKING_CHANNEL_JOIN_BEGINNER_BUTTON_CUSTOM_ID,
         row=0,
     )
-    async def join_high_button(
+    async def join_beginner_button(
         self,
         interaction: discord.Interaction[Any],
         _: discord.ui.Button[discord.ui.View],
@@ -135,16 +147,16 @@ class MatchmakingPanelView(discord.ui.View):
         await self._interaction_handler.join(
             interaction,
             MatchFormat.THREE_VS_THREE.value,
-            "high",
+            "beginner",
         )
 
     @discord.ui.button(
-        label=MATCHMAKING_CHANNEL_JOIN_LOW_BUTTON_LABEL,
+        label=MATCHMAKING_CHANNEL_JOIN_REGULAR_BUTTON_LABEL,
         style=discord.ButtonStyle.primary,
-        custom_id=MATCHMAKING_CHANNEL_JOIN_LOW_BUTTON_CUSTOM_ID,
+        custom_id=MATCHMAKING_CHANNEL_JOIN_REGULAR_BUTTON_CUSTOM_ID,
         row=0,
     )
-    async def join_low_button(
+    async def join_regular_button(
         self,
         interaction: discord.Interaction[Any],
         _: discord.ui.Button[discord.ui.View],
@@ -152,7 +164,24 @@ class MatchmakingPanelView(discord.ui.View):
         await self._interaction_handler.join(
             interaction,
             MatchFormat.THREE_VS_THREE.value,
-            "low",
+            "regular",
+        )
+
+    @discord.ui.button(
+        label=MATCHMAKING_CHANNEL_JOIN_MASTER_BUTTON_LABEL,
+        style=discord.ButtonStyle.primary,
+        custom_id=MATCHMAKING_CHANNEL_JOIN_MASTER_BUTTON_CUSTOM_ID,
+        row=0,
+    )
+    async def join_master_button(
+        self,
+        interaction: discord.Interaction[Any],
+        _: discord.ui.Button[discord.ui.View],
+    ) -> None:
+        await self._interaction_handler.join(
+            interaction,
+            MatchFormat.THREE_VS_THREE.value,
+            "master",
         )
 
     @discord.ui.button(

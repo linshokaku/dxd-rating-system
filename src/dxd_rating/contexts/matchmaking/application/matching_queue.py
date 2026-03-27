@@ -62,6 +62,7 @@ from dxd_rating.shared.constants import (
     MatchQueueClassDefinition,
     get_match_format_definition,
     get_match_queue_class_definitions,
+    normalize_match_queue_name,
 )
 
 DEFAULT_CLEANUP_BATCH_SIZE = 100
@@ -206,7 +207,7 @@ class MatchingQueueService:
             definition.queue_class_id: definition for definition in self._queue_class_definitions
         }
         self._queue_class_definitions_by_key = {
-            (definition.match_format, definition.queue_name.casefold()): definition
+            (definition.match_format, normalize_match_queue_name(definition.queue_name)): definition
             for definition in self._queue_class_definitions
         }
         self._queue_class_definitions_by_format: dict[
@@ -826,7 +827,7 @@ class MatchingQueueService:
         queue_name: str,
     ) -> MatchQueueClassDefinition:
         definition = self._queue_class_definitions_by_key.get(
-            (match_format, queue_name.strip().casefold())
+            (match_format, normalize_match_queue_name(queue_name))
         )
         if definition is None:
             raise InvalidQueueNameError(INVALID_QUEUE_NAME_MESSAGE)

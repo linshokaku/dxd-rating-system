@@ -44,8 +44,9 @@ from dxd_rating.platform.db.models import (
 from dxd_rating.platform.discord.gateway.commands import BotCommandHandlers, register_app_commands
 from dxd_rating.platform.discord.ui import (
     ADMIN_CONTACT_CHANNEL_MESSAGE,
-    MATCHMAKING_CHANNEL_JOIN_HIGH_BUTTON_LABEL,
-    MATCHMAKING_CHANNEL_JOIN_LOW_BUTTON_LABEL,
+    MATCHMAKING_CHANNEL_JOIN_BEGINNER_BUTTON_LABEL,
+    MATCHMAKING_CHANNEL_JOIN_MASTER_BUTTON_LABEL,
+    MATCHMAKING_CHANNEL_JOIN_REGULAR_BUTTON_LABEL,
     MATCHMAKING_CHANNEL_LEAVE_BUTTON_LABEL,
     MATCHMAKING_CHANNEL_MESSAGE,
     MATCHMAKING_CHANNEL_PRESENT_BUTTON_LABEL,
@@ -57,7 +58,7 @@ from dxd_rating.platform.discord.ui import (
 from dxd_rating.platform.runtime import MatchRuntime
 
 DEFAULT_MATCH_FORMAT = MatchFormat.THREE_VS_THREE
-DEFAULT_QUEUE_NAME = "low"
+DEFAULT_QUEUE_NAME = "beginner"
 
 
 @dataclass(frozen=True)
@@ -1618,8 +1619,9 @@ def test_admin_setup_ui_channels_creates_registered_channel_set(
         for child in matchmaking_channel.sent_messages[0].view.children
     ]
     assert matchmaking_button_labels == [
-        MATCHMAKING_CHANNEL_JOIN_HIGH_BUTTON_LABEL,
-        MATCHMAKING_CHANNEL_JOIN_LOW_BUTTON_LABEL,
+        MATCHMAKING_CHANNEL_JOIN_BEGINNER_BUTTON_LABEL,
+        MATCHMAKING_CHANNEL_JOIN_REGULAR_BUTTON_LABEL,
+        MATCHMAKING_CHANNEL_JOIN_MASTER_BUTTON_LABEL,
         MATCHMAKING_CHANNEL_PRESENT_BUTTON_LABEL,
         MATCHMAKING_CHANNEL_LEAVE_BUTTON_LABEL,
     ]

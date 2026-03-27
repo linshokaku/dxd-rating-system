@@ -52,11 +52,17 @@ from dxd_rating.shared.constants import (
 )
 
 DEFAULT_MATCH_FORMAT = MatchFormat.THREE_VS_THREE
-DEFAULT_QUEUE_DEFINITION = get_match_queue_class_definition_by_name(DEFAULT_MATCH_FORMAT, "low")
+DEFAULT_QUEUE_DEFINITION = get_match_queue_class_definition_by_name(
+    DEFAULT_MATCH_FORMAT,
+    "beginner",
+)
 assert DEFAULT_QUEUE_DEFINITION is not None
 DEFAULT_QUEUE_NAME = DEFAULT_QUEUE_DEFINITION.queue_name
 DEFAULT_QUEUE_CLASS_ID = DEFAULT_QUEUE_DEFINITION.queue_class_id
-SECOND_QUEUE_DEFINITION = get_match_queue_class_definition_by_name(DEFAULT_MATCH_FORMAT, "high")
+SECOND_QUEUE_DEFINITION = get_match_queue_class_definition_by_name(
+    DEFAULT_MATCH_FORMAT,
+    "master",
+)
 assert SECOND_QUEUE_DEFINITION is not None
 SECOND_QUEUE_CLASS_ID = SECOND_QUEUE_DEFINITION.queue_class_id
 
@@ -263,36 +269,47 @@ def test_join_queue_raises_for_invalid_queue_name(
         service.join_queue(player.id, DEFAULT_MATCH_FORMAT, "unknown")
 
 
+def test_join_queue_accepts_begginer_alias(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    player = create_player(session, 100_000)
+    service = create_matching_queue_service(session_factory)
+
+    result = service.join_queue(player.id, DEFAULT_MATCH_FORMAT, "begginer")
+
+    assert result.queue_class_id == DEFAULT_QUEUE_CLASS_ID
+
+
 def test_join_queue_rejects_player_when_rating_is_outside_allowed_range(
     session: Session,
     session_factory: sessionmaker[Session],
 ) -> None:
     player = create_player(session, 10_000_1)
     player_format_stats = get_player_format_stats(session, player.id)
-    player_format_stats.rating = 2_100
+    player_format_stats.rating = 1_700
     player_format_stats.carryover_status = CarryoverStatus.NOT_APPLIED
     session.commit()
     queue_class_definitions = (
         MatchQueueClassDefinition(
             match_format=DEFAULT_MATCH_FORMAT,
-            queue_class_id="restricted_low",
-            queue_name="low",
-            description="low",
-            target_rating=1_200,
+            queue_class_id="restricted_beginner",
+            queue_name="beginner",
+            description="beginner",
+            maximum_rating=1_200,
         ),
         MatchQueueClassDefinition(
             match_format=DEFAULT_MATCH_FORMAT,
-            queue_class_id="restricted_mid",
-            queue_name="mid",
-            description="mid",
-            target_rating=1_500,
+            queue_class_id="restricted_regular",
+            queue_name="regular",
+            description="regular",
         ),
         MatchQueueClassDefinition(
             match_format=DEFAULT_MATCH_FORMAT,
-            queue_class_id="restricted_high",
-            queue_name="high",
-            description="high",
-            target_rating=1_800,
+            queue_class_id="restricted_master",
+            queue_name="master",
+            description="master",
+            minimum_rating=1_800,
         ),
     )
     service = create_matching_queue_service(
@@ -301,7 +318,7 @@ def test_join_queue_rejects_player_when_rating_is_outside_allowed_range(
     )
 
     with pytest.raises(QueueJoinNotAllowedError):
-        service.join_queue(player.id, DEFAULT_MATCH_FORMAT, "mid")
+        service.join_queue(player.id, DEFAULT_MATCH_FORMAT, "master")
 
 
 def test_join_queue_raises_when_player_has_active_queue_join_restriction(
@@ -869,10 +886,10 @@ def test_try_create_matches_does_not_mix_players_from_different_queue_classes(
     session: Session,
     session_factory: sessionmaker[Session],
 ) -> None:
-    low_players = create_players(session, 3, start_discord_user_id=30_051)
-    high_players = create_players(session, 3, start_discord_user_id=30_061)
-    create_waiting_entries(session, low_players, queue_class_id=DEFAULT_QUEUE_CLASS_ID)
-    create_waiting_entries(session, high_players, queue_class_id=SECOND_QUEUE_CLASS_ID)
+    beginner_players = create_players(session, 3, start_discord_user_id=30_051)
+    master_players = create_players(session, 3, start_discord_user_id=30_061)
+    create_waiting_entries(session, beginner_players, queue_class_id=DEFAULT_QUEUE_CLASS_ID)
+    create_waiting_entries(session, master_players, queue_class_id=SECOND_QUEUE_CLASS_ID)
     service = create_matching_queue_service(session_factory)
 
     created_matches = service.try_create_matches()
@@ -953,7 +970,10 @@ def test_try_create_matches_creates_balanced_two_vs_two_match_from_four_players(
         format_stats = get_player_format_stats(session, player.id, MatchFormat.TWO_VS_TWO)
         format_stats.rating = ratings_by_player_id[player.id]
         format_stats.carryover_status = CarryoverStatus.NOT_APPLIED
-    queue_definition = get_match_queue_class_definition_by_name(MatchFormat.TWO_VS_TWO, "low")
+    queue_definition = get_match_queue_class_definition_by_name(
+        MatchFormat.TWO_VS_TWO,
+        "beginner",
+    )
     assert queue_definition is not None
     create_waiting_entries(session, players, queue_class_id=queue_definition.queue_class_id)
     service = create_matching_queue_service(session_factory)
@@ -996,7 +1016,10 @@ def test_try_create_matches_creates_two_one_vs_one_matches_from_four_players(
         format_stats = get_player_format_stats(session, player.id, MatchFormat.ONE_VS_ONE)
         format_stats.rating = ratings_by_player_id[player.id]
         format_stats.carryover_status = CarryoverStatus.NOT_APPLIED
-    queue_definition = get_match_queue_class_definition_by_name(MatchFormat.ONE_VS_ONE, "low")
+    queue_definition = get_match_queue_class_definition_by_name(
+        MatchFormat.ONE_VS_ONE,
+        "beginner",
+    )
     assert queue_definition is not None
     create_waiting_entries(session, players, queue_class_id=queue_definition.queue_class_id)
     service = create_matching_queue_service(session_factory)

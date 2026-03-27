@@ -70,34 +70,49 @@ def test_prepare_matches_for_batch_pairs_ranked_entries_for_one_vs_one() -> None
     assert prepared_matches[1].team_b_entry_ids == (4,)
 
 
-def test_is_queue_join_allowed_uses_neighbor_target_ratings() -> None:
+def test_is_queue_join_allowed_respects_minimum_and_maximum_ratings() -> None:
     definitions = (
         MatchQueueClassDefinition(
             match_format=MatchFormat.THREE_VS_THREE,
-            queue_class_id="low",
-            queue_name="low",
-            description="low",
-            target_rating=1200.0,
+            queue_class_id="beginner",
+            queue_name="beginner",
+            description="beginner",
+            maximum_rating=1600.0,
         ),
         MatchQueueClassDefinition(
             match_format=MatchFormat.THREE_VS_THREE,
-            queue_class_id="mid",
-            queue_name="mid",
-            description="mid",
-            target_rating=1500.0,
+            queue_class_id="regular",
+            queue_name="regular",
+            description="regular",
         ),
         MatchQueueClassDefinition(
             match_format=MatchFormat.THREE_VS_THREE,
-            queue_class_id="high",
-            queue_name="high",
-            description="high",
-            target_rating=1800.0,
+            queue_class_id="master",
+            queue_name="master",
+            description="master",
+            minimum_rating=1600.0,
         ),
     )
 
     assert (
         is_queue_join_allowed(
+            rating=1599.0,
+            queue_class_definition=definitions[0],
+            definitions_for_format=definitions,
+        )
+        is True
+    )
+    assert (
+        is_queue_join_allowed(
             rating=1600.0,
+            queue_class_definition=definitions[0],
+            definitions_for_format=definitions,
+        )
+        is False
+    )
+    assert (
+        is_queue_join_allowed(
+            rating=1200.0,
             queue_class_definition=definitions[1],
             definitions_for_format=definitions,
         )
@@ -109,7 +124,23 @@ def test_is_queue_join_allowed_uses_neighbor_target_ratings() -> None:
             queue_class_definition=definitions[1],
             definitions_for_format=definitions,
         )
+        is True
+    )
+    assert (
+        is_queue_join_allowed(
+            rating=1599.0,
+            queue_class_definition=definitions[2],
+            definitions_for_format=definitions,
+        )
         is False
+    )
+    assert (
+        is_queue_join_allowed(
+            rating=1600.0,
+            queue_class_definition=definitions[2],
+            definitions_for_format=definitions,
+        )
+        is True
     )
 
 
@@ -119,15 +150,32 @@ def test_validate_queue_class_definitions_rejects_duplicate_queue_names() -> Non
             (
                 MatchQueueClassDefinition(
                     match_format=MatchFormat.THREE_VS_THREE,
-                    queue_class_id="low_a",
-                    queue_name="low",
-                    description="low-a",
+                    queue_class_id="beginner_a",
+                    queue_name="beginner",
+                    description="beginner-a",
                 ),
                 MatchQueueClassDefinition(
                     match_format=MatchFormat.THREE_VS_THREE,
-                    queue_class_id="low_b",
-                    queue_name="LOW",
-                    description="low-b",
+                    queue_class_id="beginner_b",
+                    queue_name="begginer",
+                    description="beginner-b",
+                ),
+            ),
+            supported_match_formats={MatchFormat.THREE_VS_THREE},
+        )
+
+
+def test_validate_queue_class_definitions_rejects_inverted_rating_window() -> None:
+    with pytest.raises(ValueError, match="maximum_rating must be greater than minimum_rating"):
+        validate_queue_class_definitions(
+            (
+                MatchQueueClassDefinition(
+                    match_format=MatchFormat.THREE_VS_THREE,
+                    queue_class_id="invalid",
+                    queue_name="regular",
+                    description="invalid",
+                    minimum_rating=1600.0,
+                    maximum_rating=1600.0,
                 ),
             ),
             supported_match_formats={MatchFormat.THREE_VS_THREE},

@@ -76,7 +76,13 @@
 現在の選択肢:
 
 - `match_format`: `1v1`, `2v2`, `3v3`
-- `queue_name`: `high`, `low`
+- `queue_name`: `beginner`, `regular`, `master`
+
+初期状態の参加条件:
+
+- `beginner`: 対象フォーマットの現在レートが `1600` 未満
+- `regular`: 対象フォーマットの現在レートに関係なく参加可能
+- `master`: 対象フォーマットの現在レートが `1600` 以上
 
 #### 正常時の挙動
 

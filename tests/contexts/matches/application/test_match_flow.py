@@ -58,7 +58,7 @@ from dxd_rating.platform.db.models import (
 from dxd_rating.shared.constants import MATCH_PARENT_SELECTION_WINDOW, get_match_format_definition
 
 DEFAULT_MATCH_FORMAT = MatchFormat.THREE_VS_THREE
-DEFAULT_QUEUE_NAME = "low"
+DEFAULT_QUEUE_NAME = "beginner"
 
 
 def get_database_now(session: Session) -> datetime:

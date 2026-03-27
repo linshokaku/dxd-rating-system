@@ -73,7 +73,10 @@ from dxd_rating.shared.constants import (
 )
 
 DEFAULT_MATCH_FORMAT = MatchFormat.THREE_VS_THREE
-DEFAULT_QUEUE_DEFINITION = get_match_queue_class_definition_by_name(DEFAULT_MATCH_FORMAT, "low")
+DEFAULT_QUEUE_DEFINITION = get_match_queue_class_definition_by_name(
+    DEFAULT_MATCH_FORMAT,
+    "beginner",
+)
 assert DEFAULT_QUEUE_DEFINITION is not None
 DEFAULT_QUEUE_NAME = DEFAULT_QUEUE_DEFINITION.queue_name
 DEFAULT_QUEUE_CLASS_ID = DEFAULT_QUEUE_DEFINITION.queue_class_id

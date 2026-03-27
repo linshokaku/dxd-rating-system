@@ -2,13 +2,18 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any, Protocol
 
 import discord
 
 from dxd_rating.contexts.ui.application import ManagedUiType
 from dxd_rating.platform.db.models import MatchFormat
-from dxd_rating.shared.constants import REGULAR_QUEUE_BASELINE_RATING
+from dxd_rating.shared.constants import (
+    get_match_format_definitions,
+    get_match_queue_class_definitions,
+    normalize_match_queue_name,
+)
 
 REGISTER_PANEL_MESSAGE = "\n".join(
     [
@@ -22,32 +27,19 @@ REGISTER_PANEL_BUTTON_LABEL = "利用規約に同意して登録"
 REGISTER_PANEL_BUTTON_CUSTOM_ID = "dxd_rating:register_panel:register"
 MATCHMAKING_CHANNEL_MESSAGE = "\n".join(
     [
-        "3v3 のマッチングキュー参加、在席更新、退出はこちらから行えます。",
-        (
-            f"beginner はレート {int(REGULAR_QUEUE_BASELINE_RATING)} 未満、"
-            f"master は {int(REGULAR_QUEUE_BASELINE_RATING)} 以上、"
-            "regular は誰でも参加できます。"
-        ),
-        (
-            "通常メッセージは送信できません。"
-            "連絡が必要な場合は Bot が作成する private thread を利用します。"
-        ),
+        "この UI はマッチングキュー参加用です。",
+        "試合形式と階級を選んでから参加ボタンを押してください。",
+        "在席更新とキュー退出は /present と /leave を使ってください。",
     ]
 )
-MATCHMAKING_CHANNEL_JOIN_BEGINNER_BUTTON_LABEL = "3v3 beginner に参加"
-MATCHMAKING_CHANNEL_JOIN_REGULAR_BUTTON_LABEL = "3v3 regular に参加"
-MATCHMAKING_CHANNEL_JOIN_MASTER_BUTTON_LABEL = "3v3 master に参加"
-MATCHMAKING_CHANNEL_PRESENT_BUTTON_LABEL = "在席更新"
-MATCHMAKING_CHANNEL_LEAVE_BUTTON_LABEL = "キュー退出"
-MATCHMAKING_CHANNEL_JOIN_BEGINNER_BUTTON_CUSTOM_ID = (
-    "dxd_rating:matchmaking_channel:join:3v3:beginner"
-)
-MATCHMAKING_CHANNEL_JOIN_REGULAR_BUTTON_CUSTOM_ID = (
-    "dxd_rating:matchmaking_channel:join:3v3:regular"
-)
-MATCHMAKING_CHANNEL_JOIN_MASTER_BUTTON_CUSTOM_ID = "dxd_rating:matchmaking_channel:join:3v3:master"
-MATCHMAKING_CHANNEL_PRESENT_BUTTON_CUSTOM_ID = "dxd_rating:matchmaking_channel:present"
-MATCHMAKING_CHANNEL_LEAVE_BUTTON_CUSTOM_ID = "dxd_rating:matchmaking_channel:leave"
+MATCHMAKING_CHANNEL_MATCH_FORMAT_PLACEHOLDER = "試合形式を選択"
+MATCHMAKING_CHANNEL_QUEUE_NAME_PLACEHOLDER = "階級を選択"
+MATCHMAKING_CHANNEL_JOIN_BUTTON_LABEL = "参加"
+MATCHMAKING_CHANNEL_MATCH_FORMAT_SELECT_CUSTOM_ID = "dxd_rating:matchmaking_channel:match_format"
+MATCHMAKING_CHANNEL_QUEUE_NAME_SELECT_CUSTOM_ID = "dxd_rating:matchmaking_channel:queue_name"
+MATCHMAKING_CHANNEL_JOIN_BUTTON_CUSTOM_ID = "dxd_rating:matchmaking_channel:join"
+MATCHMAKING_CHANNEL_SELECT_MATCH_FORMAT_MESSAGE = "試合形式を選択してください。"
+MATCHMAKING_CHANNEL_SELECT_QUEUE_NAME_MESSAGE = "階級を選択してください。"
 MATCHMAKING_NEWS_CHANNEL_MESSAGE = "\n".join(
     [
         "このチャンネルにはマッチ成立時のアナウンスが投稿されます。",
@@ -74,10 +66,6 @@ class MatchmakingPanelInteractionHandler(Protocol):
         match_format: str,
         queue_name: str,
     ) -> None: ...
-
-    async def present(self, interaction: discord.Interaction[Any]) -> None: ...
-
-    async def leave(self, interaction: discord.Interaction[Any]) -> None: ...
 
 
 class ManagedUiInteractionHandler(
@@ -128,87 +116,181 @@ class RegisterPanelView(discord.ui.View):
             logger.exception("Failed to send register panel fallback error response")
 
 
+@dataclass(slots=True)
+class MatchmakingPanelSelectionState:
+    match_format: str | None = None
+    queue_name: str | None = None
+
+
+def _build_matchmaking_match_format_options() -> list[discord.SelectOption]:
+    return [
+        discord.SelectOption(label=definition.description, value=definition.match_format.value)
+        for definition in get_match_format_definitions()
+    ]
+
+
+def _get_matchmaking_queue_names_for_format(match_format: MatchFormat) -> tuple[str, ...]:
+    queue_names: list[str] = []
+    seen_queue_names: set[str] = set()
+    for definition in get_match_queue_class_definitions():
+        if definition.match_format is not match_format:
+            continue
+
+        normalized_queue_name = normalize_match_queue_name(definition.queue_name)
+        if normalized_queue_name in seen_queue_names:
+            continue
+
+        queue_names.append(definition.queue_name)
+        seen_queue_names.add(normalized_queue_name)
+
+    return tuple(queue_names)
+
+
+def _build_matchmaking_queue_options(match_format: MatchFormat) -> list[discord.SelectOption]:
+    return [
+        discord.SelectOption(label=queue_name, value=queue_name)
+        for queue_name in _get_matchmaking_queue_names_for_format(match_format)
+    ]
+
+
+async def _send_ephemeral_component_message(
+    interaction: discord.Interaction[Any],
+    message: str,
+) -> None:
+    if interaction.response.is_done():
+        await interaction.followup.send(message, ephemeral=True)
+        return
+
+    await interaction.response.send_message(message, ephemeral=True)
+
+
+class MatchmakingMatchFormatSelect(discord.ui.Select["MatchmakingPanelView"]):
+    def __init__(self) -> None:
+        super().__init__(
+            placeholder=MATCHMAKING_CHANNEL_MATCH_FORMAT_PLACEHOLDER,
+            min_values=1,
+            max_values=1,
+            options=_build_matchmaking_match_format_options(),
+            custom_id=MATCHMAKING_CHANNEL_MATCH_FORMAT_SELECT_CUSTOM_ID,
+            row=0,
+        )
+
+    async def callback(self, interaction: discord.Interaction[Any]) -> None:
+        view = self.view
+        if view is None:
+            raise RuntimeError("Matchmaking panel view is not attached")
+
+        await view.select_match_format(interaction, self.values[0])
+
+
+class MatchmakingQueueNameSelect(discord.ui.Select["MatchmakingPanelView"]):
+    def __init__(self) -> None:
+        super().__init__(
+            placeholder=MATCHMAKING_CHANNEL_QUEUE_NAME_PLACEHOLDER,
+            min_values=1,
+            max_values=1,
+            options=_build_matchmaking_queue_options(MatchFormat.THREE_VS_THREE),
+            custom_id=MATCHMAKING_CHANNEL_QUEUE_NAME_SELECT_CUSTOM_ID,
+            row=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction[Any]) -> None:
+        view = self.view
+        if view is None:
+            raise RuntimeError("Matchmaking panel view is not attached")
+
+        await view.select_queue_name(interaction, self.values[0])
+
+
+class MatchmakingJoinButton(discord.ui.Button["MatchmakingPanelView"]):
+    def __init__(self) -> None:
+        super().__init__(
+            label=MATCHMAKING_CHANNEL_JOIN_BUTTON_LABEL,
+            style=discord.ButtonStyle.primary,
+            custom_id=MATCHMAKING_CHANNEL_JOIN_BUTTON_CUSTOM_ID,
+            row=2,
+        )
+
+    async def callback(self, interaction: discord.Interaction[Any]) -> None:
+        view = self.view
+        if view is None:
+            raise RuntimeError("Matchmaking panel view is not attached")
+
+        await view.join_queue(interaction)
+
+
 class MatchmakingPanelView(discord.ui.View):
     def __init__(self, interaction_handler: MatchmakingPanelInteractionHandler) -> None:
         super().__init__(timeout=None)
         self._interaction_handler = interaction_handler
+        self._selection_state_by_user_id: dict[int, MatchmakingPanelSelectionState] = {}
+        self.match_format_select = MatchmakingMatchFormatSelect()
+        self.queue_name_select = MatchmakingQueueNameSelect()
+        self.join_button = MatchmakingJoinButton()
+        self.add_item(self.match_format_select)
+        self.add_item(self.queue_name_select)
+        self.add_item(self.join_button)
 
-    @discord.ui.button(
-        label=MATCHMAKING_CHANNEL_JOIN_BEGINNER_BUTTON_LABEL,
-        style=discord.ButtonStyle.primary,
-        custom_id=MATCHMAKING_CHANNEL_JOIN_BEGINNER_BUTTON_CUSTOM_ID,
-        row=0,
-    )
-    async def join_beginner_button(
+    async def select_match_format(
         self,
         interaction: discord.Interaction[Any],
-        _: discord.ui.Button[discord.ui.View],
+        match_format: str,
     ) -> None:
+        selection_state = self._selection_state_by_user_id.setdefault(
+            interaction.user.id,
+            MatchmakingPanelSelectionState(),
+        )
+        selection_state.match_format = match_format
+
+        try:
+            selected_match_format = MatchFormat(match_format)
+        except ValueError:
+            selection_state.queue_name = None
+            await interaction.response.defer()
+            return
+
+        valid_queue_names = set(_get_matchmaking_queue_names_for_format(selected_match_format))
+        if selection_state.queue_name not in valid_queue_names:
+            selection_state.queue_name = None
+
+        await interaction.response.defer()
+
+    async def select_queue_name(
+        self,
+        interaction: discord.Interaction[Any],
+        queue_name: str,
+    ) -> None:
+        selection_state = self._selection_state_by_user_id.setdefault(
+            interaction.user.id,
+            MatchmakingPanelSelectionState(),
+        )
+        selection_state.queue_name = queue_name
+        await interaction.response.defer()
+
+    async def join_queue(self, interaction: discord.Interaction[Any]) -> None:
+        selection_state = self._selection_state_by_user_id.get(
+            interaction.user.id,
+            MatchmakingPanelSelectionState(),
+        )
+        if selection_state.match_format is None:
+            await _send_ephemeral_component_message(
+                interaction,
+                MATCHMAKING_CHANNEL_SELECT_MATCH_FORMAT_MESSAGE,
+            )
+            return
+
+        if selection_state.queue_name is None:
+            await _send_ephemeral_component_message(
+                interaction,
+                MATCHMAKING_CHANNEL_SELECT_QUEUE_NAME_MESSAGE,
+            )
+            return
+
         await self._interaction_handler.join(
             interaction,
-            MatchFormat.THREE_VS_THREE.value,
-            "beginner",
+            selection_state.match_format,
+            selection_state.queue_name,
         )
-
-    @discord.ui.button(
-        label=MATCHMAKING_CHANNEL_JOIN_REGULAR_BUTTON_LABEL,
-        style=discord.ButtonStyle.primary,
-        custom_id=MATCHMAKING_CHANNEL_JOIN_REGULAR_BUTTON_CUSTOM_ID,
-        row=0,
-    )
-    async def join_regular_button(
-        self,
-        interaction: discord.Interaction[Any],
-        _: discord.ui.Button[discord.ui.View],
-    ) -> None:
-        await self._interaction_handler.join(
-            interaction,
-            MatchFormat.THREE_VS_THREE.value,
-            "regular",
-        )
-
-    @discord.ui.button(
-        label=MATCHMAKING_CHANNEL_JOIN_MASTER_BUTTON_LABEL,
-        style=discord.ButtonStyle.primary,
-        custom_id=MATCHMAKING_CHANNEL_JOIN_MASTER_BUTTON_CUSTOM_ID,
-        row=0,
-    )
-    async def join_master_button(
-        self,
-        interaction: discord.Interaction[Any],
-        _: discord.ui.Button[discord.ui.View],
-    ) -> None:
-        await self._interaction_handler.join(
-            interaction,
-            MatchFormat.THREE_VS_THREE.value,
-            "master",
-        )
-
-    @discord.ui.button(
-        label=MATCHMAKING_CHANNEL_PRESENT_BUTTON_LABEL,
-        style=discord.ButtonStyle.success,
-        custom_id=MATCHMAKING_CHANNEL_PRESENT_BUTTON_CUSTOM_ID,
-        row=1,
-    )
-    async def present_button(
-        self,
-        interaction: discord.Interaction[Any],
-        _: discord.ui.Button[discord.ui.View],
-    ) -> None:
-        await self._interaction_handler.present(interaction)
-
-    @discord.ui.button(
-        label=MATCHMAKING_CHANNEL_LEAVE_BUTTON_LABEL,
-        style=discord.ButtonStyle.danger,
-        custom_id=MATCHMAKING_CHANNEL_LEAVE_BUTTON_CUSTOM_ID,
-        row=1,
-    )
-    async def leave_button(
-        self,
-        interaction: discord.Interaction[Any],
-        _: discord.ui.Button[discord.ui.View],
-    ) -> None:
-        await self._interaction_handler.leave(interaction)
 
     async def on_error(
         self,

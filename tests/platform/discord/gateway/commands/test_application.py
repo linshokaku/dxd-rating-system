@@ -44,16 +44,17 @@ from dxd_rating.platform.db.models import (
 from dxd_rating.platform.discord.gateway.commands import BotCommandHandlers, register_app_commands
 from dxd_rating.platform.discord.ui import (
     ADMIN_CONTACT_CHANNEL_MESSAGE,
-    MATCHMAKING_CHANNEL_JOIN_BEGINNER_BUTTON_LABEL,
-    MATCHMAKING_CHANNEL_JOIN_MASTER_BUTTON_LABEL,
-    MATCHMAKING_CHANNEL_JOIN_REGULAR_BUTTON_LABEL,
-    MATCHMAKING_CHANNEL_LEAVE_BUTTON_LABEL,
+    MATCHMAKING_CHANNEL_JOIN_BUTTON_LABEL,
+    MATCHMAKING_CHANNEL_MATCH_FORMAT_PLACEHOLDER,
     MATCHMAKING_CHANNEL_MESSAGE,
-    MATCHMAKING_CHANNEL_PRESENT_BUTTON_LABEL,
+    MATCHMAKING_CHANNEL_QUEUE_NAME_PLACEHOLDER,
+    MATCHMAKING_CHANNEL_SELECT_MATCH_FORMAT_MESSAGE,
+    MATCHMAKING_CHANNEL_SELECT_QUEUE_NAME_MESSAGE,
     MATCHMAKING_NEWS_CHANNEL_MESSAGE,
     REGISTER_PANEL_BUTTON_LABEL,
     REGISTER_PANEL_MESSAGE,
     SYSTEM_ANNOUNCEMENTS_CHANNEL_MESSAGE,
+    MatchmakingPanelView,
 )
 from dxd_rating.platform.runtime import MatchRuntime
 
@@ -305,6 +306,10 @@ def assert_response(
 ) -> None:
     assert interaction.response.messages == expected_messages
     assert interaction.response.ephemeral_flags == [ephemeral] * len(expected_messages)
+
+
+def set_select_values(select: discord.ui.Select[Any], values: list[str]) -> None:
+    setattr(select, "_values", values)
 
 
 @pytest.fixture(autouse=True)
@@ -656,6 +661,95 @@ def test_join_command_returns_restricted_message_for_queue_join_restricted_playe
     )
 
     assert_response(interaction, ["現在キュー参加を制限されています。"], ephemeral=True)
+
+
+def test_matchmaking_panel_join_button_requires_match_format_selection(
+    session_factory: sessionmaker[Session],
+) -> None:
+    handlers = create_handlers(session_factory)
+    view = MatchmakingPanelView(handlers)
+    interaction = FakeInteraction(user=FakeUser(id=123_456_789_012_345_681_3))
+    join_button = cast(discord.ui.Button[Any], view.children[2])
+
+    asyncio.run(join_button.callback(as_interaction(interaction)))
+
+    assert_response(
+        interaction,
+        [MATCHMAKING_CHANNEL_SELECT_MATCH_FORMAT_MESSAGE],
+        ephemeral=True,
+    )
+
+
+def test_matchmaking_panel_join_button_requires_queue_selection(
+    session_factory: sessionmaker[Session],
+) -> None:
+    handlers = create_handlers(session_factory)
+    view = MatchmakingPanelView(handlers)
+    user = FakeUser(id=123_456_789_012_345_681_4)
+    match_format_select = cast(discord.ui.Select[Any], view.children[0])
+    join_button = cast(discord.ui.Button[Any], view.children[2])
+
+    set_select_values(match_format_select, [MatchFormat.TWO_VS_TWO.value])
+    select_interaction = FakeInteraction(user=user)
+    asyncio.run(match_format_select.callback(as_interaction(select_interaction)))
+
+    interaction = FakeInteraction(user=user)
+    asyncio.run(join_button.callback(as_interaction(interaction)))
+
+    assert select_interaction.response.deferred is True
+    assert select_interaction.response.messages == []
+    assert_response(
+        interaction,
+        [MATCHMAKING_CHANNEL_SELECT_QUEUE_NAME_MESSAGE],
+        ephemeral=True,
+    )
+
+
+def test_matchmaking_panel_join_button_uses_selected_values_for_join(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    discord_user_id = 123_456_789_012_345_681_5
+    player = create_player(session, discord_user_id)
+    handlers = create_handlers(
+        session_factory,
+        matching_queue_service=MatchingQueueService(session_factory),
+    )
+    view = MatchmakingPanelView(handlers)
+    match_format_select = cast(discord.ui.Select[Any], view.children[0])
+    queue_name_select = cast(discord.ui.Select[Any], view.children[1])
+    join_button = cast(discord.ui.Button[Any], view.children[2])
+    user = FakeUser(
+        id=discord_user_id,
+        name="ui-queue-user",
+        global_name="ui-queue-global",
+        nick="ui-queue-guild",
+    )
+
+    set_select_values(match_format_select, [MatchFormat.ONE_VS_ONE.value])
+    asyncio.run(match_format_select.callback(as_interaction(FakeInteraction(user=user))))
+
+    set_select_values(queue_name_select, ["regular"])
+    asyncio.run(queue_name_select.callback(as_interaction(FakeInteraction(user=user))))
+
+    interaction = FakeInteraction(
+        user=user,
+        channel_id=9_001,
+        guild_id=9_101,
+    )
+    asyncio.run(join_button.callback(as_interaction(interaction)))
+
+    queue_entry = get_queue_entry(session, player.id)
+
+    assert_response(
+        interaction,
+        ["キューに参加しました。5分間マッチングします。"],
+        ephemeral=True,
+    )
+    assert queue_entry.match_format == MatchFormat.ONE_VS_ONE
+    assert queue_entry.notification_channel_id == 9_001
+    assert queue_entry.notification_guild_id == 9_101
+    assert queue_entry.notification_mention_discord_user_id == discord_user_id
 
 
 def test_present_command_updates_waiting_entry_and_notification_context(
@@ -1623,17 +1717,27 @@ def test_admin_setup_ui_channels_creates_registered_channel_set(
     assert matchmaking_channel.overwrites[registered_role].send_messages is False
     assert matchmaking_channel.sent_messages[0].content == MATCHMAKING_CHANNEL_MESSAGE
     assert matchmaking_channel.sent_messages[0].view is not None
-    matchmaking_button_labels = [
-        cast(discord.ui.Button[Any], child).label
-        for child in matchmaking_channel.sent_messages[0].view.children
+    match_format_select = cast(
+        discord.ui.Select[Any],
+        matchmaking_channel.sent_messages[0].view.children[0],
+    )
+    queue_name_select = cast(
+        discord.ui.Select[Any],
+        matchmaking_channel.sent_messages[0].view.children[1],
+    )
+    join_button = cast(
+        discord.ui.Button[Any],
+        matchmaking_channel.sent_messages[0].view.children[2],
+    )
+    assert match_format_select.placeholder == MATCHMAKING_CHANNEL_MATCH_FORMAT_PLACEHOLDER
+    assert [option.value for option in match_format_select.options] == ["1v1", "2v2", "3v3"]
+    assert queue_name_select.placeholder == MATCHMAKING_CHANNEL_QUEUE_NAME_PLACEHOLDER
+    assert [option.value for option in queue_name_select.options] == [
+        "beginner",
+        "regular",
+        "master",
     ]
-    assert matchmaking_button_labels == [
-        MATCHMAKING_CHANNEL_JOIN_BEGINNER_BUTTON_LABEL,
-        MATCHMAKING_CHANNEL_JOIN_REGULAR_BUTTON_LABEL,
-        MATCHMAKING_CHANNEL_JOIN_MASTER_BUTTON_LABEL,
-        MATCHMAKING_CHANNEL_PRESENT_BUTTON_LABEL,
-        MATCHMAKING_CHANNEL_LEAVE_BUTTON_LABEL,
-    ]
+    assert join_button.label == MATCHMAKING_CHANNEL_JOIN_BUTTON_LABEL
 
     matchmaking_news_channel = find_channel_by_name(guild, "レート戦マッチ速報")
     assert matchmaking_news_channel.overwrites[guild.default_role].view_channel is False

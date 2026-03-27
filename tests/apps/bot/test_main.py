@@ -31,6 +31,7 @@ def test_setup_hook_restores_persistent_register_panel_view(
         discord_bot_token="discord-token",
         database_url="postgresql+psycopg://user:password@localhost:5432/dxd_rating",
         log_level="INFO",
+        development_mode=False,
         super_admin_user_ids=frozenset(),
     )
     session.add(
@@ -64,6 +65,7 @@ def test_setup_hook_skips_managed_channels_without_persistent_view(
         discord_bot_token="discord-token",
         database_url="postgresql+psycopg://user:password@localhost:5432/dxd_rating",
         log_level="INFO",
+        development_mode=False,
         super_admin_user_ids=frozenset(),
     )
     session.add(

@@ -967,6 +967,8 @@ class BotCommandHandlers:
                         definition=definition,
                         channel_name=definition.recommended_channel_name,
                         created_by_discord_user_id=interaction.user.id,
+                        private_channel=self.settings.development_mode,
+                        visible_member=interaction.user,
                     )
                 except discord.Forbidden as exc:
                     rollback_succeeded = await self._rollback_provisioned_managed_ui_channels(
@@ -2614,6 +2616,8 @@ class BotCommandHandlers:
         definition: ManagedUiDefinition,
         channel_name: str,
         created_by_discord_user_id: int,
+        private_channel: bool = False,
+        visible_member: discord.abc.Snowflake | None = None,
     ) -> ProvisionedManagedUiChannel:
         registered_player_role = None
         if definition.requires_registered_player_role:
@@ -2627,6 +2631,8 @@ class BotCommandHandlers:
                     guild,
                     definition.ui_type,
                     registered_player_role=registered_player_role,
+                    private_channel=private_channel,
+                    visible_member=visible_member,
                 ),
             ),
             reason=f"Create managed UI channel for {definition.ui_type.value}",

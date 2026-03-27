@@ -313,11 +313,16 @@ def prepared_seasons(session: Session) -> None:
     session.commit()
 
 
-def create_settings(*, super_admin_user_ids: frozenset[int] = frozenset()) -> BotSettings:
+def create_settings(
+    *,
+    super_admin_user_ids: frozenset[int] = frozenset(),
+    development_mode: bool = False,
+) -> BotSettings:
     return BotSettings.model_construct(
         discord_bot_token="discord-token",
         database_url="postgresql+psycopg://user:password@localhost:5432/dxd_rating",
         log_level="INFO",
+        development_mode=development_mode,
         super_admin_user_ids=super_admin_user_ids,
     )
 
@@ -326,6 +331,7 @@ def create_handlers(
     session_factory: sessionmaker[Session],
     *,
     super_admin_user_ids: frozenset[int] = frozenset(),
+    development_mode: bool = False,
     matching_queue_service: MatchingQueueService | MatchRuntime | None = None,
 ) -> BotCommandHandlers:
     resolved_matching_queue_service = matching_queue_service
@@ -336,7 +342,10 @@ def create_handlers(
         )
 
     return BotCommandHandlers(
-        settings=create_settings(super_admin_user_ids=super_admin_user_ids),
+        settings=create_settings(
+            super_admin_user_ids=super_admin_user_ids,
+            development_mode=development_mode,
+        ),
         session_factory=session_factory,
         matching_queue_service=resolved_matching_queue_service,
     )
@@ -1644,6 +1653,52 @@ def test_admin_setup_ui_channels_creates_registered_channel_set(
     assert admin_contact_channel.overwrites[guild.default_role].view_channel is True
     assert admin_contact_channel.overwrites[guild.default_role].send_messages is True
     assert admin_contact_channel.sent_messages[0].content == ADMIN_CONTACT_CHANNEL_MESSAGE
+
+
+def test_admin_setup_ui_channels_creates_private_channels_in_development_mode(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    executor_discord_user_id = 10
+    guild = FakeGuild(id=2_102_5_1)
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({executor_discord_user_id}),
+        development_mode=True,
+    )
+    interaction = FakeInteraction(
+        user=FakeUser(id=executor_discord_user_id),
+        guild_id=guild.id,
+        guild=guild,
+    )
+
+    asyncio.run(handlers.admin_setup_ui_channels(as_interaction(interaction)))
+
+    session.expire_all()
+    managed_ui_channels = session.scalars(
+        select(ManagedUiChannel).order_by(ManagedUiChannel.id.asc())
+    ).all()
+
+    assert_response(interaction, ["必要な UI 設置チャンネルを作成しました。"], ephemeral=True)
+    assert len(managed_ui_channels) == len(get_required_managed_ui_definitions())
+    assert all(
+        channel.overwrites[guild.default_role].view_channel is False for channel in guild.channels
+    )
+
+    registered_role = find_role_by_name(guild, REGISTERED_PLAYER_ROLE_NAME)
+    assert registered_role is not None
+
+    register_channel = find_channel_by_name(guild, "レート戦はこちらから")
+    assert register_channel.overwrites[interaction.user].view_channel is True
+    assert register_channel.overwrites[interaction.user].send_messages is False
+
+    matchmaking_channel = find_channel_by_name(guild, "レート戦マッチング")
+    assert matchmaking_channel.overwrites[interaction.user].view_channel is True
+    assert matchmaking_channel.overwrites[registered_role].view_channel is True
+
+    admin_contact_channel = find_channel_by_name(guild, "運営連絡・フィードバック")
+    assert admin_contact_channel.overwrites[interaction.user].view_channel is True
+    assert admin_contact_channel.overwrites[interaction.user].send_messages is True
 
 
 def test_admin_setup_ui_channels_reports_missing_manage_roles_permission(

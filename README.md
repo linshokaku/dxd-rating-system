@@ -52,6 +52,7 @@ AGENTS.md
 Bot service:
 - `DISCORD_BOT_TOKEN`
 - `DATABASE_URL`
+- `DEVELOPMENT_MODE` (任意。`true` にすると Bot は開発モードで起動)
 - `SUPER_ADMIN_USER_IDS` (任意。カンマ区切りの Discord user ID。例: `123456789012345678,234567890123456789`)
 - `LOG_LEVEL` (任意。未指定時は `INFO`)
 
@@ -82,8 +83,16 @@ cp .env.example .env
 docker compose up -d db
 uv sync
 uv run alembic upgrade head
-uv run python -m dxd_rating.apps.bot.main
+DEVELOPMENT_MODE=true uv run python -m dxd_rating.apps.bot.main
 ```
+
+開発モードで Bot を起動する場合:
+
+```bash
+DEVELOPMENT_MODE=true uv run python -m dxd_rating.apps.bot.main
+```
+
+開発モードでは `/admin_setup_ui_channels` が作成する UI チャンネルをすべて private channel として作成します。
 
 ## Cron Job
 定期実行処理は `src/dxd_rating/apps/worker/` 配下に置き、Railway の Cron Job からコマンド実行する想定です。

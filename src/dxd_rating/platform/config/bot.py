@@ -11,6 +11,7 @@ from dxd_rating.platform.config.common import (
 
 class BotSettings(DatabaseSettings):
     discord_bot_token: str = Field(alias="DISCORD_BOT_TOKEN")
+    development_mode: bool = Field(default=False, alias="DEVELOPMENT_MODE")
     super_admin_user_ids: frozenset[int] = Field(
         default_factory=frozenset, alias="SUPER_ADMIN_USER_IDS"
     )

@@ -51,6 +51,8 @@ from dxd_rating.platform.discord.ui import (
     MATCHMAKING_CHANNEL_SELECT_MATCH_FORMAT_MESSAGE,
     MATCHMAKING_CHANNEL_SELECT_QUEUE_NAME_MESSAGE,
     MATCHMAKING_NEWS_CHANNEL_MESSAGE,
+    MATCHMAKING_PRESENCE_THREAD_LEAVE_BUTTON_LABEL,
+    MATCHMAKING_PRESENCE_THREAD_PRESENT_BUTTON_LABEL,
     REGISTER_PANEL_BUTTON_LABEL,
     REGISTER_PANEL_MESSAGE,
     SYSTEM_ANNOUNCEMENTS_CHANNEL_MESSAGE,
@@ -359,6 +361,15 @@ def assert_response(
     assert interaction.response.ephemeral_flags == [ephemeral] * len(expected_messages)
 
 
+def assert_presence_thread_controls(view: discord.ui.View | None) -> None:
+    assert view is not None
+    button_labels = [cast(discord.ui.Button[Any], child).label for child in view.children]
+    assert button_labels == [
+        MATCHMAKING_PRESENCE_THREAD_PRESENT_BUTTON_LABEL,
+        MATCHMAKING_PRESENCE_THREAD_LEAVE_BUTTON_LABEL,
+    ]
+
+
 def set_select_values(select: discord.ui.Select[Any], values: list[str]) -> None:
     setattr(select, "_values", values)
 
@@ -644,6 +655,7 @@ def test_join_command_joins_requesting_player_and_stores_notification_context(
     assert [message.content for message in channel.created_threads[0].sent_messages] == [
         "キューに参加しました。5分間マッチングします。"
     ]
+    assert_presence_thread_controls(channel.created_threads[0].sent_messages[0].view)
 
 
 def test_join_command_requires_registered_player(session_factory: sessionmaker[Session]) -> None:
@@ -829,6 +841,302 @@ def test_matchmaking_panel_join_button_uses_selected_values_for_join(
     assert [message.content for message in channel.created_threads[0].sent_messages] == [
         "キューに参加しました。5分間マッチングします。"
     ]
+    assert_presence_thread_controls(channel.created_threads[0].sent_messages[0].view)
+
+
+def test_matchmaking_presence_thread_present_button_updates_waiting_entry(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    discord_user_id = 123_456_789_012_345_681_6
+    player = create_player(session, discord_user_id)
+    handlers = create_handlers(
+        session_factory,
+        matching_queue_service=MatchingQueueService(session_factory),
+    )
+    user = FakeUser(
+        id=discord_user_id,
+        name="thread-user",
+        global_name="thread-global",
+        nick="thread-guild",
+    )
+    guild = FakeGuild(id=9_102)
+    channel = FakeTextChannel(
+        id=9_002,
+        name="レート戦マッチング",
+        guild=guild,
+    )
+    guild.channels.append(channel)
+    join_interaction = FakeInteraction(
+        user=user,
+        channel_id=channel.id,
+        guild_id=guild.id,
+        guild=guild,
+    )
+    button_interaction = FakeInteraction(
+        user=user,
+        channel_id=None,
+        guild_id=guild.id,
+        guild=guild,
+    )
+
+    async def scenario() -> None:
+        await handlers.join(
+            as_interaction(join_interaction),
+            DEFAULT_MATCH_FORMAT.value,
+            DEFAULT_QUEUE_NAME,
+        )
+
+        thread = channel.created_threads[0]
+        thread_message = thread.sent_messages[0]
+        assert thread_message.view is not None
+        present_button = cast(discord.ui.Button[Any], thread_message.view.children[0])
+        button_interaction.channel_id = thread.id
+        await present_button.callback(as_interaction(button_interaction))
+
+    asyncio.run(scenario())
+
+    thread = channel.created_threads[0]
+
+    with session_factory() as verification_session:
+        queue_entry = verification_session.scalar(
+            select(MatchQueueEntry).where(MatchQueueEntry.player_id == player.id)
+        )
+
+    assert queue_entry is not None
+    assert_response(
+        button_interaction,
+        ["在席を更新しました。次の期限は5分後です。"],
+        ephemeral=True,
+    )
+    assert queue_entry.status == MatchQueueEntryStatus.WAITING
+    assert queue_entry.notification_channel_id == thread.id
+    assert queue_entry.notification_guild_id == guild.id
+
+
+def test_matchmaking_presence_thread_leave_button_leaves_waiting_entry(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    discord_user_id = 123_456_789_012_345_681_7
+    player = create_player(session, discord_user_id)
+    handlers = create_handlers(
+        session_factory,
+        matching_queue_service=MatchingQueueService(session_factory),
+    )
+    user = FakeUser(
+        id=discord_user_id,
+        name="thread-user-leave",
+        global_name="thread-global-leave",
+        nick="thread-guild-leave",
+    )
+    guild = FakeGuild(id=9_103)
+    channel = FakeTextChannel(
+        id=9_003,
+        name="レート戦マッチング",
+        guild=guild,
+    )
+    guild.channels.append(channel)
+    join_interaction = FakeInteraction(
+        user=user,
+        channel_id=channel.id,
+        guild_id=guild.id,
+        guild=guild,
+    )
+    button_interaction = FakeInteraction(
+        user=user,
+        channel_id=None,
+        guild_id=guild.id,
+        guild=guild,
+    )
+
+    async def scenario() -> None:
+        await handlers.join(
+            as_interaction(join_interaction),
+            DEFAULT_MATCH_FORMAT.value,
+            DEFAULT_QUEUE_NAME,
+        )
+
+        thread = channel.created_threads[0]
+        thread_message = thread.sent_messages[0]
+        assert thread_message.view is not None
+        leave_button = cast(discord.ui.Button[Any], thread_message.view.children[1])
+        button_interaction.channel_id = thread.id
+        await leave_button.callback(as_interaction(button_interaction))
+
+    asyncio.run(scenario())
+
+    with session_factory() as verification_session:
+        queue_entry = verification_session.scalar(
+            select(MatchQueueEntry).where(MatchQueueEntry.player_id == player.id)
+        )
+
+    assert queue_entry is not None
+    assert_response(
+        button_interaction,
+        ["キューから退出しました。"],
+        ephemeral=True,
+    )
+    assert queue_entry.status == MatchQueueEntryStatus.LEFT
+
+
+def test_matchmaking_presence_thread_present_button_rejects_unbound_thread(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    discord_user_id = 123_456_789_012_345_681_8
+    player = create_player(session, discord_user_id)
+    matching_queue_service = MatchingQueueService(session_factory)
+    handlers = create_handlers(
+        session_factory,
+        matching_queue_service=matching_queue_service,
+    )
+    user = FakeUser(
+        id=discord_user_id,
+        name="stale-thread-user",
+        global_name="stale-thread-global",
+        nick="stale-thread-guild",
+    )
+    guild = FakeGuild(id=9_104)
+    channel = FakeTextChannel(
+        id=9_004,
+        name="レート戦マッチング",
+        guild=guild,
+    )
+    guild.channels.append(channel)
+    join_interaction = FakeInteraction(
+        user=user,
+        channel_id=channel.id,
+        guild_id=guild.id,
+        guild=guild,
+    )
+    button_interaction = FakeInteraction(
+        user=user,
+        channel_id=None,
+        guild_id=guild.id,
+        guild=guild,
+    )
+
+    async def scenario() -> None:
+        await handlers.join(
+            as_interaction(join_interaction),
+            DEFAULT_MATCH_FORMAT.value,
+            DEFAULT_QUEUE_NAME,
+        )
+
+        thread = channel.created_threads[0]
+        thread_message = thread.sent_messages[0]
+        assert thread_message.view is not None
+        present_button = cast(discord.ui.Button[Any], thread_message.view.children[0])
+        queue_entry = get_queue_entry(session, player.id)
+        matching_queue_service.update_waiting_notification_context(
+            queue_entry.id,
+            MatchingQueueNotificationContext(
+                channel_id=99_004,
+                guild_id=guild.id,
+                mention_discord_user_id=discord_user_id,
+            ),
+        )
+        button_interaction.channel_id = thread.id
+        await present_button.callback(as_interaction(button_interaction))
+
+    asyncio.run(scenario())
+
+    with session_factory() as verification_session:
+        queue_entry = verification_session.scalar(
+            select(MatchQueueEntry).where(MatchQueueEntry.player_id == player.id)
+        )
+
+    assert queue_entry is not None
+    assert_response(
+        button_interaction,
+        [
+            "このスレッドは現在参加中のキューには紐づいていません。再参加する場合は親チャンネルの参加ボタンから参加してください。"
+        ],
+        ephemeral=True,
+    )
+    assert queue_entry.status == MatchQueueEntryStatus.WAITING
+    assert queue_entry.notification_channel_id == 99_004
+    assert queue_entry.revision == 1
+
+
+def test_matchmaking_presence_thread_leave_button_rejects_unbound_thread(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    discord_user_id = 123_456_789_012_345_681_9
+    player = create_player(session, discord_user_id)
+    matching_queue_service = MatchingQueueService(session_factory)
+    handlers = create_handlers(
+        session_factory,
+        matching_queue_service=matching_queue_service,
+    )
+    user = FakeUser(
+        id=discord_user_id,
+        name="stale-thread-user-leave",
+        global_name="stale-thread-global-leave",
+        nick="stale-thread-guild-leave",
+    )
+    guild = FakeGuild(id=9_105)
+    channel = FakeTextChannel(
+        id=9_005,
+        name="レート戦マッチング",
+        guild=guild,
+    )
+    guild.channels.append(channel)
+    join_interaction = FakeInteraction(
+        user=user,
+        channel_id=channel.id,
+        guild_id=guild.id,
+        guild=guild,
+    )
+    button_interaction = FakeInteraction(
+        user=user,
+        channel_id=None,
+        guild_id=guild.id,
+        guild=guild,
+    )
+
+    async def scenario() -> None:
+        await handlers.join(
+            as_interaction(join_interaction),
+            DEFAULT_MATCH_FORMAT.value,
+            DEFAULT_QUEUE_NAME,
+        )
+
+        thread = channel.created_threads[0]
+        thread_message = thread.sent_messages[0]
+        assert thread_message.view is not None
+        leave_button = cast(discord.ui.Button[Any], thread_message.view.children[1])
+        queue_entry = get_queue_entry(session, player.id)
+        matching_queue_service.update_waiting_notification_context(
+            queue_entry.id,
+            MatchingQueueNotificationContext(
+                channel_id=99_005,
+                guild_id=guild.id,
+                mention_discord_user_id=discord_user_id,
+            ),
+        )
+        button_interaction.channel_id = thread.id
+        await leave_button.callback(as_interaction(button_interaction))
+
+    asyncio.run(scenario())
+
+    with session_factory() as verification_session:
+        queue_entry = verification_session.scalar(
+            select(MatchQueueEntry).where(MatchQueueEntry.player_id == player.id)
+        )
+
+    assert queue_entry is not None
+    assert_response(
+        button_interaction,
+        [
+            "このスレッドは現在参加中のキューには紐づいていません。再参加する場合は親チャンネルの参加ボタンから参加してください。"
+        ],
+        ephemeral=True,
+    )
+    assert queue_entry.status == MatchQueueEntryStatus.WAITING
+    assert queue_entry.notification_channel_id == 99_005
 
 
 def test_present_command_updates_waiting_entry_without_overwriting_notification_context(

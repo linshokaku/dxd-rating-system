@@ -380,6 +380,15 @@ class MatchingQueueService:
 
         return updated
 
+    def get_waiting_entry_notification_channel_id(self, player_id: int) -> int | None:
+        with session_scope(self.session_factory) as session:
+            return session.scalar(
+                select(MatchQueueEntry.notification_channel_id).where(
+                    MatchQueueEntry.player_id == player_id,
+                    MatchQueueEntry.status == MatchQueueEntryStatus.WAITING,
+                )
+            )
+
     def leave(self, player_id: int) -> LeaveQueueResult:
         result: LeaveQueueResult | None = None
 

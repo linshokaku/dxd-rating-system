@@ -21,6 +21,10 @@ from dxd_rating.contexts.matchmaking.application import (
     QUEUE_EXPIRED_NOTIFICATION_MESSAGE,
 )
 from dxd_rating.platform.db.models import OutboxEventType
+from dxd_rating.platform.discord.ui import (
+    MatchmakingPresenceThreadInteractionHandler,
+    create_matchmaking_presence_thread_view,
+)
 from dxd_rating.platform.runtime.outbox import (
     NonRetryableOutboxPublishError,
     PendingOutboxEvent,
@@ -36,6 +40,7 @@ class DiscordSendableChannel(Protocol):
         content: str,
         *,
         allowed_mentions: discord.AllowedMentions,
+        view: discord.ui.View | None = None,
     ) -> object: ...
 
 
@@ -91,9 +96,13 @@ class DiscordOutboxEventPublisher:
         self,
         client: DiscordChannelClient,
         *,
+        matchmaking_presence_interaction_handler: (
+            MatchmakingPresenceThreadInteractionHandler | None
+        ) = None,
         logger: logging.Logger | None = None,
     ) -> None:
         self.client = client
+        self.matchmaking_presence_interaction_handler = matchmaking_presence_interaction_handler
         self.logger = logger or logging.getLogger(__name__)
         self._loop: asyncio.AbstractEventLoop | None = None
         self._allowed_mentions = discord.AllowedMentions(
@@ -186,10 +195,12 @@ class DiscordOutboxEventPublisher:
             channel=channel,
             event=event,
         )
+        view = self._build_channel_view(event=event, channel=channel)
         try:
             await channel.send(
                 content,
                 allowed_mentions=self._allowed_mentions,
+                view=view,
             )
         except discord.NotFound as exc:
             raise NonRetryableOutboxPublishError(
@@ -310,6 +321,25 @@ class DiscordOutboxEventPublisher:
         mention_discord_user_id = self._require_payload_int(payload, "mention_discord_user_id")
         mention_text = format_discord_user_mention(mention_discord_user_id)
         return f"{mention_text} {message}"
+
+    def _build_channel_view(
+        self,
+        *,
+        event: PendingOutboxEvent,
+        channel: DiscordSendableChannel,
+    ) -> discord.ui.View | None:
+        if self.matchmaking_presence_interaction_handler is None:
+            return None
+        if event.event_type != OutboxEventType.PRESENCE_REMINDER:
+            return None
+        if not self._is_thread_like_channel(channel):
+            return None
+        return create_matchmaking_presence_thread_view(
+            self.matchmaking_presence_interaction_handler
+        )
+
+    def _is_thread_like_channel(self, channel: object) -> bool:
+        return getattr(channel, "parent", None) is not None
 
     def _render_match_parent_assigned_content(self, payload: dict[str, object]) -> str:
         match_id = self._require_payload_int(payload, "match_id")

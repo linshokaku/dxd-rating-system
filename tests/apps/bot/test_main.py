@@ -8,7 +8,21 @@ from sqlalchemy.orm import Session, sessionmaker
 from dxd_rating.apps.bot.main import create_client, initialize_seasons
 from dxd_rating.platform.config.bot import BotSettings
 from dxd_rating.platform.db.models import ManagedUiChannel, ManagedUiType, Season
-from dxd_rating.platform.discord.ui import REGISTER_PANEL_BUTTON_LABEL
+from dxd_rating.platform.discord.ui import (
+    MATCHMAKING_PRESENCE_THREAD_LEAVE_BUTTON_LABEL,
+    MATCHMAKING_PRESENCE_THREAD_PRESENT_BUTTON_LABEL,
+    REGISTER_PANEL_BUTTON_LABEL,
+)
+
+
+def find_button_labels(client: discord.Client) -> list[list[str | None]]:
+    return [
+        [
+            child.label if isinstance(child, discord.ui.Button) else None
+            for child in persistent_view.children
+        ]
+        for persistent_view in client.persistent_views
+    ]
 
 
 def test_initialize_seasons_creates_active_and_upcoming_seasons(
@@ -49,12 +63,14 @@ def test_setup_hook_restores_persistent_register_panel_view(
 
     asyncio.run(client.setup_hook())
 
-    persistent_views = client.persistent_views
+    button_labels_by_view = find_button_labels(client)
 
-    assert len(persistent_views) == 1
-    button = persistent_views[0].children[0]
-    assert isinstance(button, discord.ui.Button)
-    assert button.label == REGISTER_PANEL_BUTTON_LABEL
+    assert len(button_labels_by_view) == 2
+    assert [
+        MATCHMAKING_PRESENCE_THREAD_PRESENT_BUTTON_LABEL,
+        MATCHMAKING_PRESENCE_THREAD_LEAVE_BUTTON_LABEL,
+    ] in button_labels_by_view
+    assert [REGISTER_PANEL_BUTTON_LABEL] in button_labels_by_view
 
 
 def test_setup_hook_skips_managed_channels_without_persistent_view(
@@ -83,4 +99,9 @@ def test_setup_hook_skips_managed_channels_without_persistent_view(
 
     asyncio.run(client.setup_hook())
 
-    assert client.persistent_views == []
+    assert find_button_labels(client) == [
+        [
+            MATCHMAKING_PRESENCE_THREAD_PRESENT_BUTTON_LABEL,
+            MATCHMAKING_PRESENCE_THREAD_LEAVE_BUTTON_LABEL,
+        ]
+    ]

@@ -12,7 +12,11 @@ from dxd_rating.platform.config.common import configure_logging, raise_settings_
 from dxd_rating.platform.db.session import create_db_engine, create_session_factory, session_scope
 from dxd_rating.platform.discord.gateway.commands import BotCommandHandlers, register_app_commands
 from dxd_rating.platform.discord.rest import DiscordOutboxEventPublisher
-from dxd_rating.platform.discord.ui import create_managed_ui_view, has_persistent_managed_ui_view
+from dxd_rating.platform.discord.ui import (
+    create_managed_ui_view,
+    create_matchmaking_presence_thread_view,
+    has_persistent_managed_ui_view,
+)
 from dxd_rating.platform.runtime import BotRuntime, MatchRuntime, OutboxDispatcher
 
 logger = logging.getLogger(__name__)
@@ -79,6 +83,8 @@ class BotClient(discord.Client):
         if self._persistent_views_registered:
             return
 
+        self.add_view(create_matchmaking_presence_thread_view(self.command_handlers))
+
         managed_ui_channels = await asyncio.to_thread(
             self.command_handlers.managed_ui_service.list_managed_ui_channels
         )
@@ -143,6 +149,7 @@ def main() -> None:
     client = create_client(settings, session_factory)
     outbox_publisher = DiscordOutboxEventPublisher(
         client=client,
+        matchmaking_presence_interaction_handler=client.command_handlers,
     )
     match_runtime = MatchRuntime.create(
         session_factory=session_factory,

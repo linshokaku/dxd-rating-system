@@ -55,6 +55,10 @@ from dxd_rating.platform.db.models import (
     OutboxEventType,
 )
 from dxd_rating.platform.discord.rest import DiscordOutboxEventPublisher
+from dxd_rating.platform.discord.ui import (
+    MATCHMAKING_PRESENCE_THREAD_LEAVE_BUTTON_LABEL,
+    MATCHMAKING_PRESENCE_THREAD_PRESENT_BUTTON_LABEL,
+)
 from dxd_rating.platform.runtime import (
     BotRuntime,
     BotRuntimeStartResult,
@@ -200,17 +204,21 @@ class FakeDiscordConnectionState:
 class FakeDiscordChannel:
     id: int
     guild: FakeDiscordGuild | None = None
+    parent: object | None = None
     sent_messages: list[str] = field(default_factory=list)
     allowed_mentions_history: list[discord.AllowedMentions] = field(default_factory=list)
+    sent_views: list[discord.ui.View | None] = field(default_factory=list)
 
     async def send(
         self,
         content: str,
         *,
         allowed_mentions: discord.AllowedMentions,
+        view: discord.ui.View | None = None,
     ) -> None:
         self.sent_messages.append(content)
         self.allowed_mentions_history.append(allowed_mentions)
+        self.sent_views.append(view)
 
 
 @dataclass
@@ -227,6 +235,21 @@ class FakeDiscordUser:
     ) -> None:
         self.sent_messages.append(content)
         self.allowed_mentions_history.append(allowed_mentions)
+
+
+@dataclass
+class FakeMatchmakingPresenceInteractionHandler:
+    async def present_from_matchmaking_presence_thread(
+        self,
+        interaction: discord.Interaction[discord.Client],
+    ) -> None:
+        del interaction
+
+    async def leave_from_matchmaking_presence_thread(
+        self,
+        interaction: discord.Interaction[discord.Client],
+    ) -> None:
+        del interaction
 
 
 @dataclass
@@ -1774,9 +1797,17 @@ def test_discord_outbox_publisher_sends_presence_reminder_to_channel_destination
     discord_user_id = 930_001
     channel_id = 900_001
     guild_id = 910_001
-    channel = FakeDiscordChannel(id=channel_id, guild=FakeDiscordGuild(id=guild_id))
+    parent_channel = FakeDiscordChannel(id=899_999, guild=FakeDiscordGuild(id=guild_id))
+    channel = FakeDiscordChannel(
+        id=channel_id,
+        guild=FakeDiscordGuild(id=guild_id),
+        parent=parent_channel,
+    )
     client = FakeDiscordClient(channels={channel.id: channel})
-    publisher = DiscordOutboxEventPublisher(client=client)
+    publisher = DiscordOutboxEventPublisher(
+        client=client,
+        matchmaking_presence_interaction_handler=FakeMatchmakingPresenceInteractionHandler(),
+    )
 
     asyncio.run(
         publish_with_bound_loop(
@@ -1808,6 +1839,13 @@ def test_discord_outbox_publisher_sends_presence_reminder_to_channel_destination
     allowed_mentions = channel.allowed_mentions_history[0]
     assert isinstance(allowed_mentions, discord.AllowedMentions)
     assert allowed_mentions.users is True
+    view = channel.sent_views[0]
+    assert view is not None
+    button_labels = [child.label for child in view.children if isinstance(child, discord.ui.Button)]
+    assert button_labels == [
+        MATCHMAKING_PRESENCE_THREAD_PRESENT_BUTTON_LABEL,
+        MATCHMAKING_PRESENCE_THREAD_LEAVE_BUTTON_LABEL,
+    ]
 
 
 def test_discord_outbox_publisher_fetches_uncached_channel_for_queue_expired() -> None:
@@ -1850,6 +1888,45 @@ def test_discord_outbox_publisher_fetches_uncached_channel_for_queue_expired() -
     allowed_mentions = channel.allowed_mentions_history[0]
     assert isinstance(allowed_mentions, discord.AllowedMentions)
     assert allowed_mentions.users is True
+    assert channel.sent_views == [None]
+
+
+def test_discord_outbox_publisher_skips_presence_controls_for_non_thread_channel() -> None:
+    discord_user_id = 930_021
+    channel_id = 900_021
+    guild_id = 910_021
+    channel = FakeDiscordChannel(id=channel_id, guild=FakeDiscordGuild(id=guild_id))
+    client = FakeDiscordClient(channels={channel.id: channel})
+    publisher = DiscordOutboxEventPublisher(
+        client=client,
+        matchmaking_presence_interaction_handler=FakeMatchmakingPresenceInteractionHandler(),
+    )
+
+    asyncio.run(
+        publish_with_bound_loop(
+            publisher,
+            PendingOutboxEvent(
+                id=21,
+                event_type=OutboxEventType.PRESENCE_REMINDER,
+                dedupe_key="presence_reminder:21:1",
+                payload={
+                    "queue_entry_id": 121,
+                    "player_id": 80_021,
+                    "revision": 1,
+                    "expire_at": datetime.now(timezone.utc).isoformat(),
+                    "destination": {
+                        "kind": "channel",
+                        "channel_id": channel_id,
+                        "guild_id": guild_id,
+                    },
+                    "mention_discord_user_id": discord_user_id,
+                },
+                created_at=datetime.now(timezone.utc),
+            ),
+        )
+    )
+
+    assert channel.sent_views == [None]
 
 
 def test_discord_outbox_publisher_raises_non_retryable_error_when_channel_is_missing() -> None:

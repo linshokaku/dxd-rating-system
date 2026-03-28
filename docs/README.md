@@ -62,6 +62,10 @@
   - `レート戦マッチング` チャンネルに設置するキュー参加 UI
 - [ui/matchmaking_presence_thread.md](ui/matchmaking_presence_thread.md)
   - キュー参加後に作成する在席確認 private thread UI
+- [ui/match_operation_thread.md](ui/match_operation_thread.md)
+  - マッチ成立後に作成する試合運営 private thread UI
+- [ui/matchmaking_news_match_announcement.md](ui/matchmaking_news_match_announcement.md)
+  - `レート戦マッチ速報` に投稿する試合成立アナウンス UI
 - [ui/setup_channel.md](ui/setup_channel.md)
   - UI 設置チャンネルの作成・撤収コマンド
 
@@ -86,3 +90,5 @@
 17. [ui/register.md](ui/register.md)
 18. [ui/matchmaking_channel.md](ui/matchmaking_channel.md)
 19. [ui/matchmaking_presence_thread.md](ui/matchmaking_presence_thread.md)
+20. [ui/match_operation_thread.md](ui/match_operation_thread.md)
+21. [ui/matchmaking_news_match_announcement.md](ui/matchmaking_news_match_announcement.md)

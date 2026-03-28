@@ -14,6 +14,7 @@
 - 参加後に利用する在席確認 private thread UI の詳細仕様。
   - [matchmaking_presence_thread.md](matchmaking_presence_thread.md)
 - マッチ成立後に作成される private thread の詳細仕様。
+  - [match_operation_thread.md](match_operation_thread.md)
 
 ## 前提
 

@@ -144,6 +144,8 @@ class MatchParentAssignmentResult:
     report_open_at: datetime | None
     report_deadline_at: datetime | None
     assigned: bool
+    finalized: bool = False
+    approval_deadline_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1749,6 +1751,12 @@ class MatchFlowService:
                 payload=payload,
             )
 
+        transition_result = self._maybe_start_approval_after_report_locked(
+            session=session,
+            active_state=active_state,
+            current_time=decided_at,
+        )
+
         return MatchParentAssignmentResult(
             match_id=active_state.match_id,
             parent_player_id=parent_player_id,
@@ -1756,6 +1764,12 @@ class MatchFlowService:
             report_open_at=active_state.report_open_at,
             report_deadline_at=active_state.report_deadline_at,
             assigned=True,
+            finalized=transition_result.finalized if transition_result is not None else False,
+            approval_deadline_at=(
+                None
+                if transition_result is None or transition_result.finalized
+                else transition_result.approval_deadline_at
+            ),
         )
 
     def _apply_penalty_adjustment(

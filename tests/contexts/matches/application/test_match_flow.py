@@ -1035,6 +1035,44 @@ def test_submit_report_allows_void_before_report_open_and_overwrites_latest_repo
     assert reports[-1].normalized_result == MatchResult.DRAW
 
 
+def test_assigning_parent_immediately_finalizes_when_all_latest_reports_are_void(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    match_id, _, participants = create_match(
+        session,
+        session_factory,
+        start_discord_user_id=60_205,
+        channel_id=91_002_5,
+        guild_id=92_002_5,
+    )
+    match_service = MatchFlowService(session_factory)
+
+    last_report_result = None
+    for participant in participants:
+        last_report_result = match_service.submit_report(
+            match_id,
+            participant.player_id,
+            MatchReportInputResult.VOID,
+        )
+
+    assignment = match_service.volunteer_parent(match_id, participants[0].player_id)
+
+    session.expire_all()
+    active_state = session.get(ActiveMatchState, match_id)
+    finalized_result = session.get(FinalizedMatchResult, match_id)
+
+    assert last_report_result is not None
+    assert last_report_result.finalized is False
+    assert assignment.assigned is True
+    assert assignment.finalized is True
+    assert assignment.approval_deadline_at is None
+    assert active_state is not None
+    assert active_state.state == MatchState.FINALIZED
+    assert finalized_result is not None
+    assert finalized_result.final_result == MatchResult.VOID
+
+
 @pytest.mark.parametrize(
     ("match_format", "start_discord_user_id", "channel_id", "guild_id"),
     [

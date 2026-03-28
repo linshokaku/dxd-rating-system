@@ -396,12 +396,18 @@ class MatchRuntime:
             notification_context=notification_context,
         )
         if result.assigned:
-            self._cancel_match_task(self._parent_deadline_task_key(match_id))
-            self._schedule_match_reporting_tasks(
-                match_id=match_id,
-                report_open_at=result.report_open_at,
-                report_deadline_at=result.report_deadline_at,
-            )
+            if result.finalized:
+                self._cancel_all_match_tasks(match_id)
+            elif result.approval_deadline_at is not None:
+                self._cancel_match_task(self._parent_deadline_task_key(match_id))
+                self._schedule_match_approval_task(match_id, result.approval_deadline_at)
+            else:
+                self._cancel_match_task(self._parent_deadline_task_key(match_id))
+                self._schedule_match_reporting_tasks(
+                    match_id=match_id,
+                    report_open_at=result.report_open_at,
+                    report_deadline_at=result.report_deadline_at,
+                )
         return result
 
     async def spectate_match(
@@ -527,12 +533,18 @@ class MatchRuntime:
         match_service = self._require_match_service()
         result = await asyncio.to_thread(match_service.process_parent_deadline, match_id)
         if result.assigned:
-            self._cancel_match_task(self._parent_deadline_task_key(match_id))
-            self._schedule_match_reporting_tasks(
-                match_id=match_id,
-                report_open_at=result.report_open_at,
-                report_deadline_at=result.report_deadline_at,
-            )
+            if result.finalized:
+                self._cancel_all_match_tasks(match_id)
+            elif result.approval_deadline_at is not None:
+                self._cancel_match_task(self._parent_deadline_task_key(match_id))
+                self._schedule_match_approval_task(match_id, result.approval_deadline_at)
+            else:
+                self._cancel_match_task(self._parent_deadline_task_key(match_id))
+                self._schedule_match_reporting_tasks(
+                    match_id=match_id,
+                    report_open_at=result.report_open_at,
+                    report_deadline_at=result.report_deadline_at,
+                )
         return result
 
     async def process_report_open(self, match_id: int) -> bool:

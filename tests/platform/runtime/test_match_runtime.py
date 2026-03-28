@@ -25,6 +25,7 @@ from dxd_rating.contexts.matches.application import (
     MatchApprovalResult,
     MatchFinalizationResult,
     MatchReportSubmissionResult,
+    MatchParentAssignmentResult,
 )
 from dxd_rating.contexts.matchmaking.application import (
     MATCH_CREATED_NOTIFICATION_MESSAGE,
@@ -703,6 +704,78 @@ def test_match_runtime_process_expire_calls_service_and_cancels_timers(
         runtime._presence_reminder_task_key(401),
         runtime._expire_task_key(401),
     ]
+
+
+def test_match_runtime_volunteer_parent_cancels_match_tasks_when_assignment_immediately_finalizes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = Mock()
+    match_service = Mock()
+    current_time = datetime.now(timezone.utc)
+    assignment_result = MatchParentAssignmentResult(
+        match_id=701,
+        parent_player_id=901,
+        parent_decided_at=current_time,
+        report_open_at=current_time + timedelta(minutes=7),
+        report_deadline_at=current_time + timedelta(minutes=27),
+        assigned=True,
+        finalized=True,
+        approval_deadline_at=None,
+    )
+    match_service.volunteer_parent.return_value = assignment_result
+    runtime = MatchRuntime(service=service, match_service=match_service)
+    cancel_all_match_tasks = Mock()
+    schedule_match_reporting_tasks = Mock()
+    schedule_match_approval_task = Mock()
+    monkeypatch.setattr(runtime, "_cancel_all_match_tasks", cancel_all_match_tasks)
+    monkeypatch.setattr(runtime, "_schedule_match_reporting_tasks", schedule_match_reporting_tasks)
+    monkeypatch.setattr(runtime, "_schedule_match_approval_task", schedule_match_approval_task)
+
+    result = asyncio.run(runtime.volunteer_parent(701, 901))
+
+    assert result == assignment_result
+    match_service.volunteer_parent.assert_called_once_with(
+        701,
+        901,
+        notification_context=None,
+    )
+    cancel_all_match_tasks.assert_called_once_with(701)
+    schedule_match_reporting_tasks.assert_not_called()
+    schedule_match_approval_task.assert_not_called()
+
+
+def test_match_runtime_process_parent_deadline_cancels_match_tasks_when_assignment_immediately_finalizes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = Mock()
+    match_service = Mock()
+    current_time = datetime.now(timezone.utc)
+    assignment_result = MatchParentAssignmentResult(
+        match_id=702,
+        parent_player_id=902,
+        parent_decided_at=current_time,
+        report_open_at=current_time + timedelta(minutes=7),
+        report_deadline_at=current_time + timedelta(minutes=27),
+        assigned=True,
+        finalized=True,
+        approval_deadline_at=None,
+    )
+    match_service.process_parent_deadline.return_value = assignment_result
+    runtime = MatchRuntime(service=service, match_service=match_service)
+    cancel_all_match_tasks = Mock()
+    schedule_match_reporting_tasks = Mock()
+    schedule_match_approval_task = Mock()
+    monkeypatch.setattr(runtime, "_cancel_all_match_tasks", cancel_all_match_tasks)
+    monkeypatch.setattr(runtime, "_schedule_match_reporting_tasks", schedule_match_reporting_tasks)
+    monkeypatch.setattr(runtime, "_schedule_match_approval_task", schedule_match_approval_task)
+
+    result = asyncio.run(runtime.process_parent_deadline(702))
+
+    assert result == assignment_result
+    match_service.process_parent_deadline.assert_called_once_with(702)
+    cancel_all_match_tasks.assert_called_once_with(702)
+    schedule_match_reporting_tasks.assert_not_called()
+    schedule_match_approval_task.assert_not_called()
 
 
 def test_match_runtime_submit_match_report_cancels_match_tasks_when_finalized(

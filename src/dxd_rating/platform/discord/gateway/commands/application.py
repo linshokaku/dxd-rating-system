@@ -47,6 +47,7 @@ from dxd_rating.contexts.players.application import (
     PlayerLookupService,
     register_player,
 )
+from dxd_rating.contexts.players.domain import resolve_player_display_name
 from dxd_rating.contexts.restrictions.application import (
     PlayerAccessRestrictionDuration,
     PlayerAccessRestrictionService,
@@ -132,6 +133,8 @@ ADMIN_UI_ALREADY_INSTALLED_MESSAGE = "指定した UI はすでに設置済み�
 ADMIN_MANAGED_UI_PERMISSION_MESSAGE = "Bot に必要な権限がありません。"
 MANAGED_UI_PERMISSION_LABEL_MANAGE_CHANNELS = "チャンネルの管理"
 MANAGED_UI_PERMISSION_LABEL_MANAGE_ROLES = "ロールの管理"
+MANAGED_UI_PERMISSION_LABEL_CREATE_PRIVATE_THREADS = "プライベートスレッドの作成"
+MANAGED_UI_PERMISSION_LABEL_SEND_MESSAGES_IN_THREADS = "スレッドでメッセージを送信"
 ADMIN_SETUP_CUSTOM_UI_CHANNEL_FAILED_MESSAGE = (
     "UI 設置チャンネルの作成に失敗しました。管理者に確認してください。"
 )
@@ -155,6 +158,8 @@ ADMIN_TEARDOWN_UI_CHANNELS_FAILED_MESSAGE = (
     "UI 設置チャンネルの撤収に失敗しました。管理者に確認してください。"
 )
 ADMIN_TEARDOWN_CONFIRM_VALUE = "teardown"
+MATCHMAKING_PRESENCE_THREAD_NAME_PREFIX = "在席確認-"
+MAX_DISCORD_THREAD_NAME_LENGTH = 100
 
 DEV_REGISTER_SUCCESS_MESSAGE = "ダミーユーザーを登録しました。"
 DEV_REGISTER_ALREADY_REGISTERED_MESSAGE = "指定したユーザーはすでに登録済みです。"
@@ -425,6 +430,34 @@ class BotCommandHandlers:
         match_format: str,
         queue_name: str,
     ) -> None:
+        await self._run_join(
+            interaction,
+            match_format,
+            queue_name,
+            create_presence_thread=False,
+        )
+
+    async def join_from_ui(
+        self,
+        interaction: discord.Interaction[Any],
+        match_format: str,
+        queue_name: str,
+    ) -> None:
+        await self._run_join(
+            interaction,
+            match_format,
+            queue_name,
+            create_presence_thread=True,
+        )
+
+    async def _run_join(
+        self,
+        interaction: discord.Interaction[Any],
+        match_format: str,
+        queue_name: str,
+        *,
+        create_presence_thread: bool,
+    ) -> None:
         await self._sync_requesting_user_identity(interaction)
         try:
             notification_context = self._build_player_operation_notification_context(
@@ -480,6 +513,12 @@ class BotCommandHandlers:
             )
             await self._send_player_operation_message(interaction, JOIN_FAILED_MESSAGE)
             return
+
+        if create_presence_thread:
+            await self._best_effort_create_matchmaking_presence_thread(
+                interaction,
+                initial_message=result.message,
+            )
 
         await self._send_player_operation_message(interaction, result.message)
 
@@ -2378,6 +2417,16 @@ class BotCommandHandlers:
             )
         return "\n".join(lines)
 
+    def _build_matchmaking_presence_thread_name(self, discord_user: DiscordUserLike) -> str:
+        display_name = resolve_player_display_name(
+            discord_user_id=discord_user.id,
+            guild_display_name=getattr(discord_user, "nick", None),
+            global_display_name=getattr(discord_user, "global_name", None),
+            username=getattr(discord_user, "name", None),
+        )
+        suffix = str(discord_user.id) if display_name is None else display_name
+        return f"{MATCHMAKING_PRESENCE_THREAD_NAME_PREFIX}{suffix}"[:MAX_DISCORD_THREAD_NAME_LENGTH]
+
     def _require_guild(self, interaction: discord.Interaction[Any]) -> discord.Guild:
         guild = interaction.guild
         if guild is None:
@@ -2481,6 +2530,15 @@ class BotCommandHandlers:
             and not guild_permissions.manage_roles
         ):
             missing_permissions.append(MANAGED_UI_PERMISSION_LABEL_MANAGE_ROLES)
+
+        requires_matchmaking_thread_permissions = any(
+            definition.ui_type is ManagedUiType.MATCHMAKING_CHANNEL for definition in definitions
+        )
+        if requires_matchmaking_thread_permissions:
+            if not guild_permissions.create_private_threads:
+                missing_permissions.append(MANAGED_UI_PERMISSION_LABEL_CREATE_PRIVATE_THREADS)
+            if not guild_permissions.send_messages_in_threads:
+                missing_permissions.append(MANAGED_UI_PERMISSION_LABEL_SEND_MESSAGES_IN_THREADS)
 
         return tuple(missing_permissions)
 
@@ -2607,6 +2665,52 @@ class BotCommandHandlers:
                 interaction.user.id,
                 interaction.guild_id,
                 role.id,
+            )
+
+    async def _best_effort_create_matchmaking_presence_thread(
+        self,
+        interaction: discord.Interaction[Any],
+        *,
+        initial_message: str,
+    ) -> None:
+        try:
+            guild = self._require_guild(interaction)
+            if interaction.channel_id is None:
+                raise ValueError("interaction.channel_id is required")
+
+            parent_channel = self._find_guild_channel_by_id(guild, interaction.channel_id)
+            if parent_channel is None:
+                raise ValueError(
+                    f"parent channel not found for channel_id={interaction.channel_id}"
+                )
+
+            create_thread = getattr(parent_channel, "create_thread", None)
+            if not callable(create_thread):
+                raise TypeError(
+                    f"channel_id={interaction.channel_id} does not support thread creation"
+                )
+
+            thread = await create_thread(
+                name=self._build_matchmaking_presence_thread_name(interaction.user),
+                type=discord.ChannelType.private_thread,
+                invitable=False,
+                reason=(
+                    f"Create matchmaking presence thread for discord_user_id={interaction.user.id}"
+                ),
+            )
+
+            add_user = getattr(thread, "add_user", None)
+            if callable(add_user):
+                await add_user(interaction.user)
+
+            await thread.send(initial_message)
+        except Exception:
+            self.logger.exception(
+                "Failed to create matchmaking presence thread discord_user_id=%s "
+                "channel_id=%s guild_id=%s",
+                interaction.user.id,
+                interaction.channel_id,
+                interaction.guild_id,
             )
 
     async def _provision_managed_ui_channel(

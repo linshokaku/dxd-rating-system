@@ -60,7 +60,7 @@ class RegisterPanelInteractionHandler(Protocol):
 
 
 class MatchmakingPanelInteractionHandler(Protocol):
-    async def join(
+    async def join_from_ui(
         self,
         interaction: discord.Interaction[Any],
         match_format: str,
@@ -286,7 +286,7 @@ class MatchmakingPanelView(discord.ui.View):
             )
             return
 
-        await self._interaction_handler.join(
+        await self._interaction_handler.join_from_ui(
             interaction,
             selection_state.match_format,
             selection_state.queue_name,
@@ -422,6 +422,8 @@ def build_managed_ui_channel_overwrites(
             read_messages=True,
             read_message_history=True,
             send_messages=True,
+            create_private_threads=True,
+            send_messages_in_threads=True,
             manage_channels=True,
             manage_messages=True,
             manage_threads=True,

@@ -81,7 +81,7 @@ DATABASE_URL=postgresql+psycopg://user:password@localhost:5432/dxd_rating
 ```bash
 cp .env.example .env
 docker compose up -d db
-uv sync
+uv sync --extra dev
 uv run alembic upgrade head
 DEVELOPMENT_MODE=true uv run python -m dxd_rating.apps.bot.main
 ```

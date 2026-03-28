@@ -141,7 +141,12 @@ class FakeRole:
 class FakeGuildMember:
     id: int
     guild_permissions: discord.Permissions = field(
-        default_factory=lambda: discord.Permissions(manage_channels=True, manage_roles=True)
+        default_factory=lambda: discord.Permissions(
+            manage_channels=True,
+            manage_roles=True,
+            create_private_threads=True,
+            send_messages_in_threads=True,
+        )
     )
 
     def __hash__(self) -> int:
@@ -177,12 +182,43 @@ class FakeMessage:
 
 
 @dataclass
+class FakeThread:
+    id: int
+    name: str
+    parent: FakeTextChannel
+    sent_messages: list[FakeMessage] = field(default_factory=list)
+    added_user_ids: list[int] = field(default_factory=list)
+
+    async def add_user(self, user: object) -> None:
+        user_id = getattr(user, "id", None)
+        if isinstance(user_id, int):
+            self.added_user_ids.append(user_id)
+
+    async def send(
+        self,
+        content: str | None = None,
+        *,
+        view: discord.ui.View | None = None,
+        **_: Any,
+    ) -> discord.Message:
+        message = FakeMessage(
+            id=self.parent.guild.next_message_id,
+            content="" if content is None else content,
+            view=view,
+        )
+        self.parent.guild.next_message_id += 1
+        self.sent_messages.append(message)
+        return cast(discord.Message, message)
+
+
+@dataclass
 class FakeTextChannel:
     id: int
     name: str
     guild: FakeGuild
     overwrites: dict[object, discord.PermissionOverwrite] = field(default_factory=dict)
     sent_messages: list[FakeMessage] = field(default_factory=list)
+    created_threads: list[FakeThread] = field(default_factory=list)
     fail_send_with: Exception | None = None
     fail_delete_with: Exception | None = None
     deleted: bool = False
@@ -205,6 +241,21 @@ class FakeTextChannel:
         self.guild.next_message_id += 1
         self.sent_messages.append(message)
         return cast(discord.Message, message)
+
+    async def create_thread(
+        self,
+        *,
+        name: str,
+        **_: Any,
+    ) -> discord.Thread:
+        thread = FakeThread(
+            id=self.guild.next_channel_id,
+            name=name,
+            parent=self,
+        )
+        self.guild.next_channel_id += 1
+        self.created_threads.append(thread)
+        return cast(discord.Thread, thread)
 
     async def delete(self, *_: Any, **__: Any) -> None:
         if self.fail_delete_with is not None:
@@ -725,6 +776,13 @@ def test_matchmaking_panel_join_button_uses_selected_values_for_join(
         global_name="ui-queue-global",
         nick="ui-queue-guild",
     )
+    guild = FakeGuild(id=9_101)
+    channel = FakeTextChannel(
+        id=9_001,
+        name="レート戦マッチング",
+        guild=guild,
+    )
+    guild.channels.append(channel)
 
     set_select_values(match_format_select, [MatchFormat.ONE_VS_ONE.value])
     asyncio.run(match_format_select.callback(as_interaction(FakeInteraction(user=user))))
@@ -734,8 +792,9 @@ def test_matchmaking_panel_join_button_uses_selected_values_for_join(
 
     interaction = FakeInteraction(
         user=user,
-        channel_id=9_001,
-        guild_id=9_101,
+        channel_id=channel.id,
+        guild_id=guild.id,
+        guild=guild,
     )
     asyncio.run(join_button.callback(as_interaction(interaction)))
 
@@ -750,6 +809,12 @@ def test_matchmaking_panel_join_button_uses_selected_values_for_join(
     assert queue_entry.notification_channel_id == 9_001
     assert queue_entry.notification_guild_id == 9_101
     assert queue_entry.notification_mention_discord_user_id == discord_user_id
+    assert len(channel.created_threads) == 1
+    assert channel.created_threads[0].name == "在席確認-ui-queue-guild"
+    assert channel.created_threads[0].added_user_ids == [discord_user_id]
+    assert [message.content for message in channel.created_threads[0].sent_messages] == [
+        "キューに参加しました。5分間マッチングします。"
+    ]
 
 
 def test_present_command_updates_waiting_entry_and_notification_context(
@@ -1579,7 +1644,11 @@ def test_admin_setup_custom_ui_channel_reports_missing_permissions(
 
     assert_response(
         interaction,
-        ["Bot に必要な権限がありません。 不足している権限: チャンネルの管理, ロールの管理"],
+        [
+            "Bot に必要な権限がありません。 不足している権限: "
+            "チャンネルの管理, ロールの管理, プライベートスレッドの作成, "
+            "スレッドでメッセージを送信"
+        ],
         ephemeral=True,
     )
     assert guild.channels == []
@@ -1715,6 +1784,8 @@ def test_admin_setup_ui_channels_creates_registered_channel_set(
     assert matchmaking_channel.overwrites[guild.default_role].view_channel is False
     assert matchmaking_channel.overwrites[registered_role].view_channel is True
     assert matchmaking_channel.overwrites[registered_role].send_messages is False
+    assert matchmaking_channel.overwrites[guild.me].create_private_threads is True
+    assert matchmaking_channel.overwrites[guild.me].send_messages_in_threads is True
     assert matchmaking_channel.sent_messages[0].content == MATCHMAKING_CHANNEL_MESSAGE
     assert matchmaking_channel.sent_messages[0].view is not None
     match_format_select = cast(
@@ -1799,6 +1870,8 @@ def test_admin_setup_ui_channels_creates_private_channels_in_development_mode(
     matchmaking_channel = find_channel_by_name(guild, "レート戦マッチング")
     assert matchmaking_channel.overwrites[interaction.user].view_channel is True
     assert matchmaking_channel.overwrites[registered_role].view_channel is True
+    assert matchmaking_channel.overwrites[guild.me].create_private_threads is True
+    assert matchmaking_channel.overwrites[guild.me].send_messages_in_threads is True
 
     admin_contact_channel = find_channel_by_name(guild, "運営連絡・フィードバック")
     assert admin_contact_channel.overwrites[interaction.user].view_channel is True
@@ -1813,7 +1886,11 @@ def test_admin_setup_ui_channels_reports_missing_manage_roles_permission(
         id=2_102_6,
         me=FakeGuildMember(
             id=999_999,
-            guild_permissions=discord.Permissions(manage_channels=True),
+            guild_permissions=discord.Permissions(
+                manage_channels=True,
+                create_private_threads=True,
+                send_messages_in_threads=True,
+            ),
         ),
     )
     handlers = create_handlers(

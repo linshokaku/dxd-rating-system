@@ -204,11 +204,13 @@ class FakeDiscordConnectionState:
 @dataclass
 class FakeDiscordChannel:
     id: int
+    name: str = ""
     guild: FakeDiscordGuild | None = None
     parent: object | None = None
     sent_messages: list[str] = field(default_factory=list)
     allowed_mentions_history: list[discord.AllowedMentions] = field(default_factory=list)
     sent_views: list[discord.ui.View | None] = field(default_factory=list)
+    created_threads: list["FakeDiscordThread"] = field(default_factory=list)
 
     async def send(
         self,
@@ -220,6 +222,50 @@ class FakeDiscordChannel:
         self.sent_messages.append(content)
         self.allowed_mentions_history.append(allowed_mentions)
         self.sent_views.append(view)
+
+    async def create_thread(
+        self,
+        *,
+        name: str,
+        **_: object,
+    ) -> object:
+        thread = FakeDiscordThread(
+            id=(self.id * 1000) + len(self.created_threads) + 1,
+            name=name,
+            guild=self.guild,
+            parent=self,
+        )
+        self.created_threads.append(thread)
+        return thread
+
+
+@dataclass
+class FakeDiscordThread:
+    id: int
+    name: str
+    guild: FakeDiscordGuild | None = None
+    parent: object | None = None
+    sent_messages: list[str] = field(default_factory=list)
+    allowed_mentions_history: list[discord.AllowedMentions] = field(default_factory=list)
+    sent_views: list[discord.ui.View | None] = field(default_factory=list)
+    added_user_ids: list[int] = field(default_factory=list)
+
+    async def send(
+        self,
+        content: str,
+        *,
+        allowed_mentions: discord.AllowedMentions,
+        view: discord.ui.View | None = None,
+    ) -> None:
+        self.sent_messages.append(content)
+        self.allowed_mentions_history.append(allowed_mentions)
+        self.sent_views.append(view)
+
+    async def add_user(self, user: object) -> None:
+        user_id = getattr(user, "id", None)
+        if not isinstance(user_id, int):
+            raise TypeError(f"Unsupported fake Discord user: {user!r}")
+        self.added_user_ids.append(user_id)
 
 
 @dataclass
@@ -2158,6 +2204,249 @@ def test_discord_outbox_publisher_sends_split_match_created_events() -> None:
     assert second_channel.sent_messages == [
         expected_message,
     ]
+
+
+def test_discord_outbox_publisher_renders_matchmaking_news_match_announcement() -> None:
+    channel = FakeDiscordChannel(
+        id=900_012,
+        guild=FakeDiscordGuild(id=910_012),
+    )
+    client = FakeDiscordClient(channels={channel.id: channel})
+    publisher = DiscordOutboxEventPublisher(client=client)
+
+    expected_message = "\n".join(
+        [
+            f"{MATCH_CREATED_NOTIFICATION_MESSAGE} match_id=1",
+            "試合形式: 3v3",
+            "試合階級: beginner",
+            "Team A",
+            "    Player A",
+            "    Player B",
+            "    Player C",
+            "Team B",
+            "    Player D",
+            "    Player E",
+            "    Player F",
+        ]
+    )
+
+    async def scenario() -> None:
+        await publish_with_bound_loop(
+            publisher,
+            PendingOutboxEvent(
+                id=5,
+                event_type=OutboxEventType.MATCH_CREATED,
+                dedupe_key="match_created:1:900012",
+                payload={
+                    "match_id": 1,
+                    "match_format": "3v3",
+                    "queue_name": "beginner",
+                    "destination": {
+                        "channel_id": channel.id,
+                        "guild_id": channel.guild.id,
+                    },
+                    "team_a_player_display_names": [
+                        "Player A",
+                        "Player B",
+                        "Player C",
+                    ],
+                    "team_b_player_display_names": [
+                        "Player D",
+                        "Player E",
+                        "Player F",
+                    ],
+                },
+                created_at=datetime.now(timezone.utc),
+            ),
+        )
+
+    asyncio.run(scenario())
+
+    assert channel.sent_messages == [expected_message]
+    assert channel.sent_views == [None]
+
+
+def test_discord_outbox_publisher_creates_match_operation_thread_for_match_created() -> None:
+    guild = FakeDiscordGuild(id=910_013)
+    announcement_channel = FakeDiscordChannel(
+        id=900_013,
+        guild=guild,
+    )
+    matchmaking_channel = FakeDiscordChannel(
+        id=900_113,
+        guild=guild,
+    )
+    client = FakeDiscordClient(
+        channels={
+            announcement_channel.id: announcement_channel,
+            matchmaking_channel.id: matchmaking_channel,
+        },
+        users={
+            81_100: FakeDiscordUser(id=81_100),
+            81_101: FakeDiscordUser(id=81_101),
+            81_102: FakeDiscordUser(id=81_102),
+            81_103: FakeDiscordUser(id=81_103),
+            81_104: FakeDiscordUser(id=81_104),
+            81_105: FakeDiscordUser(id=81_105),
+            89_001: FakeDiscordUser(id=89_001),
+        },
+    )
+    publisher = DiscordOutboxEventPublisher(
+        client=client,
+        admin_discord_user_ids=frozenset({89_001}),
+    )
+
+    expected_announcement_message = "\n".join(
+        [
+            f"{MATCH_CREATED_NOTIFICATION_MESSAGE} match_id=2",
+            "試合形式: 3v3",
+            "試合階級: regular",
+            "Team A",
+            "    Player A",
+            "    Player B",
+            "    Player C",
+            "Team B",
+            "    Player D",
+            "    Player E",
+            "    Player F",
+        ]
+    )
+    expected_thread_message = "\n".join(
+        [
+            f"{MATCH_CREATED_NOTIFICATION_MESSAGE} match_id=2",
+            "試合形式: 3v3",
+            "試合階級: regular",
+            "Team A",
+            "    <@81100>",
+            "    <@81101>",
+            "    <@81102>",
+            "Team B",
+            "    <@81103>",
+            "    <@81104>",
+            "    <@81105>",
+            "無効試合とする必要がある場合は /match_void を使ってください。",
+        ]
+    )
+
+    async def scenario() -> None:
+        await publish_with_bound_loop(
+            publisher,
+            PendingOutboxEvent(
+                id=6,
+                event_type=OutboxEventType.MATCH_CREATED,
+                dedupe_key="match_created:2:900013",
+                payload={
+                    "match_id": 2,
+                    "match_format": "3v3",
+                    "queue_name": "regular",
+                    "destination": {
+                        "channel_id": announcement_channel.id,
+                        "guild_id": guild.id,
+                    },
+                    "team_a_discord_user_ids": [81_100, 81_101, 81_102],
+                    "team_b_discord_user_ids": [81_103, 81_104, 81_105],
+                    "team_a_player_display_names": ["Player A", "Player B", "Player C"],
+                    "team_b_player_display_names": ["Player D", "Player E", "Player F"],
+                    "match_operation_thread_parent_channel_id": matchmaking_channel.id,
+                    "create_match_operation_thread": True,
+                },
+                created_at=datetime.now(timezone.utc),
+            ),
+        )
+
+    asyncio.run(scenario())
+
+    assert announcement_channel.sent_messages == [expected_announcement_message]
+    assert len(matchmaking_channel.created_threads) == 1
+
+    created_thread = matchmaking_channel.created_threads[0]
+    assert created_thread.name == "試合-2"
+    assert created_thread.added_user_ids == [
+        81_100,
+        81_101,
+        81_102,
+        81_103,
+        81_104,
+        81_105,
+        89_001,
+    ]
+    assert created_thread.sent_messages == [expected_thread_message]
+    assert created_thread.sent_views == [None]
+
+
+def test_discord_outbox_publisher_reuses_existing_match_operation_thread_for_same_match() -> None:
+    guild = FakeDiscordGuild(id=910_014)
+    announcement_channel = FakeDiscordChannel(
+        id=900_014,
+        guild=guild,
+    )
+    matchmaking_channel = FakeDiscordChannel(
+        id=900_114,
+        guild=guild,
+    )
+    client = FakeDiscordClient(
+        channels={
+            announcement_channel.id: announcement_channel,
+            matchmaking_channel.id: matchmaking_channel,
+        },
+        users={
+            82_100: FakeDiscordUser(id=82_100),
+            82_101: FakeDiscordUser(id=82_101),
+            82_102: FakeDiscordUser(id=82_102),
+            82_103: FakeDiscordUser(id=82_103),
+            82_104: FakeDiscordUser(id=82_104),
+            82_105: FakeDiscordUser(id=82_105),
+        },
+    )
+    publisher = DiscordOutboxEventPublisher(client=client)
+    event = PendingOutboxEvent(
+        id=7,
+        event_type=OutboxEventType.MATCH_CREATED,
+        dedupe_key="match_created:3:900014",
+        payload={
+            "match_id": 3,
+            "match_format": "3v3",
+            "queue_name": "master",
+            "destination": {
+                "channel_id": announcement_channel.id,
+                "guild_id": guild.id,
+            },
+            "team_a_discord_user_ids": [82_100, 82_101, 82_102],
+            "team_b_discord_user_ids": [82_103, 82_104, 82_105],
+            "team_a_player_display_names": ["Player A", "Player B", "Player C"],
+            "team_b_player_display_names": ["Player D", "Player E", "Player F"],
+            "match_operation_thread_parent_channel_id": matchmaking_channel.id,
+            "create_match_operation_thread": True,
+        },
+        created_at=datetime.now(timezone.utc),
+    )
+
+    async def scenario() -> None:
+        await publish_with_bound_loop(publisher, event)
+        await publish_with_bound_loop(publisher, event)
+
+    asyncio.run(scenario())
+
+    assert len(matchmaking_channel.created_threads) == 1
+    assert matchmaking_channel.created_threads[0].sent_messages == [
+        "\n".join(
+            [
+                f"{MATCH_CREATED_NOTIFICATION_MESSAGE} match_id=3",
+                "試合形式: 3v3",
+                "試合階級: master",
+                "Team A",
+                "    <@82100>",
+                "    <@82101>",
+                "    <@82102>",
+                "Team B",
+                "    <@82103>",
+                "    <@82104>",
+                "    <@82105>",
+                "無効試合とする必要がある場合は /match_void を使ってください。",
+            ]
+        )
+    ]
+    assert len(announcement_channel.sent_messages) == 2
 
 
 def test_discord_outbox_publisher_renders_match_approval_phase_started_message() -> None:

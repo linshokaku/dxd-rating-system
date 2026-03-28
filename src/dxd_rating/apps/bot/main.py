@@ -149,6 +149,7 @@ def main() -> None:
     client = create_client(settings, session_factory)
     outbox_publisher = DiscordOutboxEventPublisher(
         client=client,
+        admin_discord_user_ids=settings.super_admin_user_ids,
         matchmaking_presence_interaction_handler=client.command_handlers,
     )
     match_runtime = MatchRuntime.create(

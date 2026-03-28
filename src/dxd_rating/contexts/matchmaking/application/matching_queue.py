@@ -30,6 +30,7 @@ from dxd_rating.contexts.matchmaking.domain import (
     prepare_matches_for_batch,
     validate_queue_class_definitions,
 )
+from dxd_rating.contexts.players.domain import resolve_registered_display_name
 from dxd_rating.contexts.restrictions.application.access_restrictions import (
     get_active_player_access_restriction,
 )
@@ -39,6 +40,8 @@ from dxd_rating.contexts.seasons.application import (
 )
 from dxd_rating.platform.db.models import (
     ActiveMatchState,
+    ManagedUiChannel,
+    ManagedUiType,
     Match,
     MatchFormat,
     MatchParticipant,
@@ -709,8 +712,10 @@ class MatchingQueueService:
 
                 session.flush()
                 for payload in self._build_match_created_payloads(
+                    session,
                     match.id,
                     prepared_match.match_format,
+                    queue_class_id,
                     prepared_match.team_a_entries,
                     prepared_match.team_b_entries,
                 ):
@@ -792,8 +797,123 @@ class MatchingQueueService:
 
     def _build_match_created_payloads(
         self,
+        session: Session,
         match_id: int,
         match_format: MatchFormat,
+        queue_class_id: str,
+        team_a_entries: Sequence[MatchQueueEntry],
+        team_b_entries: Sequence[MatchQueueEntry],
+    ) -> tuple[dict[str, Any], ...]:
+        queue_class_definition = self._require_queue_class_definition_by_id(queue_class_id)
+        matchmaking_channel = self._get_managed_ui_channel(
+            session,
+            ManagedUiType.MATCHMAKING_CHANNEL,
+        )
+        matchmaking_news_payload = self._build_matchmaking_news_match_created_payload(
+            session,
+            match_id=match_id,
+            match_format=match_format,
+            queue_class_definition=queue_class_definition,
+            matchmaking_channel=matchmaking_channel,
+            team_a_entries=team_a_entries,
+            team_b_entries=team_b_entries,
+        )
+        if matchmaking_news_payload is not None:
+            return (matchmaking_news_payload,)
+
+        return self._build_legacy_match_created_payloads(
+            match_id=match_id,
+            match_format=match_format,
+            queue_class_definition=queue_class_definition,
+            matchmaking_channel=matchmaking_channel,
+            team_a_entries=team_a_entries,
+            team_b_entries=team_b_entries,
+        )
+
+    def _build_matchmaking_news_match_created_payload(
+        self,
+        session: Session,
+        *,
+        match_id: int,
+        match_format: MatchFormat,
+        queue_class_definition: MatchQueueClassDefinition,
+        matchmaking_channel: ManagedUiChannel | None,
+        team_a_entries: Sequence[MatchQueueEntry],
+        team_b_entries: Sequence[MatchQueueEntry],
+    ) -> dict[str, Any] | None:
+        matchmaking_news_channel = self._get_managed_ui_channel(
+            session,
+            ManagedUiType.MATCHMAKING_NEWS_CHANNEL,
+        )
+        if matchmaking_news_channel is None:
+            return None
+
+        all_entries = tuple(
+            sorted(
+                [*team_a_entries, *team_b_entries],
+                key=lambda entry: (entry.joined_at, entry.id),
+            )
+        )
+        all_player_ids = [queue_entry.player_id for queue_entry in all_entries]
+        players_by_id = {
+            player.id: player
+            for player in session.scalars(select(Player).where(Player.id.in_(all_player_ids))).all()
+        }
+        announcement_guild_id = next(
+            (
+                queue_entry.notification_guild_id
+                for queue_entry in all_entries
+                if queue_entry.notification_guild_id is not None
+            ),
+            None,
+        )
+        team_a_discord_user_ids = [
+            queue_entry.notification_mention_discord_user_id for queue_entry in team_a_entries
+        ]
+        team_b_discord_user_ids = [
+            queue_entry.notification_mention_discord_user_id for queue_entry in team_b_entries
+        ]
+
+        payload: dict[str, Any] = {
+            "match_id": match_id,
+            "match_format": match_format.value,
+            "queue_name": queue_class_definition.queue_name,
+            "destination": {
+                "kind": "channel",
+                "channel_id": matchmaking_news_channel.channel_id,
+                "guild_id": announcement_guild_id,
+            },
+            "team_a_discord_user_ids": team_a_discord_user_ids,
+            "team_b_discord_user_ids": team_b_discord_user_ids,
+            "team_a_player_display_names": [
+                self._resolve_match_announcement_player_display_name(
+                    players_by_id,
+                    queue_entry.player_id,
+                )
+                for queue_entry in team_a_entries
+            ],
+            "team_b_player_display_names": [
+                self._resolve_match_announcement_player_display_name(
+                    players_by_id,
+                    queue_entry.player_id,
+                )
+                for queue_entry in team_b_entries
+            ],
+        }
+        self._apply_match_operation_thread_payload(
+            payload,
+            matchmaking_channel=matchmaking_channel,
+            create_match_operation_thread=True,
+        )
+        return payload
+
+    def _build_legacy_match_created_payloads(
+        self,
+        *,
+        match_id: int,
+        match_format: MatchFormat,
+        queue_class_definition: MatchQueueClassDefinition,
+        matchmaking_channel: ManagedUiChannel | None,
         team_a_entries: Sequence[MatchQueueEntry],
         team_b_entries: Sequence[MatchQueueEntry],
     ) -> tuple[dict[str, Any], ...]:
@@ -818,18 +938,68 @@ class MatchingQueueService:
             queue_entry.notification_mention_discord_user_id for queue_entry in team_b_entries
         ]
 
-        return tuple(
-            {
+        payloads: list[dict[str, Any]] = []
+        for index, destination in enumerate(destinations_by_channel_id.values()):
+            payload: dict[str, Any] = {
                 "match_id": match_id,
                 "match_format": match_format.value,
+                "queue_name": queue_class_definition.queue_name,
                 "queue_entry_ids": [queue_entry.id for queue_entry in all_entries],
                 "player_ids": [queue_entry.player_id for queue_entry in all_entries],
                 "destination": destination,
                 "team_a_discord_user_ids": team_a_discord_user_ids,
                 "team_b_discord_user_ids": team_b_discord_user_ids,
             }
-            for destination in destinations_by_channel_id.values()
+            self._apply_match_operation_thread_payload(
+                payload,
+                matchmaking_channel=matchmaking_channel,
+                create_match_operation_thread=index == 0,
+            )
+            payloads.append(payload)
+
+        return tuple(payloads)
+
+    def _get_managed_ui_channel(
+        self,
+        session: Session,
+        ui_type: ManagedUiType,
+    ) -> ManagedUiChannel | None:
+        return session.scalar(
+            select(ManagedUiChannel)
+            .where(ManagedUiChannel.ui_type == ui_type)
+            .order_by(ManagedUiChannel.id.asc())
         )
+
+    def _apply_match_operation_thread_payload(
+        self,
+        payload: dict[str, Any],
+        *,
+        matchmaking_channel: ManagedUiChannel | None,
+        create_match_operation_thread: bool,
+    ) -> None:
+        if matchmaking_channel is None:
+            return
+
+        payload["match_operation_thread_parent_channel_id"] = matchmaking_channel.channel_id
+        if create_match_operation_thread:
+            payload["create_match_operation_thread"] = True
+
+    def _resolve_match_announcement_player_display_name(
+        self,
+        players_by_id: dict[int, Player],
+        player_id: int,
+    ) -> str:
+        player = players_by_id.get(player_id)
+        if player is None:
+            raise RuntimeError(f"Player not found while building match announcement: {player_id}")
+
+        resolved_display_name = resolve_registered_display_name(
+            discord_user_id=player.discord_user_id,
+            display_name=player.display_name,
+        )
+        if resolved_display_name is not None:
+            return resolved_display_name
+        return str(player.discord_user_id)
 
     def load_waiting_entry_timer_states(
         self,

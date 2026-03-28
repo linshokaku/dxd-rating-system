@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import NoReturn, Protocol, cast
 
@@ -29,7 +30,7 @@ from dxd_rating.platform.runtime.outbox import (
     NonRetryableOutboxPublishError,
     PendingOutboxEvent,
 )
-from dxd_rating.shared.constants import format_discord_user_mention
+from dxd_rating.shared.constants import format_discord_user_mention, is_dummy_discord_user_id
 
 
 class DiscordSendableChannel(Protocol):
@@ -42,6 +43,25 @@ class DiscordSendableChannel(Protocol):
         allowed_mentions: discord.AllowedMentions,
         view: discord.ui.View | None = None,
     ) -> object: ...
+
+
+class DiscordThreadParentChannel(DiscordSendableChannel, Protocol):
+    async def create_thread(
+        self,
+        *,
+        name: str,
+        type: discord.ChannelType,
+        invitable: bool,
+        reason: str | None = None,
+    ) -> object: ...
+
+
+class DiscordPrivateThread(DiscordSendableChannel, Protocol):
+    id: int
+    name: str
+    parent: object | None
+
+    async def add_user(self, user: object) -> None: ...
 
 
 class DiscordSendableUser(Protocol):
@@ -91,17 +111,33 @@ class TeamRatingEntry:
     rating: float
 
 
+@dataclass(frozen=True, slots=True)
+class MatchOperationThreadContext:
+    match_id: int
+    parent_channel_id: int
+    match_format: str
+    queue_name: str
+    team_a_discord_user_ids: tuple[int, ...]
+    team_b_discord_user_ids: tuple[int, ...]
+
+    @property
+    def participant_discord_user_ids(self) -> tuple[int, ...]:
+        return (*self.team_a_discord_user_ids, *self.team_b_discord_user_ids)
+
+
 class DiscordOutboxEventPublisher:
     def __init__(
         self,
         client: DiscordChannelClient,
         *,
+        admin_discord_user_ids: frozenset[int] = frozenset(),
         matchmaking_presence_interaction_handler: (
             MatchmakingPresenceThreadInteractionHandler | None
         ) = None,
         logger: logging.Logger | None = None,
     ) -> None:
         self.client = client
+        self.admin_discord_user_ids = admin_discord_user_ids
         self.matchmaking_presence_interaction_handler = matchmaking_presence_interaction_handler
         self.logger = logger or logging.getLogger(__name__)
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -111,6 +147,7 @@ class DiscordOutboxEventPublisher:
             everyone=False,
             replied_user=False,
         )
+        self._match_operation_threads_by_match_id: dict[int, DiscordPrivateThread] = {}
 
     def bind_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         if self._loop is not None and self._loop is not loop:
@@ -127,6 +164,7 @@ class DiscordOutboxEventPublisher:
         future.result()
 
     async def _publish_event(self, event: PendingOutboxEvent) -> None:
+        await self._maybe_create_match_operation_thread(event)
         notification = await asyncio.to_thread(self._resolve_notification, event)
         if isinstance(notification.destination, DirectMessageNotificationDestination):
             await self._send_direct_message_notification(
@@ -229,6 +267,199 @@ class DiscordOutboxEventPublisher:
                 f"Discord DM destination is forbidden: {destination.discord_user_id}"
             ) from exc
 
+    async def _maybe_create_match_operation_thread(self, event: PendingOutboxEvent) -> None:
+        context = self._build_match_operation_thread_context(event)
+        if context is None:
+            return
+
+        try:
+            thread, created = await self._resolve_or_create_match_operation_thread(context)
+        except Exception:
+            self.logger.exception(
+                "Failed to prepare match operation thread match_id=%s parent_channel_id=%s",
+                context.match_id,
+                context.parent_channel_id,
+            )
+            return
+
+        if not created:
+            return
+
+        try:
+            await self._invite_match_operation_thread_users(thread, context)
+            await thread.send(
+                self._render_match_operation_thread_initial_content(context),
+                allowed_mentions=self._allowed_mentions,
+            )
+        except Exception:
+            self.logger.exception(
+                "Failed to initialize match operation thread match_id=%s thread_id=%s",
+                context.match_id,
+                thread.id,
+            )
+
+    def _build_match_operation_thread_context(
+        self,
+        event: PendingOutboxEvent,
+    ) -> MatchOperationThreadContext | None:
+        if event.event_type != OutboxEventType.MATCH_CREATED:
+            return None
+
+        if not self._require_payload_bool_with_default(
+            event.payload,
+            "create_match_operation_thread",
+            False,
+        ):
+            return None
+
+        parent_channel_id = self._require_payload_int(
+            event.payload,
+            "match_operation_thread_parent_channel_id",
+        )
+        match_id = self._require_payload_int(event.payload, "match_id")
+        match_format = self._require_payload_str(event.payload, "match_format")
+        queue_name = self._require_payload_str(event.payload, "queue_name")
+        team_a_discord_user_ids = tuple(
+            self._require_payload_int_list(event.payload, "team_a_discord_user_ids")
+        )
+        team_b_discord_user_ids = tuple(
+            self._require_payload_int_list(event.payload, "team_b_discord_user_ids")
+        )
+        if not team_a_discord_user_ids or not team_b_discord_user_ids:
+            self._raise_publish_error(
+                "match_created payload team discord user ids must not be empty"
+            )
+
+        return MatchOperationThreadContext(
+            match_id=match_id,
+            parent_channel_id=parent_channel_id,
+            match_format=match_format,
+            queue_name=queue_name,
+            team_a_discord_user_ids=team_a_discord_user_ids,
+            team_b_discord_user_ids=team_b_discord_user_ids,
+        )
+
+    async def _resolve_or_create_match_operation_thread(
+        self,
+        context: MatchOperationThreadContext,
+    ) -> tuple[DiscordPrivateThread, bool]:
+        cached_thread = self._match_operation_threads_by_match_id.get(context.match_id)
+        if cached_thread is not None:
+            return cached_thread, False
+
+        parent_channel = await self._resolve_channel(context.parent_channel_id)
+        thread_parent = self._as_thread_parent_channel(parent_channel)
+        if thread_parent is None:
+            raise NonRetryableOutboxPublishError(
+                f"Discord channel does not support private thread creation: "
+                f"{context.parent_channel_id}"
+            )
+
+        existing_thread = self._find_existing_match_operation_thread(
+            parent_channel=thread_parent,
+            match_id=context.match_id,
+        )
+        if existing_thread is not None:
+            self._match_operation_threads_by_match_id[context.match_id] = existing_thread
+            return existing_thread, False
+
+        created_thread_object = await thread_parent.create_thread(
+            name=self._build_match_operation_thread_name(context.match_id),
+            type=discord.ChannelType.private_thread,
+            invitable=False,
+            reason=f"Create match operation thread for match_id={context.match_id}",
+        )
+        thread = self._as_private_thread(created_thread_object)
+        if thread is None:
+            raise NonRetryableOutboxPublishError(
+                f"Created Discord thread is not sendable: match_id={context.match_id}"
+            )
+
+        self._match_operation_threads_by_match_id[context.match_id] = thread
+        return thread, True
+
+    def _find_existing_match_operation_thread(
+        self,
+        *,
+        parent_channel: DiscordThreadParentChannel,
+        match_id: int,
+    ) -> DiscordPrivateThread | None:
+        thread_name = self._build_match_operation_thread_name(match_id)
+        for candidate in self._iter_thread_candidates(parent_channel):
+            thread = self._as_private_thread(candidate)
+            if thread is None:
+                continue
+            if thread.parent is not parent_channel:
+                continue
+            if thread.name != thread_name:
+                continue
+            return thread
+        return None
+
+    def _iter_thread_candidates(
+        self,
+        parent_channel: DiscordThreadParentChannel,
+    ) -> Iterable[object]:
+        for attribute_name in ("created_threads", "threads"):
+            candidates = getattr(parent_channel, attribute_name, None)
+            if isinstance(candidates, list | tuple):
+                yield from candidates
+
+        guild = getattr(parent_channel, "guild", None)
+        guild_threads = getattr(guild, "threads", None)
+        if isinstance(guild_threads, list | tuple):
+            yield from guild_threads
+
+    async def _invite_match_operation_thread_users(
+        self,
+        thread: DiscordPrivateThread,
+        context: MatchOperationThreadContext,
+    ) -> None:
+        invitee_ids = self._dedupe_discord_user_ids(
+            [*context.participant_discord_user_ids, *sorted(self.admin_discord_user_ids)]
+        )
+        for discord_user_id in invitee_ids:
+            if is_dummy_discord_user_id(discord_user_id):
+                continue
+
+            try:
+                user = await self._resolve_user(discord_user_id)
+                await thread.add_user(user)
+            except Exception:
+                self.logger.exception(
+                    "Failed to add user to match operation thread match_id=%s "
+                    "thread_id=%s discord_user_id=%s",
+                    context.match_id,
+                    thread.id,
+                    discord_user_id,
+                )
+
+    def _render_match_operation_thread_initial_content(
+        self,
+        context: MatchOperationThreadContext,
+    ) -> str:
+        return "\n".join(
+            [
+                f"{MATCH_CREATED_NOTIFICATION_MESSAGE} match_id={context.match_id}",
+                f"試合形式: {context.match_format}",
+                f"試合階級: {context.queue_name}",
+                "Team A",
+                *[
+                    f"    {format_discord_user_mention(discord_user_id)}"
+                    for discord_user_id in context.team_a_discord_user_ids
+                ],
+                "Team B",
+                *[
+                    f"    {format_discord_user_mention(discord_user_id)}"
+                    for discord_user_id in context.team_b_discord_user_ids
+                ],
+                "無効試合とする必要がある場合は /match_void を使ってください。",
+            ]
+        )
+
+    def _build_match_operation_thread_name(self, match_id: int) -> str:
+        return f"試合-{match_id}"
+
     def _render_content(
         self,
         event_type: OutboxEventType,
@@ -271,6 +502,48 @@ class DiscordOutboxEventPublisher:
 
     def _render_match_created_content(self, payload: dict[str, object]) -> str:
         match_id = self._require_payload_int(payload, "match_id")
+        team_a_player_display_names = payload.get("team_a_player_display_names")
+        team_b_player_display_names = payload.get("team_b_player_display_names")
+        if team_a_player_display_names is not None or team_b_player_display_names is not None:
+            if team_a_player_display_names is None or team_b_player_display_names is None:
+                self._raise_publish_error(
+                    "match_created payload team player display names must either both be "
+                    "present or both be omitted"
+                )
+
+            match_format = self._require_payload_str(payload, "match_format")
+            queue_name = self._require_payload_str(payload, "queue_name")
+            rendered_team_a_player_display_names = self._require_payload_str_list(
+                payload,
+                "team_a_player_display_names",
+            )
+            rendered_team_b_player_display_names = self._require_payload_str_list(
+                payload,
+                "team_b_player_display_names",
+            )
+            if not rendered_team_a_player_display_names or not rendered_team_b_player_display_names:
+                self._raise_publish_error(
+                    "match_created payload team player display names must not be empty"
+                )
+
+            indented_team_a_display_labels = [
+                f"    {label}" for label in rendered_team_a_player_display_names
+            ]
+            indented_team_b_display_labels = [
+                f"    {label}" for label in rendered_team_b_player_display_names
+            ]
+            return "\n".join(
+                [
+                    f"{MATCH_CREATED_NOTIFICATION_MESSAGE} match_id={match_id}",
+                    f"試合形式: {match_format}",
+                    f"試合階級: {queue_name}",
+                    "Team A",
+                    *indented_team_a_display_labels,
+                    "Team B",
+                    *indented_team_b_display_labels,
+                ]
+            )
+
         team_a_discord_user_ids = self._require_payload_int_list(
             payload,
             "team_a_discord_user_ids",
@@ -340,6 +613,22 @@ class DiscordOutboxEventPublisher:
 
     def _is_thread_like_channel(self, channel: object) -> bool:
         return getattr(channel, "parent", None) is not None
+
+    def _as_thread_parent_channel(self, channel: object) -> DiscordThreadParentChannel | None:
+        if self._as_sendable_channel(channel) is None:
+            return None
+        if not callable(getattr(channel, "create_thread", None)):
+            return None
+        return cast(DiscordThreadParentChannel, channel)
+
+    def _as_private_thread(self, channel: object) -> DiscordPrivateThread | None:
+        if self._as_sendable_channel(channel) is None:
+            return None
+        if getattr(channel, "parent", None) is None:
+            return None
+        if not callable(getattr(channel, "add_user", None)):
+            return None
+        return cast(DiscordPrivateThread, channel)
 
     def _render_match_parent_assigned_content(self, payload: dict[str, object]) -> str:
         match_id = self._require_payload_int(payload, "match_id")
@@ -505,6 +794,16 @@ class DiscordOutboxEventPublisher:
         if not isinstance(value, list) or any(not isinstance(item, int) for item in value):
             self._raise_publish_error(f"Outbox payload '{key}' must be a list[int]: {value!r}")
         return cast(list[int], value)
+
+    def _dedupe_discord_user_ids(self, discord_user_ids: Iterable[int]) -> list[int]:
+        deduped_user_ids: list[int] = []
+        seen_user_ids: set[int] = set()
+        for discord_user_id in discord_user_ids:
+            if discord_user_id in seen_user_ids:
+                continue
+            seen_user_ids.add(discord_user_id)
+            deduped_user_ids.append(discord_user_id)
+        return deduped_user_ids
 
     def _get_optional_team_rating_entries(
         self,

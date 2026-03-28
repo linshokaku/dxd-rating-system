@@ -17,10 +17,12 @@ import dxd_rating.platform.runtime.match_runtime as match_runtime_module
 import dxd_rating.platform.runtime.outbox as outbox_runtime
 from dxd_rating.contexts.common.application import RetryableTaskError
 from dxd_rating.contexts.matches.application import (
+    MATCH_ADMIN_REVIEW_REQUIRED_NOTIFICATION_MESSAGE,
     MATCH_APPROVAL_REQUESTED_NOTIFICATION_MESSAGE,
     MATCH_APPROVAL_STARTED_NOTIFICATION_MESSAGE,
     MATCH_AUTO_PENALTY_APPLIED_NOTIFICATION_MESSAGE,
     MATCH_FINALIZED_NOTIFICATION_MESSAGE,
+    MATCH_PARENT_ASSIGNED_NOTIFICATION_MESSAGE,
     ActiveMatchTimerState,
     MatchApprovalResult,
     MatchFinalizationResult,
@@ -2447,6 +2449,317 @@ def test_discord_outbox_publisher_reuses_existing_match_operation_thread_for_sam
         )
     ]
     assert len(announcement_channel.sent_messages) == 2
+
+
+def test_discord_outbox_publisher_routes_approval_request_to_match_operation_thread() -> None:
+    guild = FakeDiscordGuild(id=910_015)
+    match_channel = FakeDiscordChannel(
+        id=900_015,
+        guild=guild,
+    )
+    matchmaking_channel = FakeDiscordChannel(
+        id=900_115,
+        guild=guild,
+    )
+    client = FakeDiscordClient(
+        channels={
+            match_channel.id: match_channel,
+            matchmaking_channel.id: matchmaking_channel,
+        },
+        users={
+            83_001: FakeDiscordUser(id=83_001),
+            83_002: FakeDiscordUser(id=83_002),
+            89_003: FakeDiscordUser(id=89_003),
+        },
+    )
+    publisher = DiscordOutboxEventPublisher(
+        client=client,
+        admin_discord_user_ids=frozenset({89_003}),
+    )
+
+    expected_message = "\n".join(
+        [
+            (f"<@83001> <@83002> {MATCH_APPROVAL_REQUESTED_NOTIFICATION_MESSAGE} match_id=21"),
+            "仮決定結果: チーム B の勝ち",
+            "承認締切: 2026-03-20T12:44:56+00:00",
+            "承認できない場合は証拠を提示したうえで admin へ連絡してください。",
+        ]
+    )
+
+    async def scenario() -> None:
+        await publish_with_bound_loop(
+            publisher,
+            PendingOutboxEvent(
+                id=9,
+                event_type=OutboxEventType.MATCH_APPROVAL_REQUESTED,
+                dedupe_key="match_approval_requested:21:thread",
+                payload={
+                    "match_id": 21,
+                    "provisional_result": "team_b_win",
+                    "approval_deadline_at": "2026-03-20T12:44:56+00:00",
+                    "phase_started": False,
+                    "approval_target_discord_user_ids": [83_001, 83_002],
+                    "destination": {
+                        "channel_id": match_channel.id,
+                        "guild_id": guild.id,
+                    },
+                    "team_a_discord_user_ids": [83_001],
+                    "team_b_discord_user_ids": [83_002],
+                    "match_operation_thread_parent_channel_id": matchmaking_channel.id,
+                },
+                created_at=datetime.now(timezone.utc),
+            ),
+        )
+
+    asyncio.run(scenario())
+
+    assert match_channel.sent_messages == []
+    assert len(matchmaking_channel.created_threads) == 1
+    created_thread = matchmaking_channel.created_threads[0]
+    assert created_thread.added_user_ids == [83_001, 83_002, 89_003]
+    assert created_thread.sent_messages == [expected_message]
+
+
+def test_discord_outbox_publisher_routes_match_notifications_to_existing_thread() -> None:
+    guild = FakeDiscordGuild(id=910_016)
+    announcement_channel = FakeDiscordChannel(
+        id=900_016,
+        guild=guild,
+    )
+    match_channel = FakeDiscordChannel(
+        id=900_017,
+        guild=guild,
+    )
+    matchmaking_channel = FakeDiscordChannel(
+        id=900_116,
+        guild=guild,
+    )
+    client = FakeDiscordClient(
+        channels={
+            announcement_channel.id: announcement_channel,
+            match_channel.id: match_channel,
+            matchmaking_channel.id: matchmaking_channel,
+        },
+        users={
+            84_100: FakeDiscordUser(id=84_100),
+            84_101: FakeDiscordUser(id=84_101),
+            84_102: FakeDiscordUser(id=84_102),
+            84_103: FakeDiscordUser(id=84_103),
+            84_104: FakeDiscordUser(id=84_104),
+            84_105: FakeDiscordUser(id=84_105),
+            89_004: FakeDiscordUser(id=89_004),
+        },
+    )
+    publisher = DiscordOutboxEventPublisher(
+        client=client,
+        admin_discord_user_ids=frozenset({89_004}),
+    )
+
+    expected_announcement_message = "\n".join(
+        [
+            f"{MATCH_CREATED_NOTIFICATION_MESSAGE} match_id=22",
+            "試合形式: 3v3",
+            "試合階級: expert",
+            "Team A",
+            "    Player A",
+            "    Player B",
+            "    Player C",
+            "Team B",
+            "    Player D",
+            "    Player E",
+            "    Player F",
+        ]
+    )
+    expected_parent_message = "\n".join(
+        [
+            f"{MATCH_PARENT_ASSIGNED_NOTIFICATION_MESSAGE} match_id=22",
+            "親: <@84100>",
+            "勝敗報告開始: 2026-03-20T12:00:00+00:00",
+            "勝敗報告締切: 2026-03-20T12:20:00+00:00",
+        ]
+    )
+    expected_phase_started_message = "\n".join(
+        [
+            f"{MATCH_APPROVAL_STARTED_NOTIFICATION_MESSAGE} match_id=22",
+            "仮決定結果: チーム A の勝ち",
+            "承認締切: 2026-03-20T12:34:56+00:00",
+        ]
+    )
+    expected_finalized_message = "\n".join(
+        [
+            f"{MATCH_FINALIZED_NOTIFICATION_MESSAGE} match_id=22",
+            "結果: チーム A の勝ち",
+        ]
+    )
+    expected_auto_penalty_message = "\n".join(
+        [
+            f"<@84105> {MATCH_AUTO_PENALTY_APPLIED_NOTIFICATION_MESSAGE} match_id=22",
+            "結果: チーム A の勝ち",
+            "ペナルティ: 未報告",
+            "現在の累積: 2",
+        ]
+    )
+    expected_admin_review_message = "\n".join(
+        [
+            "<@89004>",
+            f"{MATCH_ADMIN_REVIEW_REQUIRED_NOTIFICATION_MESSAGE} match_id=22",
+            "結果: チーム A の勝ち",
+            "理由: 同票が解消できませんでした",
+        ]
+    )
+
+    async def scenario() -> None:
+        await publish_with_bound_loop(
+            publisher,
+            PendingOutboxEvent(
+                id=10,
+                event_type=OutboxEventType.MATCH_CREATED,
+                dedupe_key="match_created:22:900016",
+                payload={
+                    "match_id": 22,
+                    "match_format": "3v3",
+                    "queue_name": "expert",
+                    "destination": {
+                        "channel_id": announcement_channel.id,
+                        "guild_id": guild.id,
+                    },
+                    "team_a_discord_user_ids": [84_100, 84_101, 84_102],
+                    "team_b_discord_user_ids": [84_103, 84_104, 84_105],
+                    "team_a_player_display_names": ["Player A", "Player B", "Player C"],
+                    "team_b_player_display_names": ["Player D", "Player E", "Player F"],
+                    "match_operation_thread_parent_channel_id": matchmaking_channel.id,
+                    "create_match_operation_thread": True,
+                },
+                created_at=datetime.now(timezone.utc),
+            ),
+        )
+        await publish_with_bound_loop(
+            publisher,
+            PendingOutboxEvent(
+                id=11,
+                event_type=OutboxEventType.MATCH_PARENT_ASSIGNED,
+                dedupe_key="match_parent_assigned:22:thread:manual",
+                payload={
+                    "match_id": 22,
+                    "parent_discord_user_id": 84_100,
+                    "report_open_at": "2026-03-20T12:00:00+00:00",
+                    "report_deadline_at": "2026-03-20T12:20:00+00:00",
+                    "destination": {
+                        "channel_id": match_channel.id,
+                        "guild_id": guild.id,
+                    },
+                    "team_a_discord_user_ids": [84_100, 84_101, 84_102],
+                    "team_b_discord_user_ids": [84_103, 84_104, 84_105],
+                    "match_operation_thread_parent_channel_id": matchmaking_channel.id,
+                },
+                created_at=datetime.now(timezone.utc),
+            ),
+        )
+        await publish_with_bound_loop(
+            publisher,
+            PendingOutboxEvent(
+                id=12,
+                event_type=OutboxEventType.MATCH_APPROVAL_REQUESTED,
+                dedupe_key="match_approval_requested:phase_started:22:thread",
+                payload={
+                    "match_id": 22,
+                    "provisional_result": "team_a_win",
+                    "approval_deadline_at": "2026-03-20T12:34:56+00:00",
+                    "phase_started": True,
+                    "destination": {
+                        "channel_id": match_channel.id,
+                        "guild_id": guild.id,
+                    },
+                    "team_a_discord_user_ids": [84_100, 84_101, 84_102],
+                    "team_b_discord_user_ids": [84_103, 84_104, 84_105],
+                    "match_operation_thread_parent_channel_id": matchmaking_channel.id,
+                },
+                created_at=datetime.now(timezone.utc),
+            ),
+        )
+        await publish_with_bound_loop(
+            publisher,
+            PendingOutboxEvent(
+                id=13,
+                event_type=OutboxEventType.MATCH_FINALIZED,
+                dedupe_key="match_finalized:22:thread:automatic",
+                payload={
+                    "match_id": 22,
+                    "final_result": "team_a_win",
+                    "finalized_at": "2026-03-20T12:40:00+00:00",
+                    "finalized_by_admin": False,
+                    "destination": {
+                        "channel_id": match_channel.id,
+                        "guild_id": guild.id,
+                    },
+                    "team_a_discord_user_ids": [84_100, 84_101, 84_102],
+                    "team_b_discord_user_ids": [84_103, 84_104, 84_105],
+                    "match_operation_thread_parent_channel_id": matchmaking_channel.id,
+                },
+                created_at=datetime.now(timezone.utc),
+            ),
+        )
+        await publish_with_bound_loop(
+            publisher,
+            PendingOutboxEvent(
+                id=14,
+                event_type=OutboxEventType.MATCH_FINALIZED,
+                dedupe_key="match_finalized:auto_penalty:22:105:automatic",
+                payload={
+                    "match_id": 22,
+                    "final_result": "team_a_win",
+                    "finalized_at": "2026-03-20T12:40:00+00:00",
+                    "finalized_by_admin": False,
+                    "auto_penalty_applied": True,
+                    "mention_discord_user_id": 84_105,
+                    "penalty_type": "no_report",
+                    "penalty_count": 2,
+                    "destination": {
+                        "channel_id": match_channel.id,
+                        "guild_id": guild.id,
+                    },
+                    "team_a_discord_user_ids": [84_100, 84_101, 84_102],
+                    "team_b_discord_user_ids": [84_103, 84_104, 84_105],
+                    "match_operation_thread_parent_channel_id": matchmaking_channel.id,
+                },
+                created_at=datetime.now(timezone.utc),
+            ),
+        )
+        await publish_with_bound_loop(
+            publisher,
+            PendingOutboxEvent(
+                id=15,
+                event_type=OutboxEventType.MATCH_ADMIN_REVIEW_REQUIRED,
+                dedupe_key="match_admin_review_required:22:thread",
+                payload={
+                    "match_id": 22,
+                    "final_result": "team_a_win",
+                    "admin_review_reasons": ["unresolved_tie"],
+                    "admin_discord_user_ids": [89_004],
+                    "destination": {
+                        "channel_id": match_channel.id,
+                        "guild_id": guild.id,
+                    },
+                    "team_a_discord_user_ids": [84_100, 84_101, 84_102],
+                    "team_b_discord_user_ids": [84_103, 84_104, 84_105],
+                    "match_operation_thread_parent_channel_id": matchmaking_channel.id,
+                },
+                created_at=datetime.now(timezone.utc),
+            ),
+        )
+
+    asyncio.run(scenario())
+
+    assert announcement_channel.sent_messages == [expected_announcement_message]
+    assert match_channel.sent_messages == []
+    assert len(matchmaking_channel.created_threads) == 1
+    assert matchmaking_channel.created_threads[0].sent_messages[1:] == [
+        expected_parent_message,
+        expected_phase_started_message,
+        expected_finalized_message,
+        expected_auto_penalty_message,
+        expected_admin_review_message,
+    ]
 
 
 def test_discord_outbox_publisher_renders_match_approval_phase_started_message() -> None:

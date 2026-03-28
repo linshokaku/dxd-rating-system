@@ -66,6 +66,8 @@ from dxd_rating.platform.db.models import (
     ActiveMatchState,
     FinalizedMatchPlayerResult,
     FinalizedMatchResult,
+    ManagedUiChannel,
+    ManagedUiType,
     Match,
     MatchAdminOverride,
     MatchApprovalStatus,
@@ -879,7 +881,8 @@ class MatchFlowService:
         active_state.approval_deadline_at = started_at + MATCH_APPROVAL_WINDOW
         active_state.state = MatchState.AWAITING_RESULT_APPROVALS
 
-        for payload in self._build_match_channel_payloads(
+        for payload in self._build_match_notification_payloads(
+            session,
             participants=participants,
             event_type=OutboxEventType.MATCH_APPROVAL_REQUESTED,
             extra_payload={
@@ -889,28 +892,35 @@ class MatchFlowService:
                 "phase_started": True,
             },
         ):
-            destination = payload["destination"]
             self._enqueue_outbox_event(
                 session,
                 event_type=OutboxEventType.MATCH_APPROVAL_REQUESTED,
                 dedupe_key=(
                     "match_approval_requested:phase_started:"
-                    f"{active_state.match_id}:{destination['channel_id']}"
+                    f"{active_state.match_id}:{self._build_notification_dedupe_target_key(payload)}"
                 ),
                 payload=payload,
             )
 
-        for participant in participants:
-            if participant.player_id not in pending_player_ids:
-                continue
+        for approval_requested_payload in self._build_match_approval_requested_payloads(
+            session=session,
+            participants=participants,
+            pending_player_ids=pending_player_ids,
+            active_state=active_state,
+        ):
+            approval_dedupe_target_key = self._build_notification_dedupe_target_key(
+                approval_requested_payload
+            )
+            mention_discord_user_id = approval_requested_payload.get("mention_discord_user_id")
+            if isinstance(mention_discord_user_id, int):
+                approval_dedupe_target_key = str(mention_discord_user_id)
             self._enqueue_outbox_event(
                 session,
                 event_type=OutboxEventType.MATCH_APPROVAL_REQUESTED,
-                dedupe_key=f"match_approval_requested:{active_state.match_id}:{participant.player_id}",
-                payload=self._build_match_approval_requested_payload(
-                    participant=participant,
-                    active_state=active_state,
+                dedupe_key=(
+                    f"match_approval_requested:{active_state.match_id}:{approval_dedupe_target_key}"
                 ),
+                payload=approval_requested_payload,
             )
 
         return MatchFinalizationResult(
@@ -1501,23 +1511,60 @@ class MatchFlowService:
                 )
             )
 
-        for payload in self._build_match_channel_payloads(
+        matchmaking_channel = self._require_matchmaking_channel(session)
+
+        for payload in self._build_match_notification_payloads(
+            session,
             participants=participants,
             event_type=OutboxEventType.MATCH_FINALIZED,
             extra_payload=finalized_notification_payload,
         ):
-            destination = payload["destination"]
             self._enqueue_outbox_event(
                 session,
                 event_type=OutboxEventType.MATCH_FINALIZED,
                 dedupe_key=(
                     "match_finalized:"
-                    f"{active_state.match_id}:{destination['channel_id']}:{finalization_dedupe_suffix}"
+                    f"{active_state.match_id}:"
+                    f"{self._build_notification_dedupe_target_key(payload)}:"
+                    f"{finalization_dedupe_suffix}"
                 ),
                 payload=payload,
             )
 
         for participant, penalty_type, penalty_count in auto_penalty_notifications:
+            auto_penalty_payload: dict[str, Any] = {
+                "match_id": active_state.match_id,
+                "final_result": final_result.value,
+                "finalized_at": finalized_at.isoformat(),
+                "finalized_by_admin": finalized_by_admin,
+                "auto_penalty_applied": True,
+                "mention_discord_user_id": (
+                    participant.notification_mention_discord_user_id
+                    or participant.player.discord_user_id
+                ),
+                "penalty_type": penalty_type.value,
+                "penalty_count": penalty_count,
+                "destination": self._build_notification_destination_payload(
+                    participant,
+                    event_context="match_finalized_auto_penalty",
+                ),
+                "team_a_discord_user_ids": [
+                    team_participant.notification_mention_discord_user_id
+                    or team_participant.player.discord_user_id
+                    for team_participant in participants
+                    if team_participant.team == MatchParticipantTeam.TEAM_A
+                ],
+                "team_b_discord_user_ids": [
+                    team_participant.notification_mention_discord_user_id
+                    or team_participant.player.discord_user_id
+                    for team_participant in participants
+                    if team_participant.team == MatchParticipantTeam.TEAM_B
+                ],
+            }
+            self._apply_match_operation_thread_payload(
+                auto_penalty_payload,
+                matchmaking_channel=matchmaking_channel,
+            )
             self._enqueue_outbox_event(
                 session,
                 event_type=OutboxEventType.MATCH_FINALIZED,
@@ -1525,27 +1572,12 @@ class MatchFlowService:
                     "match_finalized:auto_penalty:"
                     f"{active_state.match_id}:{participant.player_id}:{finalization_dedupe_suffix}"
                 ),
-                payload={
-                    "match_id": active_state.match_id,
-                    "final_result": final_result.value,
-                    "finalized_at": finalized_at.isoformat(),
-                    "finalized_by_admin": finalized_by_admin,
-                    "auto_penalty_applied": True,
-                    "mention_discord_user_id": (
-                        participant.notification_mention_discord_user_id
-                        or participant.player.discord_user_id
-                    ),
-                    "penalty_type": penalty_type.value,
-                    "penalty_count": penalty_count,
-                    "destination": self._build_notification_destination_payload(
-                        participant,
-                        event_context="match_finalized_auto_penalty",
-                    ),
-                },
+                payload=auto_penalty_payload,
             )
 
         if active_state.admin_review_required:
-            for payload in self._build_match_channel_payloads(
+            for payload in self._build_match_notification_payloads(
+                session,
                 participants=participants,
                 event_type=OutboxEventType.MATCH_ADMIN_REVIEW_REQUIRED,
                 extra_payload={
@@ -1555,13 +1587,13 @@ class MatchFlowService:
                     "admin_discord_user_ids": sorted(self.admin_discord_user_ids),
                 },
             ):
-                destination = payload["destination"]
                 self._enqueue_outbox_event(
                     session,
                     event_type=OutboxEventType.MATCH_ADMIN_REVIEW_REQUIRED,
                     dedupe_key=(
                         "match_admin_review_required:"
-                        f"{active_state.match_id}:{destination['channel_id']}"
+                        f"{active_state.match_id}:"
+                        f"{self._build_notification_dedupe_target_key(payload)}"
                     ),
                     payload=payload,
                 )
@@ -1727,7 +1759,8 @@ class MatchFlowService:
             participant for participant in participants if participant.player_id == parent_player_id
         )
 
-        for payload in self._build_match_channel_payloads(
+        for payload in self._build_match_notification_payloads(
+            session,
             participants=participants,
             event_type=OutboxEventType.MATCH_PARENT_ASSIGNED,
             extra_payload={
@@ -1740,13 +1773,14 @@ class MatchFlowService:
                 "report_deadline_at": active_state.report_deadline_at.isoformat(),
             },
         ):
-            destination = payload["destination"]
             self._enqueue_outbox_event(
                 session,
                 event_type=OutboxEventType.MATCH_PARENT_ASSIGNED,
                 dedupe_key=(
                     "match_parent_assigned:"
-                    f"{active_state.match_id}:{destination['channel_id']}:{event_dedupe_suffix}"
+                    f"{active_state.match_id}:"
+                    f"{self._build_notification_dedupe_target_key(payload)}:"
+                    f"{event_dedupe_suffix}"
                 ),
                 payload=payload,
             )
@@ -1847,6 +1881,60 @@ class MatchFlowService:
             for destination in destinations_by_channel_id.values()
         )
 
+    def _build_match_notification_payloads(
+        self,
+        session: Session,
+        *,
+        participants: Sequence[MatchParticipant],
+        event_type: OutboxEventType,
+        extra_payload: dict[str, Any],
+    ) -> tuple[dict[str, Any], ...]:
+        return (
+            self._build_match_operation_thread_payload(
+                session,
+                participants=participants,
+                event_type=event_type,
+                extra_payload=extra_payload,
+            ),
+        )
+
+    def _build_match_operation_thread_payload(
+        self,
+        session: Session,
+        *,
+        participants: Sequence[MatchParticipant],
+        event_type: OutboxEventType,
+        extra_payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        matchmaking_channel = self._require_matchmaking_channel(session)
+        if not participants:
+            raise MatchFlowError("試合参加者が見つかりません。")
+
+        team_a_discord_user_ids = [
+            participant.notification_mention_discord_user_id or participant.player.discord_user_id
+            for participant in participants
+            if participant.team == MatchParticipantTeam.TEAM_A
+        ]
+        team_b_discord_user_ids = [
+            participant.notification_mention_discord_user_id or participant.player.discord_user_id
+            for participant in participants
+            if participant.team == MatchParticipantTeam.TEAM_B
+        ]
+        payload: dict[str, Any] = {
+            **extra_payload,
+            "destination": self._build_notification_destination_payload(
+                participants[0],
+                event_context=event_type.value,
+            ),
+            "team_a_discord_user_ids": team_a_discord_user_ids,
+            "team_b_discord_user_ids": team_b_discord_user_ids,
+        }
+        self._apply_match_operation_thread_payload(
+            payload,
+            matchmaking_channel=matchmaking_channel,
+        )
+        return payload
+
     def _build_team_rating_entries(
         self,
         *,
@@ -1899,34 +1987,89 @@ class MatchFlowService:
             raise MatchFlowError(f"未対応の対戦フォーマットです: {match_format.value}")
         return format_definition
 
-    def _build_match_approval_requested_payload(
+    def _build_match_approval_requested_payloads(
         self,
         *,
-        participant: MatchParticipant,
+        session: Session,
+        participants: Sequence[MatchParticipant],
+        pending_player_ids: set[int],
         active_state: ActiveMatchState,
-    ) -> dict[str, Any]:
-        return {
-            "match_id": active_state.match_id,
-            "provisional_result": (
-                None
-                if active_state.provisional_result is None
-                else active_state.provisional_result.value
-            ),
-            "approval_deadline_at": (
-                None
-                if active_state.approval_deadline_at is None
-                else active_state.approval_deadline_at.isoformat()
-            ),
-            "destination": self._build_notification_destination_payload(
-                participant,
-                event_context="match_approval_requested",
-            ),
-            "phase_started": False,
-            "mention_discord_user_id": (
-                participant.notification_mention_discord_user_id
-                or participant.player.discord_user_id
-            ),
-        }
+    ) -> tuple[dict[str, Any], ...]:
+        if not pending_player_ids:
+            return tuple()
+
+        match_operation_thread_payload = self._build_match_operation_thread_payload(
+            session,
+            participants=participants,
+            event_type=OutboxEventType.MATCH_APPROVAL_REQUESTED,
+            extra_payload={
+                "match_id": active_state.match_id,
+                "provisional_result": (
+                    None
+                    if active_state.provisional_result is None
+                    else active_state.provisional_result.value
+                ),
+                "approval_deadline_at": (
+                    None
+                    if active_state.approval_deadline_at is None
+                    else active_state.approval_deadline_at.isoformat()
+                ),
+                "phase_started": False,
+                "approval_target_discord_user_ids": list(
+                    dict.fromkeys(
+                        participant.notification_mention_discord_user_id
+                        or participant.player.discord_user_id
+                        for participant in participants
+                        if participant.player_id in pending_player_ids
+                    )
+                ),
+            },
+        )
+        return (match_operation_thread_payload,)
+
+    def _get_managed_ui_channel(
+        self,
+        session: Session,
+        ui_type: ManagedUiType,
+    ) -> ManagedUiChannel | None:
+        return session.scalar(
+            select(ManagedUiChannel)
+            .where(ManagedUiChannel.ui_type == ui_type)
+            .order_by(ManagedUiChannel.id.asc())
+        )
+
+    def _apply_match_operation_thread_payload(
+        self,
+        payload: dict[str, Any],
+        *,
+        matchmaking_channel: ManagedUiChannel,
+    ) -> None:
+        payload["match_operation_thread_parent_channel_id"] = matchmaking_channel.channel_id
+
+    def _require_matchmaking_channel(
+        self,
+        session: Session,
+    ) -> ManagedUiChannel:
+        matchmaking_channel = self._get_managed_ui_channel(
+            session,
+            ManagedUiType.MATCHMAKING_CHANNEL,
+        )
+        if matchmaking_channel is None:
+            raise RuntimeError("MATCHMAKING_CHANNEL is required for match operation notifications.")
+        return matchmaking_channel
+
+    def _build_notification_dedupe_target_key(
+        self,
+        payload: dict[str, Any],
+    ) -> str:
+        match_operation_thread_parent_channel_id = payload.get(
+            "match_operation_thread_parent_channel_id"
+        )
+        if isinstance(match_operation_thread_parent_channel_id, int):
+            return "thread"
+
+        destination = payload["destination"]
+        return str(destination["channel_id"])
 
     def _build_notification_destination_payload(
         self,

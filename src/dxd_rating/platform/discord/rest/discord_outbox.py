@@ -125,6 +125,18 @@ class MatchOperationThreadContext:
         return (*self.team_a_discord_user_ids, *self.team_b_discord_user_ids)
 
 
+@dataclass(frozen=True, slots=True)
+class MatchOperationThreadRoutingContext:
+    match_id: int
+    parent_channel_id: int
+    team_a_discord_user_ids: tuple[int, ...]
+    team_b_discord_user_ids: tuple[int, ...]
+
+    @property
+    def participant_discord_user_ids(self) -> tuple[int, ...]:
+        return (*self.team_a_discord_user_ids, *self.team_b_discord_user_ids)
+
+
 class DiscordOutboxEventPublisher:
     def __init__(
         self,
@@ -165,6 +177,14 @@ class DiscordOutboxEventPublisher:
 
     async def _publish_event(self, event: PendingOutboxEvent) -> None:
         await self._maybe_create_match_operation_thread(event)
+        match_operation_thread = await self._resolve_match_operation_thread_for_event(event)
+        if match_operation_thread is not None:
+            await match_operation_thread.send(
+                self._render_content(event.event_type, event.payload),
+                allowed_mentions=self._allowed_mentions,
+            )
+            return
+
         notification = await asyncio.to_thread(self._resolve_notification, event)
         if isinstance(notification.destination, DirectMessageNotificationDestination):
             await self._send_direct_message_notification(
@@ -273,7 +293,10 @@ class DiscordOutboxEventPublisher:
             return
 
         try:
-            thread, created = await self._resolve_or_create_match_operation_thread(context)
+            thread, created = await self._resolve_or_create_match_operation_thread(
+                match_id=context.match_id,
+                parent_channel_id=context.parent_channel_id,
+            )
         except Exception:
             self.logger.exception(
                 "Failed to prepare match operation thread match_id=%s parent_channel_id=%s",
@@ -286,7 +309,10 @@ class DiscordOutboxEventPublisher:
             return
 
         try:
-            await self._invite_match_operation_thread_users(thread, context)
+            await self._invite_match_operation_thread_users(
+                thread,
+                context.participant_discord_user_ids,
+            )
             await thread.send(
                 self._render_match_operation_thread_initial_content(context),
                 allowed_mentions=self._allowed_mentions,
@@ -297,6 +323,33 @@ class DiscordOutboxEventPublisher:
                 context.match_id,
                 thread.id,
             )
+
+    async def _resolve_match_operation_thread_for_event(
+        self,
+        event: PendingOutboxEvent,
+    ) -> DiscordPrivateThread | None:
+        if event.event_type not in {
+            OutboxEventType.MATCH_PARENT_ASSIGNED,
+            OutboxEventType.MATCH_APPROVAL_REQUESTED,
+            OutboxEventType.MATCH_FINALIZED,
+            OutboxEventType.MATCH_ADMIN_REVIEW_REQUIRED,
+        }:
+            return None
+
+        context = self._build_match_operation_thread_routing_context(event.payload)
+        if context is None:
+            return None
+
+        thread, created = await self._resolve_or_create_match_operation_thread(
+            match_id=context.match_id,
+            parent_channel_id=context.parent_channel_id,
+        )
+        if created:
+            await self._invite_match_operation_thread_users(
+                thread,
+                context.participant_discord_user_ids,
+            )
+        return thread
 
     def _build_match_operation_thread_context(
         self,
@@ -339,43 +392,76 @@ class DiscordOutboxEventPublisher:
             team_b_discord_user_ids=team_b_discord_user_ids,
         )
 
+    def _build_match_operation_thread_routing_context(
+        self,
+        payload: dict[str, object],
+    ) -> MatchOperationThreadRoutingContext | None:
+        parent_channel_id = payload.get("match_operation_thread_parent_channel_id")
+        if parent_channel_id is None:
+            return None
+        if not isinstance(parent_channel_id, int):
+            self._raise_publish_error(
+                "Outbox payload 'match_operation_thread_parent_channel_id' must be an int: "
+                f"{parent_channel_id!r}"
+            )
+
+        match_id = self._require_payload_int(payload, "match_id")
+        team_a_discord_user_ids = tuple(
+            self._require_payload_int_list(payload, "team_a_discord_user_ids")
+        )
+        team_b_discord_user_ids = tuple(
+            self._require_payload_int_list(payload, "team_b_discord_user_ids")
+        )
+        if not team_a_discord_user_ids or not team_b_discord_user_ids:
+            self._raise_publish_error(
+                "match operation thread payload team discord user ids must not be empty"
+            )
+
+        return MatchOperationThreadRoutingContext(
+            match_id=match_id,
+            parent_channel_id=parent_channel_id,
+            team_a_discord_user_ids=team_a_discord_user_ids,
+            team_b_discord_user_ids=team_b_discord_user_ids,
+        )
+
     async def _resolve_or_create_match_operation_thread(
         self,
-        context: MatchOperationThreadContext,
+        *,
+        match_id: int,
+        parent_channel_id: int,
     ) -> tuple[DiscordPrivateThread, bool]:
-        cached_thread = self._match_operation_threads_by_match_id.get(context.match_id)
+        cached_thread = self._match_operation_threads_by_match_id.get(match_id)
         if cached_thread is not None:
             return cached_thread, False
 
-        parent_channel = await self._resolve_channel(context.parent_channel_id)
+        parent_channel = await self._resolve_channel(parent_channel_id)
         thread_parent = self._as_thread_parent_channel(parent_channel)
         if thread_parent is None:
             raise NonRetryableOutboxPublishError(
-                f"Discord channel does not support private thread creation: "
-                f"{context.parent_channel_id}"
+                f"Discord channel does not support private thread creation: {parent_channel_id}"
             )
 
         existing_thread = self._find_existing_match_operation_thread(
             parent_channel=thread_parent,
-            match_id=context.match_id,
+            match_id=match_id,
         )
         if existing_thread is not None:
-            self._match_operation_threads_by_match_id[context.match_id] = existing_thread
+            self._match_operation_threads_by_match_id[match_id] = existing_thread
             return existing_thread, False
 
         created_thread_object = await thread_parent.create_thread(
-            name=self._build_match_operation_thread_name(context.match_id),
+            name=self._build_match_operation_thread_name(match_id),
             type=discord.ChannelType.private_thread,
             invitable=False,
-            reason=f"Create match operation thread for match_id={context.match_id}",
+            reason=f"Create match operation thread for match_id={match_id}",
         )
         thread = self._as_private_thread(created_thread_object)
         if thread is None:
             raise NonRetryableOutboxPublishError(
-                f"Created Discord thread is not sendable: match_id={context.match_id}"
+                f"Created Discord thread is not sendable: match_id={match_id}"
             )
 
-        self._match_operation_threads_by_match_id[context.match_id] = thread
+        self._match_operation_threads_by_match_id[match_id] = thread
         return thread, True
 
     def _find_existing_match_operation_thread(
@@ -413,10 +499,10 @@ class DiscordOutboxEventPublisher:
     async def _invite_match_operation_thread_users(
         self,
         thread: DiscordPrivateThread,
-        context: MatchOperationThreadContext,
+        participant_discord_user_ids: Iterable[int],
     ) -> None:
         invitee_ids = self._dedupe_discord_user_ids(
-            [*context.participant_discord_user_ids, *sorted(self.admin_discord_user_ids)]
+            [*participant_discord_user_ids, *sorted(self.admin_discord_user_ids)]
         )
         for discord_user_id in invitee_ids:
             if is_dummy_discord_user_id(discord_user_id):
@@ -427,9 +513,7 @@ class DiscordOutboxEventPublisher:
                 await thread.add_user(user)
             except Exception:
                 self.logger.exception(
-                    "Failed to add user to match operation thread match_id=%s "
-                    "thread_id=%s discord_user_id=%s",
-                    context.match_id,
+                    "Failed to add user to match operation thread thread_id=%s discord_user_id=%s",
                     thread.id,
                     discord_user_id,
                 )
@@ -658,8 +742,23 @@ class DiscordOutboxEventPublisher:
                 ]
             )
 
-        mention_discord_user_id = self._require_payload_int(payload, "mention_discord_user_id")
-        mention_text = format_discord_user_mention(mention_discord_user_id)
+        approval_target_discord_user_ids = payload.get("approval_target_discord_user_ids")
+        if approval_target_discord_user_ids is not None:
+            approval_target_mentions = [
+                format_discord_user_mention(discord_user_id)
+                for discord_user_id in self._require_payload_int_list(
+                    payload,
+                    "approval_target_discord_user_ids",
+                )
+            ]
+            if not approval_target_mentions:
+                self._raise_publish_error(
+                    "match_approval_requested payload approval targets must not be empty"
+                )
+            mention_text = " ".join(approval_target_mentions)
+        else:
+            mention_discord_user_id = self._require_payload_int(payload, "mention_discord_user_id")
+            mention_text = format_discord_user_mention(mention_discord_user_id)
         headline = (
             f"{mention_text} {MATCH_APPROVAL_REQUESTED_NOTIFICATION_MESSAGE} match_id={match_id}"
         )

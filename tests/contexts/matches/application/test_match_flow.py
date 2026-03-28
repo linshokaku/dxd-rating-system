@@ -34,6 +34,8 @@ from dxd_rating.platform.db.models import (
     ActiveMatchState,
     FinalizedMatchPlayerResult,
     FinalizedMatchResult,
+    ManagedUiChannel,
+    ManagedUiType,
     MatchApprovalStatus,
     MatchFormat,
     MatchParticipant,
@@ -77,8 +79,48 @@ def create_player(session: Session, discord_user_id: int) -> Player:
     return player
 
 
+def create_managed_ui_channel(
+    session: Session,
+    *,
+    ui_type: ManagedUiType,
+    channel_id: int,
+    message_id: int,
+    created_by_discord_user_id: int = 999_999,
+) -> ManagedUiChannel:
+    managed_ui_channel = ManagedUiChannel(
+        ui_type=ui_type,
+        channel_id=channel_id,
+        message_id=message_id,
+        created_by_discord_user_id=created_by_discord_user_id,
+    )
+    session.add(managed_ui_channel)
+    session.commit()
+    return managed_ui_channel
+
+
 def get_active_season_id(session: Session) -> int:
     return ensure_active_and_upcoming_seasons(session).active.id
+
+
+def ensure_matchmaking_channel(
+    session: Session,
+    *,
+    channel_id: int = 95_001,
+    message_id: int = 96_001,
+) -> ManagedUiChannel:
+    existing_channel = session.scalar(
+        select(ManagedUiChannel).where(
+            ManagedUiChannel.ui_type == ManagedUiType.MATCHMAKING_CHANNEL
+        )
+    )
+    if existing_channel is not None:
+        return existing_channel
+    return create_managed_ui_channel(
+        session,
+        ui_type=ManagedUiType.MATCHMAKING_CHANNEL,
+        channel_id=channel_id,
+        message_id=message_id,
+    )
 
 
 def create_players(
@@ -115,7 +157,10 @@ def create_matches_for_format(
     start_discord_user_id: int,
     channel_id: int,
     guild_id: int,
+    ensure_matchmaking_channel_configured: bool = True,
 ) -> tuple[list[Player], dict[int, list[MatchParticipant]]]:
+    if ensure_matchmaking_channel_configured:
+        ensure_matchmaking_channel(session)
     format_definition = get_match_format_definition(match_format)
     assert format_definition is not None
     players = create_players(
@@ -175,6 +220,7 @@ def create_first_match_for_format(
     start_discord_user_id: int,
     channel_id: int,
     guild_id: int,
+    ensure_matchmaking_channel_configured: bool = True,
 ) -> tuple[int, list[MatchParticipant]]:
     _, participants_by_match_id = create_matches_for_format(
         session,
@@ -183,6 +229,7 @@ def create_first_match_for_format(
         start_discord_user_id=start_discord_user_id,
         channel_id=channel_id,
         guild_id=guild_id,
+        ensure_matchmaking_channel_configured=ensure_matchmaking_channel_configured,
     )
     match_id = sorted(participants_by_match_id)[0]
     return match_id, participants_by_match_id[match_id]
@@ -234,7 +281,10 @@ def create_match(
     start_discord_user_id: int,
     channel_id: int,
     guild_id: int,
+    ensure_matchmaking_channel_configured: bool = True,
 ) -> tuple[int, list[Player], list[MatchParticipant]]:
+    if ensure_matchmaking_channel_configured:
+        ensure_matchmaking_channel(session)
     players = create_players(session, 6, start_discord_user_id=start_discord_user_id)
     queue_service = MatchingQueueService(session_factory)
     for player in players:
@@ -269,6 +319,7 @@ def create_match_for_players(
     match_format: MatchFormat = DEFAULT_MATCH_FORMAT,
     channel_id: int,
     guild_id: int,
+    ensure_matchmaking_channel_configured: bool = True,
 ) -> tuple[int, list[MatchParticipant]]:
     participants_by_match_id = create_matches_for_players(
         session,
@@ -277,6 +328,7 @@ def create_match_for_players(
         match_format=match_format,
         channel_id=channel_id,
         guild_id=guild_id,
+        ensure_matchmaking_channel_configured=ensure_matchmaking_channel_configured,
     )
     assert len(participants_by_match_id) == 1
     match_id = sorted(participants_by_match_id)[0]
@@ -291,7 +343,10 @@ def create_matches_for_players(
     match_format: MatchFormat = DEFAULT_MATCH_FORMAT,
     channel_id: int,
     guild_id: int,
+    ensure_matchmaking_channel_configured: bool = True,
 ) -> dict[int, list[MatchParticipant]]:
+    if ensure_matchmaking_channel_configured:
+        ensure_matchmaking_channel(session)
     queue_service = MatchingQueueService(session_factory)
     for player in players:
         queue_service.join_queue(
@@ -955,6 +1010,101 @@ def test_process_parent_deadline_auto_assigns_parent_for_all_formats(
     )
 
 
+def test_volunteer_parent_raises_internal_error_without_matchmaking_channel(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    match_id, participants = create_first_match_for_format(
+        session,
+        session_factory,
+        match_format=MatchFormat.THREE_VS_THREE,
+        start_discord_user_id=60_195,
+        channel_id=91_001_95,
+        guild_id=92_001_95,
+        ensure_matchmaking_channel_configured=False,
+    )
+    match_service = MatchFlowService(session_factory)
+
+    with pytest.raises(
+        RuntimeError,
+        match="MATCHMAKING_CHANNEL is required for match operation notifications.",
+    ):
+        match_service.volunteer_parent(match_id, participants[0].player_id)
+
+
+def test_match_flow_uses_match_operation_thread_payloads_for_parent_and_approval_notifications(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    matchmaking_channel = create_managed_ui_channel(
+        session,
+        ui_type=ManagedUiType.MATCHMAKING_CHANNEL,
+        channel_id=95_500,
+        message_id=96_500,
+    )
+    match_id, participants = create_first_match_for_format(
+        session,
+        session_factory,
+        match_format=MatchFormat.THREE_VS_THREE,
+        start_discord_user_id=60_500,
+        channel_id=91_005_00,
+        guild_id=92_005_00,
+    )
+    match_service = MatchFlowService(session_factory)
+    parent = participants[0]
+
+    assignment = match_service.volunteer_parent(match_id, parent.player_id)
+    set_report_window_open(session, match_id)
+
+    dissenting_participant = next(
+        participant
+        for participant in reversed(participants)
+        if participant.team == MatchParticipantTeam.TEAM_B
+    )
+    for participant in participants:
+        if participant.team == MatchParticipantTeam.TEAM_A:
+            input_result = MatchReportInputResult.WIN
+        elif participant.player_id == dissenting_participant.player_id:
+            input_result = MatchReportInputResult.DRAW
+        else:
+            input_result = MatchReportInputResult.LOSE
+        match_service.submit_report(match_id, participant.player_id, input_result)
+
+    session.expire_all()
+    parent_events = get_match_events(
+        session,
+        event_type=OutboxEventType.MATCH_PARENT_ASSIGNED,
+        match_id=match_id,
+    )
+    approval_events = get_match_events(
+        session,
+        event_type=OutboxEventType.MATCH_APPROVAL_REQUESTED,
+        match_id=match_id,
+    )
+
+    assert assignment.assigned is True
+    assert len(parent_events) == 1
+    assert (
+        parent_events[0].payload["match_operation_thread_parent_channel_id"]
+        == matchmaking_channel.channel_id
+    )
+    assert len(approval_events) == 2
+    assert approval_events[0].payload["phase_started"] is True
+    assert (
+        approval_events[0].payload["match_operation_thread_parent_channel_id"]
+        == matchmaking_channel.channel_id
+    )
+    assert approval_events[1].payload["phase_started"] is False
+    assert approval_events[1].payload["approval_target_discord_user_ids"] == [
+        dissenting_participant.notification_mention_discord_user_id
+    ]
+    assert "mention_discord_user_id" not in approval_events[1].payload
+    assert (
+        approval_events[1].payload["match_operation_thread_parent_channel_id"]
+        == matchmaking_channel.channel_id
+    )
+
+
 @pytest.mark.parametrize(
     ("match_format", "start_discord_user_id", "channel_id", "guild_id"),
     [
@@ -1144,9 +1294,9 @@ def test_submit_reports_starts_approval_and_finalizes_when_all_approvals_complet
     assert len(approval_events) == 2
     assert approval_events[0].payload["phase_started"] is True
     assert approval_events[1].payload["phase_started"] is False
-    assert approval_events[1].payload["mention_discord_user_id"] == (
+    assert approval_events[1].payload["approval_target_discord_user_ids"] == [
         dissenting_participant.notification_mention_discord_user_id
-    )
+    ]
 
     approval_result = match_service.approve_provisional_result(
         match_id,
@@ -1289,6 +1439,60 @@ def test_no_reports_trigger_admin_review_and_no_report_penalties_for_all_formats
     assert admin_review_events[0].payload["admin_review_reasons"] == ["low_report_count"]
     assert admin_review_events[0].payload["admin_discord_user_ids"] == sorted(
         admin_discord_user_ids
+    )
+
+
+def test_match_flow_uses_match_operation_thread_payloads_for_finalized_notifications(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    matchmaking_channel = create_managed_ui_channel(
+        session,
+        ui_type=ManagedUiType.MATCHMAKING_CHANNEL,
+        channel_id=95_600,
+        message_id=96_600,
+    )
+    match_id, participants = create_first_match_for_format(
+        session,
+        session_factory,
+        match_format=MatchFormat.THREE_VS_THREE,
+        start_discord_user_id=60_600,
+        channel_id=91_006_00,
+        guild_id=92_006_00,
+    )
+    admin_discord_user_ids = frozenset({9_601, 9_602})
+    match_service = MatchFlowService(
+        session_factory,
+        admin_discord_user_ids=admin_discord_user_ids,
+    )
+
+    match_service.volunteer_parent(match_id, participants[0].player_id)
+    set_report_deadline_passed(session, match_id)
+    match_service.process_report_deadline(match_id)
+    set_approval_deadline_passed(session, match_id)
+    match_service.process_approval_deadline(match_id)
+
+    session.expire_all()
+    finalized_events = get_match_events(
+        session,
+        event_type=OutboxEventType.MATCH_FINALIZED,
+        match_id=match_id,
+    )
+    admin_review_events = get_match_events(
+        session,
+        event_type=OutboxEventType.MATCH_ADMIN_REVIEW_REQUIRED,
+        match_id=match_id,
+    )
+
+    assert len(finalized_events) == 1 + len(participants)
+    assert all(
+        event.payload["match_operation_thread_parent_channel_id"] == matchmaking_channel.channel_id
+        for event in finalized_events
+    )
+    assert len(admin_review_events) == 1
+    assert (
+        admin_review_events[0].payload["match_operation_thread_parent_channel_id"]
+        == matchmaking_channel.channel_id
     )
 
 
@@ -1522,9 +1726,9 @@ def test_submit_reports_from_all_players_finalizes_when_last_pending_player_appr
     assert len(approval_events) == 2
     assert approval_events[0].payload["phase_started"] is True
     assert approval_events[1].payload["phase_started"] is False
-    assert approval_events[1].payload["mention_discord_user_id"] == (
+    assert approval_events[1].payload["approval_target_discord_user_ids"] == [
         dissenting_participant.notification_mention_discord_user_id
-    )
+    ]
 
     approval_result = match_service.approve_provisional_result(
         match_id,

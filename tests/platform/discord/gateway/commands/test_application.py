@@ -590,6 +590,13 @@ def test_join_command_joins_requesting_player_and_stores_notification_context(
         session_factory,
         matching_queue_service=MatchingQueueService(session_factory),
     )
+    guild = FakeGuild(id=4_001)
+    channel = FakeTextChannel(
+        id=3_001,
+        name="レート戦マッチング",
+        guild=guild,
+    )
+    guild.channels.append(channel)
     interaction = FakeInteraction(
         user=FakeUser(
             id=discord_user_id,
@@ -597,8 +604,9 @@ def test_join_command_joins_requesting_player_and_stores_notification_context(
             global_name="queue-global",
             nick="queue-guild",
         ),
-        channel_id=3_001,
-        guild_id=4_001,
+        channel_id=channel.id,
+        guild_id=guild.id,
+        guild=guild,
     )
 
     asyncio.run(
@@ -617,7 +625,7 @@ def test_join_command_joins_requesting_player_and_stores_notification_context(
 
     assert_response(
         interaction,
-        ["キューに参加しました。5分間マッチングします。"],
+        ["キューに参加しました。5分間マッチングします。\n在席確認は <#20001> で行ってください。"],
         ephemeral=True,
     )
     assert queue_entry.notification_channel_id == 3_001
@@ -630,6 +638,12 @@ def test_join_command_joins_requesting_player_and_stores_notification_context(
     assert persisted_player.display_name == "queue-guild"
     assert persisted_player.display_name_updated_at is not None
     assert persisted_player.last_seen_at == persisted_player.display_name_updated_at
+    assert len(channel.created_threads) == 1
+    assert channel.created_threads[0].name == "在席確認-queue-guild"
+    assert channel.created_threads[0].added_user_ids == [discord_user_id]
+    assert [message.content for message in channel.created_threads[0].sent_messages] == [
+        "キューに参加しました。5分間マッチングします。"
+    ]
 
 
 def test_join_command_requires_registered_player(session_factory: sessionmaker[Session]) -> None:
@@ -802,7 +816,7 @@ def test_matchmaking_panel_join_button_uses_selected_values_for_join(
 
     assert_response(
         interaction,
-        ["キューに参加しました。5分間マッチングします。"],
+        ["キューに参加しました。5分間マッチングします。\n在席確認は <#20001> で行ってください。"],
         ephemeral=True,
     )
     assert queue_entry.match_format == MatchFormat.ONE_VS_ONE

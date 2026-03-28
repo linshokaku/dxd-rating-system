@@ -160,6 +160,7 @@ ADMIN_TEARDOWN_UI_CHANNELS_FAILED_MESSAGE = (
 ADMIN_TEARDOWN_CONFIRM_VALUE = "teardown"
 MATCHMAKING_PRESENCE_THREAD_NAME_PREFIX = "在席確認-"
 MAX_DISCORD_THREAD_NAME_LENGTH = 100
+MATCHMAKING_PRESENCE_THREAD_GUIDE_MESSAGE = "在席確認は {thread_mention} で行ってください。"
 
 DEV_REGISTER_SUCCESS_MESSAGE = "ダミーユーザーを登録しました。"
 DEV_REGISTER_ALREADY_REGISTERED_MESSAGE = "指定したユーザーはすでに登録済みです。"
@@ -434,7 +435,7 @@ class BotCommandHandlers:
             interaction,
             match_format,
             queue_name,
-            create_presence_thread=False,
+            create_presence_thread=True,
         )
 
     async def join_from_ui(
@@ -514,13 +515,17 @@ class BotCommandHandlers:
             await self._send_player_operation_message(interaction, JOIN_FAILED_MESSAGE)
             return
 
+        thread_id: int | None = None
         if create_presence_thread:
-            await self._best_effort_create_matchmaking_presence_thread(
+            thread_id = await self._best_effort_create_matchmaking_presence_thread(
                 interaction,
                 initial_message=result.message,
             )
 
-        await self._send_player_operation_message(interaction, result.message)
+        await self._send_player_operation_message(
+            interaction,
+            self._format_matchmaking_join_success_message(result.message, thread_id=thread_id),
+        )
 
     async def present(self, interaction: discord.Interaction[Any]) -> None:
         await self._sync_requesting_user_identity(interaction)
@@ -2427,6 +2432,22 @@ class BotCommandHandlers:
         suffix = str(discord_user.id) if display_name is None else display_name
         return f"{MATCHMAKING_PRESENCE_THREAD_NAME_PREFIX}{suffix}"[:MAX_DISCORD_THREAD_NAME_LENGTH]
 
+    def _format_matchmaking_join_success_message(
+        self,
+        base_message: str,
+        *,
+        thread_id: int | None,
+    ) -> str:
+        if thread_id is None:
+            return base_message
+
+        return "\n".join(
+            [
+                base_message,
+                MATCHMAKING_PRESENCE_THREAD_GUIDE_MESSAGE.format(thread_mention=f"<#{thread_id}>"),
+            ]
+        )
+
     def _require_guild(self, interaction: discord.Interaction[Any]) -> discord.Guild:
         guild = interaction.guild
         if guild is None:
@@ -2672,7 +2693,7 @@ class BotCommandHandlers:
         interaction: discord.Interaction[Any],
         *,
         initial_message: str,
-    ) -> None:
+    ) -> int | None:
         try:
             guild = self._require_guild(interaction)
             if interaction.channel_id is None:
@@ -2704,6 +2725,9 @@ class BotCommandHandlers:
                 await add_user(interaction.user)
 
             await thread.send(initial_message)
+            thread_id = getattr(thread, "id", None)
+            if isinstance(thread_id, int):
+                return thread_id
         except Exception:
             self.logger.exception(
                 "Failed to create matchmaking presence thread discord_user_id=%s "
@@ -2712,6 +2736,7 @@ class BotCommandHandlers:
                 interaction.channel_id,
                 interaction.guild_id,
             )
+        return None
 
     async def _provision_managed_ui_channel(
         self,

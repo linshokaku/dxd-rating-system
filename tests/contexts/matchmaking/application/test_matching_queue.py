@@ -138,6 +138,7 @@ def create_queue_entry(
     revision: int = 1,
     last_reminded_revision: int | None = None,
     notification_channel_id: int | None = None,
+    presence_thread_channel_id: int | None = None,
     notification_guild_id: int | None = None,
     notification_dm_discord_user_id: int | None = None,
     notification_interaction_application_id: int | None = None,
@@ -187,6 +188,7 @@ def create_queue_entry(
         revision=revision,
         last_reminded_revision=last_reminded_revision,
         notification_channel_id=resolved_notification_channel_id,
+        presence_thread_channel_id=presence_thread_channel_id,
         notification_guild_id=resolved_notification_guild_id,
         notification_dm_discord_user_id=notification_dm_discord_user_id,
         notification_interaction_application_id=notification_interaction_application_id,
@@ -773,6 +775,34 @@ def test_process_presence_reminder_uses_updated_notification_channel_context(
     }
 
 
+def test_process_presence_reminder_prefers_presence_thread_channel_when_available(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    player = create_player(session, 10_011_2)
+    now = get_database_now(session)
+    entry = create_queue_entry(
+        session,
+        player_id=player.id,
+        expire_at=now + timedelta(seconds=30),
+        notification_channel_id=600_121,
+        notification_guild_id=700_121,
+    )
+    service = create_matching_queue_service(session_factory)
+    service.update_waiting_presence_thread_channel_id(entry.id, 600_122)
+
+    result = service.process_presence_reminder(entry.id, expected_revision=1)
+
+    outbox_events = get_outbox_events(session)
+
+    assert result.reminded is True
+    assert outbox_events[0].payload["destination"] == {
+        "kind": "channel",
+        "channel_id": 600_122,
+        "guild_id": 700_121,
+    }
+
+
 # `matched`、`left`、`expired` の行にはリマインドが送られないこと
 @pytest.mark.parametrize(
     "status",
@@ -1231,6 +1261,27 @@ def test_matching_queue_outbox_event_types_are_generated_for_supported_flows(
         OutboxEventType.QUEUE_EXPIRED,
     ]
     assert event_types[2:] == [OutboxEventType.MATCH_CREATED] * expected_match_created_event_count
+
+
+def test_try_create_matches_keeps_match_created_destination_on_notification_channel(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    players = create_players(session, 6, start_discord_user_id=50_300)
+    entries = create_waiting_entries(session, players)
+    service = create_matching_queue_service(session_factory)
+
+    for index, entry in enumerate(entries, start=1):
+        service.update_waiting_presence_thread_channel_id(entry.id, 650_000 + index)
+
+    service.try_create_matches()
+
+    outbox_events = get_outbox_events(session)
+
+    assert outbox_events
+    assert {event.payload["destination"]["channel_id"] for event in outbox_events} == {
+        entry.notification_channel_id for entry in entries
+    }
 
 
 def test_process_presence_reminder_uses_channel_destination_even_if_dm_snapshot_exists(

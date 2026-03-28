@@ -109,7 +109,8 @@
 #### 備考
 
 - 有効な待機キューがすでにある場合は参加できない。
-- 成功時は、このコマンドを実行したチャンネル配下に在席確認用の private thread を作成し、admin と実行者をその thread に入れる。
+- 成功時は、`レート戦マッチング` チャンネル配下に在席確認用の private thread を作成し、admin と実行者をその thread に入れる。
+- 在席確認 thread の親チャンネルは、このコマンドをどのチャンネルで実行したかには依存しない。
 - 在席確認、離席、残り 1 分リマインド、期限切れ通知は、その private thread に集約する。
 - `レート戦マッチング` チャンネルに設置する UI は、このコマンドの代替導線として同じ業務処理と文言を使う。詳細は [../ui/matchmaking_channel.md](../ui/matchmaking_channel.md) を参照する。
 - 在席確認 thread UI の詳細は [../ui/matchmaking_presence_thread.md](../ui/matchmaking_presence_thread.md) を参照する。

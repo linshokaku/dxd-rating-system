@@ -62,8 +62,8 @@
 
 - 通常ユーザー操作の `presence_reminder` と `queue_expired` は、参加時に作成された在席確認 thread の `channel_id` 宛てに送る
 - 通常ユーザー操作の `presence_reminder` と `queue_expired` の UI は [ui/matchmaking_presence_thread.md](ui/matchmaking_presence_thread.md) に従う
-- 開発者コマンド操作の `presence_reminder` と `queue_expired` は、最新のコマンド実行 `channel_id` 宛てに送る
-- 開発者コマンド操作の `presence_reminder` と `queue_expired` は、対象ユーザーへの mention を先頭に付けた通常のテキストメッセージとして送る
+- 開発者コマンド操作の `presence_reminder` と `queue_expired` も、`/dev_join` 成功時に作成された在席確認 thread の `channel_id` 宛てに送る
+- 開発者コマンド操作の `presence_reminder` と `queue_expired` も、公開チャンネルではなく在席確認 thread 内で行う
 - `match_created` は、参加者ごとの通知先コンテキストから決定した channel に送る
 - `match_created` は特定プレイヤーへの mention を付けない
 - mention 形式は `<@discord_user_id>` を用いる
@@ -72,7 +72,7 @@
 
 - thread も Discord 上では channel として扱い、`channel_id` で識別する
 - `guild_id` は送信先の検証やログ用途のため保持してよい
-- `レート戦マッチング` チャンネルの UI から参加した場合は、参加ボタン押下チャンネル配下に作成された在席確認 thread をタイマー通知の最新送信先として扱う
+- `レート戦マッチング` チャンネルの UI から参加した場合は、参加成功後に同チャンネル配下へ作成された在席確認 thread をタイマー通知の最新送信先として扱う
 
 ## 通知先コンテキスト
 
@@ -111,8 +111,8 @@
 ### join
 
 - `join` 成功時に、新しく作成された `waiting` 行へ通知先コンテキストを保存する
-- 通常ユーザーの `join` では、`presence_reminder` と `queue_expired` の送信先として、参加時に作成された在席確認 thread の `channel_id` を保存する
-- 開発者コマンドの `join` では、`presence_reminder` と `queue_expired` の送信先として、この `join` が実行された `channel_id` を保存する
+- 通常ユーザーの `join` では、`presence_reminder` と `queue_expired` の送信先として、参加時に `レート戦マッチング` チャンネル配下へ作成された在席確認 thread の `channel_id` を保存する
+- 開発者コマンドの `join` でも、`presence_reminder` と `queue_expired` の送信先として、参加時に `レート戦マッチング` チャンネル配下へ作成された在席確認 thread の `channel_id` を保存する
 - `match_created` の送信先としては、その時点で保存されている通知先コンテキストの `channel_id` を保存する
 - 保存する `mention_discord_user_id` は、通常ユーザー操作では `join` を実行した Discord user ID、開発者コマンド操作では対象ユーザーの Discord user ID とする
 - `レート戦マッチング` チャンネルの UI から参加した場合も、参加成功後に作成した在席確認 thread の `channel_id` を同じ形式で保存する
@@ -121,7 +121,7 @@
 
 - `present` 成功時に、対象の `waiting` 行の通知先コンテキストを上書きする
 - 通常ユーザーの待機では、上書き後も `presence_reminder` と `queue_expired` の送信先は既存の在席確認 thread の `channel_id` を維持する
-- 開発者コマンドの `present` では、`presence_reminder` と `queue_expired` の送信先を、この `present` コマンドが実行された `channel_id` に上書きする
+- 開発者コマンドの `present` でも、`presence_reminder` と `queue_expired` の送信先は既存の在席確認 thread の `channel_id` を維持する
 
 ### leave
 
@@ -137,7 +137,7 @@
 - 送信先は payload 内の `destination.channel_id`
 - 表示対象ユーザーは payload 内の `mention_discord_user_id`
 - 通常ユーザー操作では、通知は在席確認 thread に送る
-- 開発者コマンド操作では、通知は対象ユーザーへの mention を先頭に付けた通常のテキストメッセージとして送る
+- 開発者コマンド操作でも、通知は在席確認 thread に送る
 - メッセージ例:
   - `在席確認です。1分以内に在席更新がない場合はマッチングキューから外れます。`
 
@@ -148,7 +148,7 @@
 - 送信先は payload 内の `destination.channel_id`
 - 表示対象ユーザーは payload 内の `mention_discord_user_id`
 - 通常ユーザー操作では、通知は在席確認 thread に送る
-- 開発者コマンド操作では、通知は対象ユーザーへの mention を先頭に付けた通常のテキストメッセージとして送る
+- 開発者コマンド操作でも、通知は在席確認 thread に送る
 - メッセージ例:
   - `期限切れでマッチングキューから外れました。`
 
@@ -350,10 +350,9 @@ warning log の意図:
 - マッチングキュー系コマンドは、成功時に通知先コンテキストを service 層へ渡す
 - 最低限、以下を取得できること
   - `interaction.user.id`
-  - `interaction.channel_id`
   - `interaction.guild_id`
-- 通常ユーザーの `join` では、参加成功後に作成した在席確認 thread の `channel_id` を保存できること
-- 開発者コマンドと通常ユーザーの `present` では、既存通知先コンテキストを参照または更新できること
+- 通常ユーザーの `join` と開発者コマンドの `join` では、参加成功後に作成した在席確認 thread の `channel_id` を保存できること
+- 開発者コマンドと通常ユーザーの `present` では、既存通知先コンテキストを参照し、在席確認 thread の `channel_id` を維持できること
 
 ## 未決定事項
 

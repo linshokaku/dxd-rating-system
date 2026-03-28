@@ -24,8 +24,8 @@ from dxd_rating.contexts.matches.application import (
     ActiveMatchTimerState,
     MatchApprovalResult,
     MatchFinalizationResult,
-    MatchReportSubmissionResult,
     MatchParentAssignmentResult,
+    MatchReportSubmissionResult,
 )
 from dxd_rating.contexts.matchmaking.application import (
     MATCH_CREATED_NOTIFICATION_MESSAGE,
@@ -744,7 +744,7 @@ def test_match_runtime_volunteer_parent_cancels_match_tasks_when_assignment_imme
     schedule_match_approval_task.assert_not_called()
 
 
-def test_match_runtime_process_parent_deadline_cancels_match_tasks_when_assignment_immediately_finalizes(
+def test_match_runtime_process_parent_deadline_cancels_match_tasks_when_assignment_immediately_finalizes(  # noqa: E501
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = Mock()

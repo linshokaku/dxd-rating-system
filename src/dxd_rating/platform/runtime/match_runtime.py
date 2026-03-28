@@ -68,6 +68,12 @@ class MatchRuntimeService(Protocol):
         notification_context: MatchingQueueNotificationContext,
     ) -> bool: ...
 
+    def update_waiting_presence_thread_channel_id(
+        self,
+        queue_entry_id: int,
+        presence_thread_channel_id: int,
+    ) -> bool: ...
+
     def get_waiting_entry_notification_channel_id(self, player_id: int) -> int | None: ...
 
     def present(
@@ -360,6 +366,19 @@ class MatchRuntime:
             self.service.update_waiting_notification_context,
             queue_entry_id,
             notification_context,
+        )
+
+    async def update_waiting_presence_thread_channel_id(
+        self,
+        queue_entry_id: int,
+        presence_thread_channel_id: int,
+    ) -> bool:
+        self._ensure_open()
+        self._bind_current_loop_if_needed()
+        return await asyncio.to_thread(
+            self.service.update_waiting_presence_thread_channel_id,
+            queue_entry_id,
+            presence_thread_channel_id,
         )
 
     async def get_waiting_entry_notification_channel_id(self, player_id: int) -> int | None:

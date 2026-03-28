@@ -288,8 +288,7 @@
 
 - 通常ユーザー操作で作成された待機では、タイマー通知は参加時に作成された在席確認 thread に送る。
 - 在席確認 thread でのリマインド UI は [../ui/matchmaking_presence_thread.md](../ui/matchmaking_presence_thread.md) を参照する。
-- 開発者コマンド操作で作成された待機では、従来どおり通知先コンテキストに保存された最新の `channel_id` へ通常のテキストメッセージとして送る。
-- 開発者コマンド操作の通知メッセージ先頭には、対象ユーザーへの mention を付ける。
+- 開発者コマンド操作で作成された待機でも、`/dev_join` 時に作成した在席確認 thread に送る。
 
 ## `expire`
 
@@ -323,8 +322,7 @@
 - 期限切れ通知は、在席確認リマインドと同じ通知方式を使う。
 - 通常ユーザー操作で作成された待機では、期限切れ通知は在席確認 thread に送る。
 - 在席確認 thread での期限切れ後 UI は [../ui/matchmaking_presence_thread.md](../ui/matchmaking_presence_thread.md) を参照する。
-- 開発者コマンド操作で作成された待機では、従来どおり通知先コンテキストに保存された最新の `channel_id` へ通常のテキストメッセージとして送る。
-- 開発者コマンド操作の通知メッセージ先頭には、対象ユーザーへの mention を付ける。
+- 開発者コマンド操作で作成された待機でも、期限切れ通知は `/dev_join` 時に作成した在席確認 thread に送る。
 
 ## 単発 reminder / expire タスクの retry 方針
 

@@ -266,8 +266,11 @@ class OutboxDispatcher:
                 raise
             self._started = True
             try:
-                published_event_ids = await self.dispatch_once(trigger="startup")
+                published_event_ids = list(await self.dispatch_once(trigger="startup"))
                 await self._rebuild_retry_timers()
+                # Cover events whose retry deadline passes between the initial
+                # due-dispatch and the future-retry scan during startup.
+                published_event_ids.extend(await self.dispatch_once(trigger="startup"))
                 self._fallback_poll_task = asyncio.create_task(
                     self._run_fallback_poll_loop(),
                     name="matching-queue-outbox-fallback-poll",
@@ -279,7 +282,7 @@ class OutboxDispatcher:
                 if notification_listener is not None:
                     notification_listener.stop()
                 raise
-            return OutboxStartupResult(published_event_ids=published_event_ids)
+            return OutboxStartupResult(published_event_ids=tuple(published_event_ids))
 
     async def stop(self) -> None:
         async with self._state_lock:

@@ -241,6 +241,20 @@ class ManagedUiProvisioningError(Exception):
         self.provisioned_channel = provisioned_channel
 
 
+class RequiredManagedUiChannelUnavailableError(RuntimeError):
+    def __init__(
+        self,
+        *,
+        ui_type: ManagedUiType,
+        reason: str,
+        channel_id: int | None = None,
+    ) -> None:
+        super().__init__(f"{ui_type.value}: {reason}")
+        self.ui_type = ui_type
+        self.reason = reason
+        self.channel_id = channel_id
+
+
 def is_super_admin(user_id: int, settings: BotSettings) -> bool:
     return user_id in settings.super_admin_user_ids
 
@@ -263,6 +277,12 @@ class MatchingQueueCommandService(Protocol):
         self,
         queue_entry_id: int,
         notification_context: MatchingQueueNotificationContext,
+    ) -> bool: ...
+
+    async def update_waiting_presence_thread_channel_id(
+        self,
+        queue_entry_id: int,
+        presence_thread_channel_id: int,
     ) -> bool: ...
 
     async def get_waiting_entry_notification_channel_id(self, player_id: int) -> int | None: ...
@@ -477,9 +497,14 @@ class BotCommandHandlers:
         create_presence_thread: bool,
     ) -> None:
         await self._sync_requesting_user_identity(interaction)
+        parent_channel: discord.abc.GuildChannel | None = None
         try:
-            notification_context = self._build_player_operation_notification_context(
+            parent_channel = await self._resolve_required_matchmaking_presence_parent_channel(
+                interaction
+            )
+            notification_context = await self._build_matchmaking_join_notification_context(
                 interaction,
+                parent_channel=parent_channel,
             )
             player_id = await asyncio.to_thread(self._lookup_player_id, interaction.user.id)
             service = self._require_matching_queue_service()
@@ -536,17 +561,17 @@ class BotCommandHandlers:
         if create_presence_thread:
             thread_id = await self._best_effort_create_matchmaking_presence_thread(
                 interaction,
+                parent_channel=parent_channel,
                 initial_message=result.message,
+                target_discord_user_id=interaction.user.id,
+                target_user=interaction.user,
+                invite_target_user=True,
             )
             if thread_id is not None:
                 service = self._require_matching_queue_service()
-                await service.update_waiting_notification_context(
+                await service.update_waiting_presence_thread_channel_id(
                     result.queue_entry_id,
-                    MatchingQueueNotificationContext(
-                        channel_id=thread_id,
-                        guild_id=interaction.guild_id,
-                        mention_discord_user_id=interaction.user.id,
-                    ),
+                    thread_id,
                 )
 
         await self._send_player_operation_message(
@@ -1671,15 +1696,20 @@ class BotCommandHandlers:
         if not await self._ensure_admin(interaction):
             return
 
+        parent_channel: discord.abc.GuildChannel | None = None
         try:
             target_discord_user_id = self._parse_discord_user_id(discord_user_id)
-            notification_context = self._build_player_operation_notification_context(
+            parent_channel = await self._resolve_required_matchmaking_presence_parent_channel(
+                interaction
+            )
+            notification_context = await self._build_matchmaking_join_notification_context(
                 interaction,
                 mention_discord_user_id=target_discord_user_id,
+                parent_channel=parent_channel,
             )
             player_id = await asyncio.to_thread(self._lookup_player_id, target_discord_user_id)
             service = self._require_matching_queue_service()
-            await service.join_queue(
+            result = await service.join_queue(
                 player_id,
                 match_format,
                 queue_name,
@@ -1722,6 +1752,24 @@ class BotCommandHandlers:
             await self._send_message(interaction, DEV_JOIN_FAILED_MESSAGE)
             return
 
+        thread_id = await self._best_effort_create_matchmaking_presence_thread(
+            interaction,
+            parent_channel=parent_channel,
+            initial_message=result.message,
+            target_discord_user_id=target_discord_user_id,
+            target_user=await self._resolve_presence_thread_target_user(
+                interaction,
+                target_discord_user_id,
+            ),
+            invite_target_user=not is_dummy_discord_user_id(target_discord_user_id),
+        )
+        if thread_id is not None:
+            service = self._require_matching_queue_service()
+            await service.update_waiting_presence_thread_channel_id(
+                result.queue_entry_id,
+                thread_id,
+            )
+
         await self._send_message(interaction, DEV_JOIN_SUCCESS_MESSAGE)
 
     async def dev_present(
@@ -1734,15 +1782,11 @@ class BotCommandHandlers:
 
         try:
             target_discord_user_id = self._parse_discord_user_id(discord_user_id)
-            notification_context = self._build_player_operation_notification_context(
-                interaction,
-                mention_discord_user_id=target_discord_user_id,
-            )
             player_id = await asyncio.to_thread(self._lookup_player_id, target_discord_user_id)
             service = self._require_matching_queue_service()
             result = await service.present(
                 player_id,
-                notification_context=notification_context,
+                notification_context=None,
             )
         except ValueError:
             await self._send_message(interaction, INVALID_DISCORD_USER_ID_MESSAGE)
@@ -2338,8 +2382,10 @@ class BotCommandHandlers:
         interaction: discord.Interaction[Any],
         *,
         mention_discord_user_id: int | None = None,
+        channel_id: int | None = None,
     ) -> MatchingQueueNotificationContext:
-        if interaction.channel_id is None:
+        resolved_channel_id = interaction.channel_id if channel_id is None else channel_id
+        if resolved_channel_id is None:
             raise ValueError("interaction.channel_id is required")
 
         resolved_mention_discord_user_id = (
@@ -2347,9 +2393,28 @@ class BotCommandHandlers:
         )
 
         return MatchingQueueNotificationContext(
-            channel_id=interaction.channel_id,
+            channel_id=resolved_channel_id,
             guild_id=interaction.guild_id,
             mention_discord_user_id=resolved_mention_discord_user_id,
+        )
+
+    async def _build_matchmaking_join_notification_context(
+        self,
+        interaction: discord.Interaction[Any],
+        *,
+        mention_discord_user_id: int | None = None,
+        parent_channel: discord.abc.GuildChannel | None = None,
+    ) -> MatchingQueueNotificationContext:
+        resolved_parent_channel = parent_channel
+        if resolved_parent_channel is None:
+            resolved_parent_channel = (
+                await self._resolve_required_matchmaking_presence_parent_channel(interaction)
+            )
+        parent_channel_id = getattr(resolved_parent_channel, "id", None)
+        return self._build_player_operation_notification_context(
+            interaction,
+            mention_discord_user_id=mention_discord_user_id,
+            channel_id=parent_channel_id if isinstance(parent_channel_id, int) else None,
         )
 
     async def _ensure_admin(self, interaction: discord.Interaction[Any]) -> bool:
@@ -2493,14 +2558,19 @@ class BotCommandHandlers:
             )
         return "\n".join(lines)
 
-    def _build_matchmaking_presence_thread_name(self, discord_user: DiscordUserLike) -> str:
+    def _build_matchmaking_presence_thread_name(
+        self,
+        *,
+        discord_user_id: int,
+        discord_user: DiscordUserLike | None = None,
+    ) -> str:
         display_name = resolve_player_display_name(
-            discord_user_id=discord_user.id,
+            discord_user_id=discord_user_id,
             guild_display_name=getattr(discord_user, "nick", None),
             global_display_name=getattr(discord_user, "global_name", None),
             username=getattr(discord_user, "name", None),
         )
-        suffix = str(discord_user.id) if display_name is None else display_name
+        suffix = str(discord_user_id) if display_name is None else display_name
         return f"{MATCHMAKING_PRESENCE_THREAD_NAME_PREFIX}{suffix}"[:MAX_DISCORD_THREAD_NAME_LENGTH]
 
     def _format_matchmaking_join_success_message(
@@ -2618,6 +2688,16 @@ class BotCommandHandlers:
 
         for channel in getattr(guild, "channels", ()):
             if getattr(channel, "id", None) == channel_id:
+                return cast(discord.abc.GuildChannel, channel)
+        return None
+
+    def _find_guild_channel_by_name(
+        self,
+        guild: discord.Guild,
+        channel_name: str,
+    ) -> discord.abc.GuildChannel | None:
+        for channel in getattr(guild, "channels", ()):
+            if getattr(channel, "name", None) == channel_name:
                 return cast(discord.abc.GuildChannel, channel)
         return None
 
@@ -2795,37 +2875,47 @@ class BotCommandHandlers:
         self,
         interaction: discord.Interaction[Any],
         *,
+        parent_channel: discord.abc.GuildChannel | None,
         initial_message: str,
+        target_discord_user_id: int,
+        target_user: DiscordUserLike | None,
+        invite_target_user: bool,
     ) -> int | None:
         try:
             guild = self._require_guild(interaction)
-            if interaction.channel_id is None:
-                raise ValueError("interaction.channel_id is required")
-
-            parent_channel = self._find_guild_channel_by_id(guild, interaction.channel_id)
-            if parent_channel is None:
-                raise ValueError(
-                    f"parent channel not found for channel_id={interaction.channel_id}"
+            resolved_parent_channel = parent_channel
+            if resolved_parent_channel is None:
+                resolved_parent_channel = (
+                    await self._resolve_required_matchmaking_presence_parent_channel(interaction)
                 )
 
-            create_thread = getattr(parent_channel, "create_thread", None)
+            create_thread = getattr(resolved_parent_channel, "create_thread", None)
             if not callable(create_thread):
                 raise TypeError(
-                    f"channel_id={interaction.channel_id} does not support thread creation"
+                    "channel_id="
+                    f"{getattr(resolved_parent_channel, 'id', None)} "
+                    "does not support thread creation"
                 )
 
             thread = await create_thread(
-                name=self._build_matchmaking_presence_thread_name(interaction.user),
+                name=self._build_matchmaking_presence_thread_name(
+                    discord_user_id=target_discord_user_id,
+                    discord_user=target_user,
+                ),
                 type=discord.ChannelType.private_thread,
                 invitable=False,
-                reason=(
-                    f"Create matchmaking presence thread for discord_user_id={interaction.user.id}"
-                ),
+                reason="Create matchmaking presence thread "
+                f"for discord_user_id={target_discord_user_id}",
             )
 
             add_user = getattr(thread, "add_user", None)
             if callable(add_user):
-                await add_user(interaction.user)
+                invitees: list[DiscordUserLike] = []
+                if invite_target_user and target_user is not None:
+                    invitees.append(target_user)
+                invitees.extend(await self._resolve_admin_presence_thread_users(interaction, guild))
+                for invitee in self._dedupe_discord_users(invitees):
+                    await add_user(invitee)
 
             await thread.send(
                 initial_message,
@@ -2838,11 +2928,149 @@ class BotCommandHandlers:
             self.logger.exception(
                 "Failed to create matchmaking presence thread discord_user_id=%s "
                 "channel_id=%s guild_id=%s",
-                interaction.user.id,
+                target_discord_user_id,
                 interaction.channel_id,
                 interaction.guild_id,
             )
         return None
+
+    async def _resolve_matchmaking_presence_parent_channel(
+        self,
+        interaction: discord.Interaction[Any],
+    ) -> discord.abc.GuildChannel | None:
+        guild = interaction.guild
+        if guild is None:
+            return None
+
+        managed_ui_channel = await asyncio.to_thread(
+            self._get_managed_ui_channel_by_type,
+            ManagedUiType.MATCHMAKING_CHANNEL,
+        )
+        if managed_ui_channel is not None:
+            channel = self._find_guild_channel_by_id(guild, managed_ui_channel.channel_id)
+            if channel is not None and callable(getattr(channel, "create_thread", None)):
+                return channel
+
+        definition = get_managed_ui_definition(ManagedUiType.MATCHMAKING_CHANNEL)
+        channel = self._find_guild_channel_by_name(guild, definition.recommended_channel_name)
+        if channel is not None and callable(getattr(channel, "create_thread", None)):
+            return channel
+
+        return None
+
+    async def _resolve_required_matchmaking_presence_parent_channel(
+        self,
+        interaction: discord.Interaction[Any],
+    ) -> discord.abc.GuildChannel:
+        guild = interaction.guild
+        if guild is None:
+            raise RequiredManagedUiChannelUnavailableError(
+                ui_type=ManagedUiType.MATCHMAKING_CHANNEL,
+                reason="interaction guild is unavailable",
+            )
+        managed_ui_channel = await asyncio.to_thread(
+            self._get_managed_ui_channel_by_type,
+            ManagedUiType.MATCHMAKING_CHANNEL,
+        )
+        if managed_ui_channel is None:
+            raise RequiredManagedUiChannelUnavailableError(
+                ui_type=ManagedUiType.MATCHMAKING_CHANNEL,
+                reason="managed UI channel is not setup",
+            )
+
+        channel = self._find_guild_channel_by_id(guild, managed_ui_channel.channel_id)
+        if channel is None:
+            raise RequiredManagedUiChannelUnavailableError(
+                ui_type=ManagedUiType.MATCHMAKING_CHANNEL,
+                reason="managed UI channel is missing from guild",
+                channel_id=managed_ui_channel.channel_id,
+            )
+
+        if not callable(getattr(channel, "create_thread", None)):
+            raise RequiredManagedUiChannelUnavailableError(
+                ui_type=ManagedUiType.MATCHMAKING_CHANNEL,
+                reason="managed UI channel does not support thread creation",
+                channel_id=managed_ui_channel.channel_id,
+            )
+
+        return channel
+
+    async def _resolve_presence_thread_target_user(
+        self,
+        interaction: discord.Interaction[Any],
+        discord_user_id: int,
+    ) -> DiscordUserLike | None:
+        if is_dummy_discord_user_id(discord_user_id):
+            return None
+
+        if interaction.user.id == discord_user_id:
+            return interaction.user
+
+        guild = interaction.guild
+        if guild is None:
+            return None
+
+        target_user = await self._resolve_guild_member(guild, discord_user_id)
+        await self._sync_admin_target_user_identity(target_user)
+        return target_user
+
+    async def _resolve_admin_presence_thread_users(
+        self,
+        interaction: discord.Interaction[Any],
+        guild: discord.Guild,
+    ) -> list[DiscordUserLike]:
+        admin_users: list[DiscordUserLike] = []
+        for admin_discord_user_id in sorted(self.settings.super_admin_user_ids):
+            if admin_discord_user_id == interaction.user.id:
+                admin_users.append(interaction.user)
+                continue
+
+            admin_user = await self._resolve_guild_member(guild, admin_discord_user_id)
+            if admin_user is not None:
+                admin_users.append(admin_user)
+
+        return admin_users
+
+    async def _resolve_guild_member(
+        self,
+        guild: discord.Guild,
+        discord_user_id: int,
+    ) -> DiscordUserLike | None:
+        get_member = getattr(guild, "get_member", None)
+        if callable(get_member):
+            member = get_member(discord_user_id)
+            if member is not None:
+                return cast(DiscordUserLike, member)
+
+        fetch_member = getattr(guild, "fetch_member", None)
+        if callable(fetch_member):
+            try:
+                member = await fetch_member(discord_user_id)
+            except Exception:
+                self.logger.warning(
+                    "Failed to resolve guild member for presence thread "
+                    "discord_user_id=%s guild_id=%s",
+                    discord_user_id,
+                    guild.id,
+                )
+            else:
+                return cast(DiscordUserLike, member)
+
+        return None
+
+    def _dedupe_discord_users(
+        self,
+        users: Sequence[DiscordUserLike],
+    ) -> list[DiscordUserLike]:
+        deduped_users: list[DiscordUserLike] = []
+        seen_user_ids: set[int] = set()
+        for user in users:
+            user_id = getattr(user, "id", None)
+            if not isinstance(user_id, int) or user_id in seen_user_ids:
+                continue
+            deduped_users.append(user)
+            seen_user_ids.add(user_id)
+        return deduped_users
 
     async def _provision_managed_ui_channel(
         self,

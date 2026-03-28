@@ -380,10 +380,32 @@ class MatchingQueueService:
 
         return updated
 
+    def update_waiting_presence_thread_channel_id(
+        self,
+        queue_entry_id: int,
+        presence_thread_channel_id: int,
+    ) -> bool:
+        updated = False
+
+        with session_scope(self.session_factory) as session:
+            entry = self._get_queue_entry_for_update(session, queue_entry_id)
+            if entry is None or entry.status != MatchQueueEntryStatus.WAITING:
+                return False
+
+            entry.presence_thread_channel_id = presence_thread_channel_id
+            updated = True
+
+        return updated
+
     def get_waiting_entry_notification_channel_id(self, player_id: int) -> int | None:
         with session_scope(self.session_factory) as session:
             return session.scalar(
-                select(MatchQueueEntry.notification_channel_id).where(
+                select(
+                    func.coalesce(
+                        MatchQueueEntry.presence_thread_channel_id,
+                        MatchQueueEntry.notification_channel_id,
+                    )
+                ).where(
                     MatchQueueEntry.player_id == player_id,
                     MatchQueueEntry.status == MatchQueueEntryStatus.WAITING,
                 )
@@ -1018,7 +1040,20 @@ class MatchingQueueService:
         *,
         event_context: str,
     ) -> NotificationDestinationPayload:
-        return self._build_channel_destination_payload(entry, event_context=event_context)
+        channel_id = (
+            entry.presence_thread_channel_id
+            if entry.presence_thread_channel_id is not None
+            else entry.notification_channel_id
+        )
+        if channel_id is None:
+            raise ValueError(
+                f"notification_channel_id is missing for {event_context} queue_entry_id={entry.id}"
+            )
+        return {
+            "kind": "channel",
+            "channel_id": channel_id,
+            "guild_id": entry.notification_guild_id,
+        }
 
     def _build_channel_destination_payload(
         self,

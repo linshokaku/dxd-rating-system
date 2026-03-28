@@ -32,7 +32,7 @@
 
 | 論理名 | 推奨チャンネル名 | 主な用途 |
 | --- | --- | --- |
-| `matchmaking_channel` | `レート戦マッチング` | マッチングキュー参加 UI の設置、参加 UI 起点の在席確認 thread と試合連絡 thread の親チャンネル |
+| `matchmaking_channel` | `レート戦マッチング` | マッチングキュー参加 UI の設置、`/join`・`/dev_join`・参加 UI 起点の在席確認 thread と試合連絡 thread の親チャンネル |
 | `matchmaking_news_channel` | `レート戦マッチ速報` | マッチ成立アナウンスと観戦 button の設置 |
 | `system_announcements_channel` | `レート戦アナウンス` | admin からのシステム告知 |
 | `admin_contact_channel` | `運営連絡・フィードバック` | admin への連絡、問い合わせ、フィードバック |
@@ -70,9 +70,10 @@
 - 登録済みユーザーは、設置された UI で試合形式と階級を選び、参加ボタンからマッチングキューへ参加できる。
 - 現時点のマッチング UI は、試合形式プルダウン、階級プルダウン、参加ボタンのみで構成する。
 - 在席更新とキュー退出は、このチャンネルの UI には含めない。
-- このチャンネルの参加 UI からキュー参加した場合、Bot は在席確認用の private thread をこのチャンネル配下に作成する。
-- 在席確認 thread は、対象ユーザー本人、admin、Bot だけが閲覧できる。
-- 在席確認 thread では、在席確認、離席、キュー期限切れに関する連絡を行える。
+- `/join`、`/dev_join`、またはこのチャンネルの参加 UI からキュー参加した場合、Bot は在席確認用の private thread をこのチャンネル配下に作成する。
+- 在席確認 thread は、対象ユーザーが実ユーザーなら対象ユーザー本人、admin、Bot だけが閲覧できる。
+- 対象ユーザーがダミーユーザーの `/dev_join` では、在席確認 thread は admin と Bot だけが閲覧できる。
+- 在席確認 thread では、在席確認、離席、在席確認リマインド、キュー期限切れに関する連絡を行える。
 - Bot は、マッチ成立時に参加者向けの private thread をこのチャンネル配下に作成し、観戦応募成功者を後から追加できるようにする。
 - 試合連絡 thread は、試合参加者、後から追加された観戦者、admin、Bot が閲覧できる。
 - 試合連絡 thread は、チーム分け通知、親募集、勝敗報告、承認、結果確定、観戦合流などの連絡用途を想定する。
@@ -80,7 +81,7 @@
 
 補足:
 
-- `/join` コマンド起点で作成される在席確認 thread の親チャンネル決定ルールは、[matchmaking_presence_thread.md](matchmaking_presence_thread.md) を参照する。
+- 在席確認 thread の詳細な作成ルールと可視性は、[matchmaking_presence_thread.md](matchmaking_presence_thread.md) を参照する。
 
 推奨 thread 名の例:
 

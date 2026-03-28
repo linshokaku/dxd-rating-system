@@ -60,6 +60,8 @@
   - 公開チャンネルに設置する登録 UI
 - [ui/matchmaking_channel.md](ui/matchmaking_channel.md)
   - `レート戦マッチング` チャンネルに設置するキュー参加 UI
+- [ui/matchmaking_presence_thread.md](ui/matchmaking_presence_thread.md)
+  - キュー参加後に作成する在席確認 private thread UI
 - [ui/setup_channel.md](ui/setup_channel.md)
   - UI 設置チャンネルの作成・撤収コマンド
 
@@ -83,3 +85,4 @@
 16. [ui/setup_channel.md](ui/setup_channel.md)
 17. [ui/register.md](ui/register.md)
 18. [ui/matchmaking_channel.md](ui/matchmaking_channel.md)
+19. [ui/matchmaking_presence_thread.md](ui/matchmaking_presence_thread.md)

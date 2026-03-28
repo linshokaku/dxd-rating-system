@@ -109,9 +109,10 @@
 #### 備考
 
 - 有効な待機キューがすでにある場合は参加できない。
-- このコマンドで作成される在席確認リマインドと期限切れ通知は、このコマンドを実行した channel に送る。
-- 通知は対象ユーザーへの mention を先頭に付けた通常のテキストメッセージとして送る。
+- 成功時は、このコマンドを実行したチャンネル配下に在席確認用の private thread を作成し、admin と実行者をその thread に入れる。
+- 在席確認、離席、残り 1 分リマインド、期限切れ通知は、その private thread に集約する。
 - `レート戦マッチング` チャンネルに設置する UI は、このコマンドの代替導線として同じ業務処理と文言を使う。詳細は [../ui/matchmaking_channel.md](../ui/matchmaking_channel.md) を参照する。
+- 在席確認 thread UI の詳細は [../ui/matchmaking_presence_thread.md](../ui/matchmaking_presence_thread.md) を参照する。
 - その他の後続通知の送信先ポリシーは [../outbox.md](../outbox.md) を参照する。
 
 ### `/present`
@@ -143,9 +144,9 @@
 #### 備考
 
 - `match_format` や `queue_name` の入力は取らず、現在参加中のキューを対象にする。
-- このコマンドで更新される在席確認リマインドと期限切れ通知の送信先は、このコマンドを実行した channel に上書きする。
-- 通知は対象ユーザーへの mention を先頭に付けた通常のテキストメッセージとして送る。
-- 現時点では、在席更新に対応する常設 UI は設置しない。
+- 在席確認 thread の `在席報告` ボタンでも同じ業務処理を実行する。
+- 通常ユーザーの待機では、在席確認リマインドと期限切れ通知は参加時に作成された在席確認 thread に継続して送る。
+- 在席確認 thread UI の詳細は [../ui/matchmaking_presence_thread.md](../ui/matchmaking_presence_thread.md) を参照する。
 - その他の後続通知の送信先ポリシーは [../outbox.md](../outbox.md) を参照する。
 
 ### `/leave`
@@ -176,7 +177,8 @@
 #### 備考
 
 - `match_format` や `queue_name` の入力は取らず、現在参加中のキューを対象にする。
-- 現時点では、キュー退出に対応する常設 UI は設置しない。
+- 在席確認 thread の `離席` ボタンでも同じ業務処理を実行する。
+- 在席確認 thread UI の詳細は [../ui/matchmaking_presence_thread.md](../ui/matchmaking_presence_thread.md) を参照する。
 
 ### `/player_info`
 

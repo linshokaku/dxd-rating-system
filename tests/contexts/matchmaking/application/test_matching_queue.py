@@ -403,6 +403,42 @@ def test_join_queue_stores_notification_context(
     assert entry.notification_recorded_at == entry.joined_at
 
 
+def test_update_waiting_notification_context_overwrites_waiting_entry_destination(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    player = create_player(session, 10_001_2)
+    service = create_matching_queue_service(session_factory)
+    joined = service.join_queue(
+        player.id,
+        DEFAULT_MATCH_FORMAT,
+        DEFAULT_QUEUE_NAME,
+        notification_context=MatchingQueueNotificationContext(
+            channel_id=333_002,
+            guild_id=444_002,
+            mention_discord_user_id=555_002,
+        ),
+    )
+
+    updated = service.update_waiting_notification_context(
+        joined.queue_entry_id,
+        MatchingQueueNotificationContext(
+            channel_id=333_003,
+            guild_id=444_003,
+            mention_discord_user_id=555_003,
+        ),
+    )
+
+    entries = get_queue_entries_for_player(session, player.id)
+    entry = entries[0]
+
+    assert updated is True
+    assert entry.notification_channel_id == 333_003
+    assert entry.notification_guild_id == 444_003
+    assert entry.notification_mention_discord_user_id == 555_003
+    assert entry.notification_recorded_at is not None
+
+
 # 有効な `waiting` 行がある状態での重複 `join` が失敗すること
 def test_join_queue_raises_when_player_is_already_waiting(
     session: Session,
@@ -702,6 +738,41 @@ def test_process_presence_reminder_marks_revision_once_and_creates_single_outbox
     assert outbox_events[0].event_type == OutboxEventType.PRESENCE_REMINDER
 
 
+def test_process_presence_reminder_uses_updated_notification_channel_context(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    player = create_player(session, 10_011_1)
+    now = get_database_now(session)
+    entry = create_queue_entry(
+        session,
+        player_id=player.id,
+        expire_at=now + timedelta(seconds=30),
+        notification_channel_id=600_111,
+        notification_guild_id=700_111,
+    )
+    service = create_matching_queue_service(session_factory)
+    service.update_waiting_notification_context(
+        entry.id,
+        MatchingQueueNotificationContext(
+            channel_id=600_112,
+            guild_id=700_112,
+            mention_discord_user_id=player.discord_user_id,
+        ),
+    )
+
+    result = service.process_presence_reminder(entry.id, expected_revision=1)
+
+    outbox_events = get_outbox_events(session)
+
+    assert result.reminded is True
+    assert outbox_events[0].payload["destination"] == {
+        "kind": "channel",
+        "channel_id": 600_112,
+        "guild_id": 700_112,
+    }
+
+
 # `matched`、`left`、`expired` の行にはリマインドが送られないこと
 @pytest.mark.parametrize(
     "status",
@@ -817,6 +888,41 @@ def test_process_expire_marks_waiting_entry_expired_creates_outbox_and_logs(
     assert len(outbox_events) == 1
     assert outbox_events[0].event_type == OutboxEventType.QUEUE_EXPIRED
     assert "Expired queue entry" in caplog.text
+
+
+def test_process_expire_uses_updated_notification_channel_context(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    player = create_player(session, 10_013_1)
+    now = get_database_now(session)
+    entry = create_queue_entry(
+        session,
+        player_id=player.id,
+        expire_at=now - timedelta(seconds=1),
+        notification_channel_id=600_131,
+        notification_guild_id=700_131,
+    )
+    service = create_matching_queue_service(session_factory)
+    service.update_waiting_notification_context(
+        entry.id,
+        MatchingQueueNotificationContext(
+            channel_id=600_132,
+            guild_id=700_132,
+            mention_discord_user_id=player.discord_user_id,
+        ),
+    )
+
+    result = service.process_expire(entry.id, expected_revision=1)
+
+    outbox_events = get_outbox_events(session)
+
+    assert result.expired is True
+    assert outbox_events[0].payload["destination"] == {
+        "kind": "channel",
+        "channel_id": 600_132,
+        "guild_id": 700_132,
+    }
 
 
 # `status != 'waiting'`、`revision` 不一致、`expire_at > now()` の場合に

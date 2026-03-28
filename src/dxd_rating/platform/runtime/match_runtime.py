@@ -62,6 +62,12 @@ class MatchRuntimeService(Protocol):
         notification_context: MatchingQueueNotificationContext | None = None,
     ) -> JoinQueueResult: ...
 
+    def update_waiting_notification_context(
+        self,
+        queue_entry_id: int,
+        notification_context: MatchingQueueNotificationContext,
+    ) -> bool: ...
+
     def present(
         self,
         player_id: int,
@@ -340,6 +346,19 @@ class MatchRuntime:
             ),
         )
         return result
+
+    async def update_waiting_notification_context(
+        self,
+        queue_entry_id: int,
+        notification_context: MatchingQueueNotificationContext,
+    ) -> bool:
+        self._ensure_open()
+        self._bind_current_loop_if_needed()
+        return await asyncio.to_thread(
+            self.service.update_waiting_notification_context,
+            queue_entry_id,
+            notification_context,
+        )
 
     async def leave(self, player_id: int) -> LeaveQueueResult:
         self._ensure_open()

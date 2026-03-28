@@ -357,6 +357,29 @@ class MatchingQueueService:
             raise RuntimeError("present result was not created")
         return result
 
+    def update_waiting_notification_context(
+        self,
+        queue_entry_id: int,
+        notification_context: MatchingQueueNotificationContext,
+    ) -> bool:
+        updated = False
+
+        with session_scope(self.session_factory) as session:
+            entry = self._get_queue_entry_for_update(session, queue_entry_id)
+            if entry is None or entry.status != MatchQueueEntryStatus.WAITING:
+                return False
+
+            current_time = self._get_database_now(session)
+            self._apply_notification_context(
+                entry,
+                notification_context,
+                mention_discord_user_id=entry.notification_mention_discord_user_id,
+                recorded_at=current_time,
+            )
+            updated = True
+
+        return updated
+
     def leave(self, player_id: int) -> LeaveQueueResult:
         result: LeaveQueueResult | None = None
 

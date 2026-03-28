@@ -250,6 +250,12 @@ class MatchingQueueCommandService(Protocol):
         notification_context: MatchingQueueNotificationContext | None = None,
     ) -> JoinQueueResult: ...
 
+    async def update_waiting_notification_context(
+        self,
+        queue_entry_id: int,
+        notification_context: MatchingQueueNotificationContext,
+    ) -> bool: ...
+
     async def present(
         self,
         player_id: int,
@@ -521,6 +527,16 @@ class BotCommandHandlers:
                 interaction,
                 initial_message=result.message,
             )
+            if thread_id is not None:
+                service = self._require_matching_queue_service()
+                await service.update_waiting_notification_context(
+                    result.queue_entry_id,
+                    MatchingQueueNotificationContext(
+                        channel_id=thread_id,
+                        guild_id=interaction.guild_id,
+                        mention_discord_user_id=interaction.user.id,
+                    ),
+                )
 
         await self._send_player_operation_message(
             interaction,
@@ -530,14 +546,11 @@ class BotCommandHandlers:
     async def present(self, interaction: discord.Interaction[Any]) -> None:
         await self._sync_requesting_user_identity(interaction)
         try:
-            notification_context = self._build_player_operation_notification_context(
-                interaction,
-            )
             player_id = await asyncio.to_thread(self._lookup_player_id, interaction.user.id)
             service = self._require_matching_queue_service()
             result = await service.present(
                 player_id,
-                notification_context=notification_context,
+                notification_context=None,
             )
         except PlayerNotRegisteredError:
             await self._send_player_operation_message(

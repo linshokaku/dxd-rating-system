@@ -628,7 +628,7 @@ def test_join_command_joins_requesting_player_and_stores_notification_context(
         ["キューに参加しました。5分間マッチングします。\n在席確認は <#20001> で行ってください。"],
         ephemeral=True,
     )
-    assert queue_entry.notification_channel_id == 3_001
+    assert queue_entry.notification_channel_id == 20_001
     assert queue_entry.notification_guild_id == 4_001
     assert queue_entry.notification_dm_discord_user_id is None
     assert queue_entry.notification_interaction_application_id is None
@@ -820,7 +820,7 @@ def test_matchmaking_panel_join_button_uses_selected_values_for_join(
         ephemeral=True,
     )
     assert queue_entry.match_format == MatchFormat.ONE_VS_ONE
-    assert queue_entry.notification_channel_id == 9_001
+    assert queue_entry.notification_channel_id == 20_001
     assert queue_entry.notification_guild_id == 9_101
     assert queue_entry.notification_mention_discord_user_id == discord_user_id
     assert len(channel.created_threads) == 1
@@ -831,7 +831,7 @@ def test_matchmaking_panel_join_button_uses_selected_values_for_join(
     ]
 
 
-def test_present_command_updates_waiting_entry_and_notification_context(
+def test_present_command_updates_waiting_entry_without_overwriting_notification_context(
     session: Session,
     session_factory: sessionmaker[Session],
 ) -> None:
@@ -860,15 +860,20 @@ def test_present_command_updates_waiting_entry_and_notification_context(
 
     asyncio.run(handlers.present(as_interaction(interaction)))
 
-    queue_entry = get_queue_entry(session, player.id)
+    with session_factory() as verification_session:
+        queue_entry = verification_session.scalar(
+            select(MatchQueueEntry).where(MatchQueueEntry.player_id == player.id)
+        )
+
+    assert queue_entry is not None
 
     assert_response(
         interaction,
         ["在席を更新しました。次の期限は5分後です。"],
         ephemeral=True,
     )
-    assert queue_entry.notification_channel_id == 8_001
-    assert queue_entry.notification_guild_id == 9_001
+    assert queue_entry.notification_channel_id == 5_001
+    assert queue_entry.notification_guild_id == 6_001
     assert queue_entry.notification_dm_discord_user_id is None
     assert queue_entry.notification_interaction_application_id is None
     assert queue_entry.notification_interaction_token is None

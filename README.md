@@ -80,6 +80,7 @@ DATABASE_URL=postgresql+psycopg://user:password@localhost:5432/dxd_rating
 ## ローカル起動手順
 ```bash
 cp .env.example .env
+docker compose down -v
 docker compose up -d db
 uv sync --extra dev
 uv run alembic upgrade head

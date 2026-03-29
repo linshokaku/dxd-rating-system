@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol, cast
 
@@ -2165,6 +2165,12 @@ class BotCommandHandlers:
             await self._send_message(interaction, failure_message)
             return
 
+        await self._best_effort_invite_match_operation_thread_user(
+            interaction,
+            match_id=result.match_id,
+            target_discord_user_id=executor_discord_user_id,
+        )
+
         if success_message is not None:
             await self._send_message(interaction, success_message)
             return
@@ -2573,6 +2579,9 @@ class BotCommandHandlers:
         suffix = str(discord_user_id) if display_name is None else display_name
         return f"{MATCHMAKING_PRESENCE_THREAD_NAME_PREFIX}{suffix}"[:MAX_DISCORD_THREAD_NAME_LENGTH]
 
+    def _build_match_operation_thread_name(self, match_id: int) -> str:
+        return f"試合-{match_id}"
+
     def _format_matchmaking_join_success_message(
         self,
         base_message: str,
@@ -2933,6 +2942,94 @@ class BotCommandHandlers:
                 interaction.guild_id,
             )
         return None
+
+    async def _best_effort_invite_match_operation_thread_user(
+        self,
+        interaction: discord.Interaction[Any],
+        *,
+        match_id: int,
+        target_discord_user_id: int,
+    ) -> None:
+        if is_dummy_discord_user_id(target_discord_user_id):
+            return
+
+        try:
+            target_user = await self._resolve_presence_thread_target_user(
+                interaction,
+                target_discord_user_id,
+            )
+            if target_user is None:
+                return
+
+            thread = await self._resolve_match_operation_thread(
+                interaction,
+                match_id=match_id,
+            )
+            if thread is None:
+                return
+
+            add_user = getattr(thread, "add_user", None)
+            if not callable(add_user):
+                return
+
+            await add_user(target_user)
+        except Exception:
+            self.logger.exception(
+                "Failed to invite user to match operation thread "
+                "discord_user_id=%s match_id=%s guild_id=%s",
+                target_discord_user_id,
+                match_id,
+                interaction.guild_id,
+            )
+
+    async def _resolve_match_operation_thread(
+        self,
+        interaction: discord.Interaction[Any],
+        *,
+        match_id: int,
+    ) -> object | None:
+        parent_channel = await self._resolve_matchmaking_presence_parent_channel(interaction)
+        if parent_channel is None:
+            return None
+
+        thread_name = self._build_match_operation_thread_name(match_id)
+        parent_channel_id = getattr(parent_channel, "id", None)
+        for candidate in self._iter_match_operation_thread_candidates(parent_channel):
+            if getattr(candidate, "name", None) != thread_name:
+                continue
+
+            candidate_parent = getattr(candidate, "parent", None)
+            candidate_parent_id = getattr(candidate_parent, "id", None)
+            if (
+                isinstance(parent_channel_id, int)
+                and isinstance(candidate_parent_id, int)
+                and candidate_parent_id != parent_channel_id
+            ):
+                continue
+            if (
+                candidate_parent is not None
+                and candidate_parent_id is None
+                and candidate_parent is not parent_channel
+            ):
+                continue
+
+            return candidate
+
+        return None
+
+    def _iter_match_operation_thread_candidates(
+        self,
+        parent_channel: discord.abc.GuildChannel,
+    ) -> Iterable[object]:
+        for attribute_name in ("created_threads", "threads"):
+            candidates = getattr(parent_channel, attribute_name, None)
+            if isinstance(candidates, list | tuple):
+                yield from candidates
+
+        guild = getattr(parent_channel, "guild", None)
+        guild_threads = getattr(guild, "threads", None)
+        if isinstance(guild_threads, list | tuple):
+            yield from guild_threads
 
     async def _resolve_matchmaking_presence_parent_channel(
         self,

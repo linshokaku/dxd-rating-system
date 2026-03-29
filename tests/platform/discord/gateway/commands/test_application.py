@@ -1486,6 +1486,61 @@ def test_match_spectate_command_registers_requesting_player_as_spectator(
     assert persisted_spectator is not None
 
 
+def test_match_spectate_command_invites_requesting_player_to_match_operation_thread(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    match_id, _ = create_match(
+        session,
+        session_factory,
+        start_discord_user_id=123_456_789_012_345_710,
+        channel_id=13_010,
+        guild_id=14_010,
+    )
+    spectator_discord_user_id = 123_456_789_012_345_716
+    spectator = create_player(session, spectator_discord_user_id)
+    handlers = create_handlers(
+        session_factory,
+        matching_queue_service=MatchingQueueService(session_factory),
+    )
+    guild = FakeGuild(id=14_010)
+    matchmaking_channel = FakeTextChannel(
+        id=13_010,
+        name="レート戦マッチング",
+        guild=guild,
+    )
+    command_channel = FakeTextChannel(
+        id=13_011,
+        name="雑談",
+        guild=guild,
+    )
+    guild.channels.extend([matchmaking_channel, command_channel])
+    setup_matchmaking_managed_ui_channel(handlers, matchmaking_channel.id)
+    match_operation_thread = cast(
+        FakeThread,
+        asyncio.run(matchmaking_channel.create_thread(name=f"試合-{match_id}")),
+    )
+    interaction = FakeInteraction(
+        user=FakeUser(id=spectator_discord_user_id),
+        channel_id=command_channel.id,
+        guild_id=guild.id,
+        guild=guild,
+    )
+
+    asyncio.run(handlers.match_spectate(as_interaction(interaction), match_id))
+
+    persisted_spectator = session.scalar(
+        select(MatchSpectator).where(
+            MatchSpectator.match_id == match_id,
+            MatchSpectator.player_id == spectator.id,
+        )
+    )
+
+    assert interaction.response.messages == ["観戦応募を受け付けました。現在 1 / 6 人です。"]
+    assert persisted_spectator is not None
+    assert match_operation_thread.added_user_ids == [spectator_discord_user_id]
+
+
 def test_match_spectate_command_requires_registered_player(
     session_factory: sessionmaker[Session],
 ) -> None:

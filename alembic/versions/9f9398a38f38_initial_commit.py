@@ -1,8 +1,8 @@
-"""create squashed initial schema
+"""initial commit
 
-Revision ID: 0ed16e7622d7
+Revision ID: 9f9398a38f38
 Revises: 
-Create Date: 2026-03-27 22:31:49.832238
+Create Date: 2026-03-29 17:59:39.340070
 """
 
 from collections.abc import Sequence
@@ -13,7 +13,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = '0ed16e7622d7'
+revision: str = '9f9398a38f38'
 down_revision: str | None = None
 branch_labels: Sequence[str] | None = None
 depends_on: Sequence[str] | None = None
@@ -101,6 +101,7 @@ def upgrade() -> None:
     sa.Column('revision', sa.Integer(), server_default=sa.text('1'), nullable=False),
     sa.Column('last_reminded_revision', sa.Integer(), nullable=True),
     sa.Column('notification_channel_id', sa.BigInteger(), nullable=True),
+    sa.Column('presence_thread_channel_id', sa.BigInteger(), nullable=True),
     sa.Column('notification_guild_id', sa.BigInteger(), nullable=True),
     sa.Column('notification_dm_discord_user_id', sa.BigInteger(), nullable=True),
     sa.Column('notification_interaction_application_id', sa.BigInteger(), nullable=True),

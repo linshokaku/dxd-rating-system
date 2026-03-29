@@ -59,6 +59,9 @@ from dxd_rating.platform.db.models import (
 )
 from dxd_rating.platform.discord.rest import DiscordOutboxEventPublisher
 from dxd_rating.platform.discord.ui import (
+    MATCH_OPERATION_THREAD_VOID_BUTTON_CUSTOM_ID_PREFIX,
+    MATCH_OPERATION_THREAD_VOID_BUTTON_LABEL,
+    MATCH_OPERATION_THREAD_VOID_GUIDE_MESSAGE,
     MATCHMAKING_NEWS_MATCH_ANNOUNCEMENT_SPECTATE_BUTTON_CUSTOM_ID_PREFIX,
     MATCHMAKING_NEWS_MATCH_ANNOUNCEMENT_SPECTATE_BUTTON_LABEL,
     MATCHMAKING_PRESENCE_THREAD_LEAVE_BUTTON_LABEL,
@@ -306,6 +309,16 @@ class FakeMatchmakingPresenceInteractionHandler:
 @dataclass
 class FakeMatchmakingNewsMatchAnnouncementInteractionHandler:
     async def spectate_from_matchmaking_news_match_announcement(
+        self,
+        interaction: discord.Interaction[discord.Client],
+        match_id: int,
+    ) -> None:
+        del interaction, match_id
+
+
+@dataclass
+class FakeMatchOperationThreadInteractionHandler:
+    async def void_from_match_operation_thread(
         self,
         interaction: discord.Interaction[discord.Client],
         match_id: int,
@@ -2383,6 +2396,7 @@ def test_discord_outbox_publisher_creates_match_operation_thread_for_match_creat
     publisher = DiscordOutboxEventPublisher(
         client=client,
         admin_discord_user_ids=frozenset({89_001}),
+        match_operation_thread_interaction_handler=FakeMatchOperationThreadInteractionHandler(),
     )
 
     expected_announcement_message = "\n".join(
@@ -2414,7 +2428,7 @@ def test_discord_outbox_publisher_creates_match_operation_thread_for_match_creat
                 "    <@81103>",
                 "    <@81104>",
                 "    <@81105>",
-                "無効試合とする必要がある場合は /match_void を使ってください。",
+                MATCH_OPERATION_THREAD_VOID_GUIDE_MESSAGE,
             ]
         ),
         "\n".join(
@@ -2474,7 +2488,16 @@ def test_discord_outbox_publisher_creates_match_operation_thread_for_match_creat
         89_001,
     ]
     assert created_thread.sent_messages == expected_thread_messages
-    assert created_thread.sent_views == [None, None, None]
+    assert len(created_thread.sent_views) == 3
+    initial_view = created_thread.sent_views[0]
+    assert initial_view is not None
+    assert [getattr(child, "label", None) for child in initial_view.children] == [
+        MATCH_OPERATION_THREAD_VOID_BUTTON_LABEL
+    ]
+    assert [getattr(child, "custom_id", None) for child in initial_view.children] == [
+        f"{MATCH_OPERATION_THREAD_VOID_BUTTON_CUSTOM_ID_PREFIX}:2"
+    ]
+    assert created_thread.sent_views[1:] == [None, None]
 
 
 def test_discord_outbox_publisher_reuses_existing_match_operation_thread_for_same_match() -> None:
@@ -2501,7 +2524,10 @@ def test_discord_outbox_publisher_reuses_existing_match_operation_thread_for_sam
             82_105: FakeDiscordUser(id=82_105),
         },
     )
-    publisher = DiscordOutboxEventPublisher(client=client)
+    publisher = DiscordOutboxEventPublisher(
+        client=client,
+        match_operation_thread_interaction_handler=FakeMatchOperationThreadInteractionHandler(),
+    )
     event = PendingOutboxEvent(
         id=7,
         event_type=OutboxEventType.MATCH_CREATED,
@@ -2545,7 +2571,7 @@ def test_discord_outbox_publisher_reuses_existing_match_operation_thread_for_sam
                 "    <@82103>",
                 "    <@82104>",
                 "    <@82105>",
-                "無効試合とする必要がある場合は /match_void を使ってください。",
+                MATCH_OPERATION_THREAD_VOID_GUIDE_MESSAGE,
             ]
         ),
         "\n".join(
@@ -2560,6 +2586,14 @@ def test_discord_outbox_publisher_reuses_existing_match_operation_thread_for_sam
                 "試合参加者はゲーム内のプレイヤー名を報告してください。",
             ]
         ),
+    ]
+    initial_view = matchmaking_channel.created_threads[0].sent_views[0]
+    assert initial_view is not None
+    assert [getattr(child, "label", None) for child in initial_view.children] == [
+        MATCH_OPERATION_THREAD_VOID_BUTTON_LABEL
+    ]
+    assert [getattr(child, "custom_id", None) for child in initial_view.children] == [
+        f"{MATCH_OPERATION_THREAD_VOID_BUTTON_CUSTOM_ID_PREFIX}:3"
     ]
     assert len(announcement_channel.sent_messages) == 2
 

@@ -32,6 +32,8 @@ from dxd_rating.platform.db.models import (
     MatchFormat,
     MatchQueueEntry,
     MatchQueueEntryStatus,
+    MatchReport,
+    MatchReportInputResult,
     MatchSpectator,
     PenaltyType,
     Player,
@@ -1603,6 +1605,53 @@ def test_matchmaking_news_match_announcement_spectate_button_responds_ephemerall
     )
     assert persisted_spectator is not None
     assert match_operation_thread.added_user_ids == [spectator_discord_user_id]
+
+
+def test_match_operation_thread_void_button_responds_ephemerally(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    match_id, players = create_match(
+        session,
+        session_factory,
+        start_discord_user_id=123_456_789_012_345_717,
+        channel_id=13_014,
+        guild_id=14_014,
+    )
+    handlers = create_handlers(
+        session_factory,
+        matching_queue_service=MatchingQueueService(session_factory),
+    )
+    interaction = FakeInteraction(
+        user=FakeUser(id=players[0].discord_user_id),
+        channel_id=13_114,
+        guild_id=14_014,
+    )
+
+    asyncio.run(
+        handlers.void_from_match_operation_thread(
+            as_interaction(interaction),
+            match_id,
+        )
+    )
+
+    latest_report = session.scalar(
+        select(MatchReport)
+        .where(
+            MatchReport.match_id == match_id,
+            MatchReport.player_id == players[0].id,
+            MatchReport.is_latest.is_(True),
+        )
+        .order_by(MatchReport.id.desc())
+    )
+
+    assert latest_report is not None
+    assert latest_report.reported_input_result == MatchReportInputResult.VOID
+    assert_response(
+        interaction,
+        ["勝敗報告を受け付けました。"],
+        ephemeral=True,
+    )
 
 
 def test_match_spectate_command_requires_registered_player(

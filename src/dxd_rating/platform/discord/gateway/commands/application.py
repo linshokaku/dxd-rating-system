@@ -822,6 +822,22 @@ class BotCommandHandlers:
             failure_message=MATCH_ACTION_FAILED_MESSAGE,
         )
 
+    async def void_from_match_operation_thread(
+        self,
+        interaction: discord.Interaction[Any],
+        match_id: int,
+    ) -> None:
+        await self._sync_requesting_user_identity(interaction)
+        await self._run_match_report(
+            interaction=interaction,
+            match_id=match_id,
+            executor_discord_user_id=interaction.user.id,
+            input_result=MatchReportInputResult.VOID,
+            success_message=MATCH_REPORT_SUCCESS_MESSAGE,
+            failure_message=MATCH_ACTION_FAILED_MESSAGE,
+            ephemeral=True,
+        )
+
     async def match_approve(self, interaction: discord.Interaction[Any], match_id: int) -> None:
         await self._sync_requesting_user_identity(interaction)
         try:
@@ -2211,6 +2227,7 @@ class BotCommandHandlers:
         input_result: MatchReportInputResult,
         success_message: str,
         failure_message: str,
+        ephemeral: bool = False,
     ) -> None:
         try:
             notification_context = self._build_notification_context(
@@ -2231,10 +2248,10 @@ class BotCommandHandlers:
                 if executor_discord_user_id == interaction.user.id
                 else DEV_TARGET_NOT_REGISTERED_MESSAGE
             )
-            await self._send_message(interaction, message)
+            await self._send_message(interaction, message, ephemeral=ephemeral)
             return
         except MatchFlowError as exc:
-            await self._send_message(interaction, str(exc))
+            await self._send_message(interaction, str(exc), ephemeral=ephemeral)
             return
         except Exception:
             self.logger.exception(
@@ -2244,10 +2261,10 @@ class BotCommandHandlers:
                 match_id,
                 input_result.value,
             )
-            await self._send_message(interaction, failure_message)
+            await self._send_message(interaction, failure_message, ephemeral=ephemeral)
             return
 
-        await self._send_message(interaction, success_message)
+        await self._send_message(interaction, success_message, ephemeral=ephemeral)
 
     async def _run_dev_match_report(
         self,

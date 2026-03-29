@@ -23,9 +23,12 @@ from dxd_rating.contexts.matchmaking.application import (
 )
 from dxd_rating.platform.db.models import OutboxEventType
 from dxd_rating.platform.discord.ui import (
+    MATCH_OPERATION_THREAD_VOID_GUIDE_MESSAGE,
     MATCHMAKING_NEWS_MATCH_ANNOUNCEMENT_SPECTATE_GUIDE_MESSAGE,
     MatchmakingNewsMatchAnnouncementInteractionHandler,
     MatchmakingPresenceThreadInteractionHandler,
+    MatchOperationThreadInteractionHandler,
+    create_match_operation_thread_initial_view,
     create_matchmaking_news_match_announcement_view,
     create_matchmaking_presence_thread_view,
 )
@@ -146,6 +149,9 @@ class DiscordOutboxEventPublisher:
         client: DiscordChannelClient,
         *,
         admin_discord_user_ids: frozenset[int] = frozenset(),
+        match_operation_thread_interaction_handler: (
+            MatchOperationThreadInteractionHandler | None
+        ) = None,
         matchmaking_news_match_announcement_interaction_handler: (
             MatchmakingNewsMatchAnnouncementInteractionHandler | None
         ) = None,
@@ -156,6 +162,7 @@ class DiscordOutboxEventPublisher:
     ) -> None:
         self.client = client
         self.admin_discord_user_ids = admin_discord_user_ids
+        self.match_operation_thread_interaction_handler = match_operation_thread_interaction_handler
         self.matchmaking_news_match_announcement_interaction_handler = (
             matchmaking_news_match_announcement_interaction_handler
         )
@@ -325,6 +332,7 @@ class DiscordOutboxEventPublisher:
             await thread.send(
                 self._render_match_operation_thread_initial_content(context),
                 allowed_mentions=self._allowed_mentions,
+                view=self._build_match_operation_thread_initial_view(context),
             )
             await thread.send(
                 self._render_match_operation_thread_parent_recruitment_content(context),
@@ -539,23 +547,36 @@ class DiscordOutboxEventPublisher:
         self,
         context: MatchOperationThreadContext,
     ) -> str:
-        return "\n".join(
-            [
-                f"{MATCH_CREATED_NOTIFICATION_MESSAGE} match_id={context.match_id}",
-                f"試合形式: {context.match_format}",
-                f"試合階級: {context.queue_name}",
-                "Team A",
-                *[
-                    f"    {format_discord_user_mention(discord_user_id)}"
-                    for discord_user_id in context.team_a_discord_user_ids
-                ],
-                "Team B",
-                *[
-                    f"    {format_discord_user_mention(discord_user_id)}"
-                    for discord_user_id in context.team_b_discord_user_ids
-                ],
-                "無効試合とする必要がある場合は /match_void を使ってください。",
-            ]
+        lines = [
+            f"{MATCH_CREATED_NOTIFICATION_MESSAGE} match_id={context.match_id}",
+            f"試合形式: {context.match_format}",
+            f"試合階級: {context.queue_name}",
+            "Team A",
+            *[
+                f"    {format_discord_user_mention(discord_user_id)}"
+                for discord_user_id in context.team_a_discord_user_ids
+            ],
+            "Team B",
+            *[
+                f"    {format_discord_user_mention(discord_user_id)}"
+                for discord_user_id in context.team_b_discord_user_ids
+            ],
+        ]
+        if self.match_operation_thread_interaction_handler is not None:
+            lines.append(MATCH_OPERATION_THREAD_VOID_GUIDE_MESSAGE)
+        else:
+            lines.append("無効試合とする必要がある場合は /match_void を使ってください。")
+        return "\n".join(lines)
+
+    def _build_match_operation_thread_initial_view(
+        self,
+        context: MatchOperationThreadContext,
+    ) -> discord.ui.View | None:
+        if self.match_operation_thread_interaction_handler is None:
+            return None
+        return create_match_operation_thread_initial_view(
+            match_id=context.match_id,
+            interaction_handler=self.match_operation_thread_interaction_handler,
         )
 
     def _render_match_operation_thread_parent_recruitment_content(

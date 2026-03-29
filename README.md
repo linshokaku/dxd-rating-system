@@ -83,6 +83,7 @@ cp .env.example .env
 docker compose down -v
 docker compose up -d db
 uv sync --extra dev
+sleep 1
 uv run alembic upgrade head
 DEVELOPMENT_MODE=true uv run python -m dxd_rating.apps.bot.main
 ```

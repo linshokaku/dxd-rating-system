@@ -2400,22 +2400,36 @@ def test_discord_outbox_publisher_creates_match_operation_thread_for_match_creat
             "    Player F",
         ]
     )
-    expected_thread_message = "\n".join(
-        [
-            f"{MATCH_CREATED_NOTIFICATION_MESSAGE} match_id=2",
-            "試合形式: 3v3",
-            "試合階級: regular",
-            "Team A",
-            "    <@81100>",
-            "    <@81101>",
-            "    <@81102>",
-            "Team B",
-            "    <@81103>",
-            "    <@81104>",
-            "    <@81105>",
-            "無効試合とする必要がある場合は /match_void を使ってください。",
-        ]
-    )
+    expected_thread_messages = [
+        "\n".join(
+            [
+                f"{MATCH_CREATED_NOTIFICATION_MESSAGE} match_id=2",
+                "試合形式: 3v3",
+                "試合階級: regular",
+                "Team A",
+                "    <@81100>",
+                "    <@81101>",
+                "    <@81102>",
+                "Team B",
+                "    <@81103>",
+                "    <@81104>",
+                "    <@81105>",
+                "無効試合とする必要がある場合は /match_void を使ってください。",
+            ]
+        ),
+        "\n".join(
+            [
+                "まず初めに、部屋立てと試合の進行を行う親を募集します。",
+                "親募集期間は5分です。",
+                "5分以内に立候補がない場合は Bot が参加メンバーからランダムに決定します。",
+            ]
+        ),
+        "\n".join(
+            [
+                "試合参加者はゲーム内のプレイヤー名を報告してください。",
+            ]
+        ),
+    ]
 
     async def scenario() -> None:
         await publish_with_bound_loop(
@@ -2459,8 +2473,8 @@ def test_discord_outbox_publisher_creates_match_operation_thread_for_match_creat
         81_105,
         89_001,
     ]
-    assert created_thread.sent_messages == [expected_thread_message]
-    assert created_thread.sent_views == [None]
+    assert created_thread.sent_messages == expected_thread_messages
+    assert created_thread.sent_views == [None, None, None]
 
 
 def test_discord_outbox_publisher_reuses_existing_match_operation_thread_for_same_match() -> None:
@@ -2533,7 +2547,19 @@ def test_discord_outbox_publisher_reuses_existing_match_operation_thread_for_sam
                 "    <@82105>",
                 "無効試合とする必要がある場合は /match_void を使ってください。",
             ]
-        )
+        ),
+        "\n".join(
+            [
+                "まず初めに、部屋立てと試合の進行を行う親を募集します。",
+                "親募集期間は5分です。",
+                "5分以内に立候補がない場合は Bot が参加メンバーからランダムに決定します。",
+            ]
+        ),
+        "\n".join(
+            [
+                "試合参加者はゲーム内のプレイヤー名を報告してください。",
+            ]
+        ),
     ]
     assert len(announcement_channel.sent_messages) == 2
 
@@ -2840,7 +2866,7 @@ def test_discord_outbox_publisher_routes_match_notifications_to_existing_thread(
     assert announcement_channel.sent_messages == [expected_announcement_message]
     assert match_channel.sent_messages == []
     assert len(matchmaking_channel.created_threads) == 1
-    assert matchmaking_channel.created_threads[0].sent_messages[1:] == [
+    assert matchmaking_channel.created_threads[0].sent_messages[3:] == [
         expected_parent_message,
         expected_phase_started_message,
         expected_finalized_message,

@@ -326,6 +326,14 @@ class DiscordOutboxEventPublisher:
                 self._render_match_operation_thread_initial_content(context),
                 allowed_mentions=self._allowed_mentions,
             )
+            await thread.send(
+                self._render_match_operation_thread_parent_recruitment_content(context),
+                allowed_mentions=self._allowed_mentions,
+            )
+            await thread.send(
+                self._render_match_operation_thread_self_introduction_content(context),
+                allowed_mentions=self._allowed_mentions,
+            )
         except Exception:
             self.logger.exception(
                 "Failed to initialize match operation thread match_id=%s thread_id=%s",
@@ -547,6 +555,28 @@ class DiscordOutboxEventPublisher:
                     for discord_user_id in context.team_b_discord_user_ids
                 ],
                 "無効試合とする必要がある場合は /match_void を使ってください。",
+            ]
+        )
+
+    def _render_match_operation_thread_parent_recruitment_content(
+        self,
+        context: MatchOperationThreadContext,
+    ) -> str:
+        return "\n".join(
+            [
+                "まず初めに、部屋立てと試合の進行を行う親を募集します。",
+                "親募集期間は5分です。",
+                "5分以内に立候補がない場合は Bot が参加メンバーからランダムに決定します。",
+            ]
+        )
+
+    def _render_match_operation_thread_self_introduction_content(
+        self,
+        context: MatchOperationThreadContext,
+    ) -> str:
+        return "\n".join(
+            [
+                "試合参加者はゲーム内のプレイヤー名を報告してください。",
             ]
         )
 

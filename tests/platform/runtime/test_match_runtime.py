@@ -59,6 +59,8 @@ from dxd_rating.platform.db.models import (
 )
 from dxd_rating.platform.discord.rest import DiscordOutboxEventPublisher
 from dxd_rating.platform.discord.ui import (
+    MATCHMAKING_NEWS_MATCH_ANNOUNCEMENT_SPECTATE_BUTTON_CUSTOM_ID_PREFIX,
+    MATCHMAKING_NEWS_MATCH_ANNOUNCEMENT_SPECTATE_BUTTON_LABEL,
     MATCHMAKING_PRESENCE_THREAD_LEAVE_BUTTON_LABEL,
     MATCHMAKING_PRESENCE_THREAD_PRESENT_BUTTON_LABEL,
 )
@@ -299,6 +301,16 @@ class FakeMatchmakingPresenceInteractionHandler:
         interaction: discord.Interaction[discord.Client],
     ) -> None:
         del interaction
+
+
+@dataclass
+class FakeMatchmakingNewsMatchAnnouncementInteractionHandler:
+    async def spectate_from_matchmaking_news_match_announcement(
+        self,
+        interaction: discord.Interaction[discord.Client],
+        match_id: int,
+    ) -> None:
+        del interaction, match_id
 
 
 @dataclass
@@ -2266,6 +2278,81 @@ def test_discord_outbox_publisher_renders_matchmaking_news_match_announcement() 
 
     assert channel.sent_messages == [expected_message]
     assert channel.sent_views == [None]
+
+
+def test_discord_outbox_publisher_adds_matchmaking_news_spectate_button_for_match_created() -> None:
+    guild = FakeDiscordGuild(id=910_012_1)
+    channel = FakeDiscordChannel(
+        id=900_012_1,
+        guild=guild,
+    )
+    client = FakeDiscordClient(channels={channel.id: channel})
+    publisher = DiscordOutboxEventPublisher(
+        client=client,
+        matchmaking_news_match_announcement_interaction_handler=(
+            FakeMatchmakingNewsMatchAnnouncementInteractionHandler()
+        ),
+    )
+
+    expected_message = "\n".join(
+        [
+            f"{MATCH_CREATED_NOTIFICATION_MESSAGE} match_id=12",
+            "試合形式: 3v3",
+            "試合階級: beginner",
+            "Team A",
+            "    Player A",
+            "    Player B",
+            "    Player C",
+            "Team B",
+            "    Player D",
+            "    Player E",
+            "    Player F",
+            "観戦希望者は下の「観戦する」ボタンから応募してください。",
+        ]
+    )
+
+    async def scenario() -> None:
+        await publish_with_bound_loop(
+            publisher,
+            PendingOutboxEvent(
+                id=5_1,
+                event_type=OutboxEventType.MATCH_CREATED,
+                dedupe_key="match_created:12:9000121",
+                payload={
+                    "match_id": 12,
+                    "match_format": "3v3",
+                    "queue_name": "beginner",
+                    "destination": {
+                        "channel_id": channel.id,
+                        "guild_id": channel.guild.id,
+                    },
+                    "team_a_player_display_names": [
+                        "Player A",
+                        "Player B",
+                        "Player C",
+                    ],
+                    "team_b_player_display_names": [
+                        "Player D",
+                        "Player E",
+                        "Player F",
+                    ],
+                },
+                created_at=datetime.now(timezone.utc),
+            ),
+        )
+
+    asyncio.run(scenario())
+
+    assert channel.sent_messages == [expected_message]
+    assert len(channel.sent_views) == 1
+    view = channel.sent_views[0]
+    assert view is not None
+    labels = [getattr(child, "label", None) for child in view.children]
+    assert labels == [MATCHMAKING_NEWS_MATCH_ANNOUNCEMENT_SPECTATE_BUTTON_LABEL]
+    custom_ids = [getattr(child, "custom_id", None) for child in view.children]
+    assert custom_ids == [
+        f"{MATCHMAKING_NEWS_MATCH_ANNOUNCEMENT_SPECTATE_BUTTON_CUSTOM_ID_PREFIX}:12"
+    ]
 
 
 def test_discord_outbox_publisher_creates_match_operation_thread_for_match_created() -> None:

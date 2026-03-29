@@ -16,6 +16,7 @@ from dxd_rating.platform.discord.ui import (
     create_managed_ui_view,
     create_matchmaking_presence_thread_view,
     has_persistent_managed_ui_view,
+    register_matchmaking_news_match_announcement_dynamic_items,
 )
 from dxd_rating.platform.runtime import BotRuntime, MatchRuntime, OutboxDispatcher
 
@@ -83,6 +84,10 @@ class BotClient(discord.Client):
         if self._persistent_views_registered:
             return
 
+        register_matchmaking_news_match_announcement_dynamic_items(
+            self,
+            self.command_handlers,
+        )
         self.add_view(create_matchmaking_presence_thread_view(self.command_handlers))
 
         managed_ui_channels = await asyncio.to_thread(
@@ -150,6 +155,7 @@ def main() -> None:
     outbox_publisher = DiscordOutboxEventPublisher(
         client=client,
         admin_discord_user_ids=settings.super_admin_user_ids,
+        matchmaking_news_match_announcement_interaction_handler=client.command_handlers,
         matchmaking_presence_interaction_handler=client.command_handlers,
     )
     match_runtime = MatchRuntime.create(

@@ -1541,6 +1541,70 @@ def test_match_spectate_command_invites_requesting_player_to_match_operation_thr
     assert match_operation_thread.added_user_ids == [spectator_discord_user_id]
 
 
+def test_matchmaking_news_match_announcement_spectate_button_responds_ephemerally(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    match_id, _ = create_match(
+        session,
+        session_factory,
+        start_discord_user_id=123_456_789_012_345_710_1,
+        channel_id=13_012,
+        guild_id=14_012,
+    )
+    spectator_discord_user_id = 123_456_789_012_345_716_1
+    spectator = create_player(session, spectator_discord_user_id)
+    handlers = create_handlers(
+        session_factory,
+        matching_queue_service=MatchingQueueService(session_factory),
+    )
+    guild = FakeGuild(id=14_012)
+    matchmaking_channel = FakeTextChannel(
+        id=13_012,
+        name="レート戦マッチング",
+        guild=guild,
+    )
+    announcement_channel = FakeTextChannel(
+        id=13_013,
+        name="レート戦マッチ速報",
+        guild=guild,
+    )
+    guild.channels.extend([matchmaking_channel, announcement_channel])
+    setup_matchmaking_managed_ui_channel(handlers, matchmaking_channel.id)
+    match_operation_thread = cast(
+        FakeThread,
+        asyncio.run(matchmaking_channel.create_thread(name=f"試合-{match_id}")),
+    )
+    interaction = FakeInteraction(
+        user=FakeUser(id=spectator_discord_user_id),
+        channel_id=announcement_channel.id,
+        guild_id=guild.id,
+        guild=guild,
+    )
+
+    asyncio.run(
+        handlers.spectate_from_matchmaking_news_match_announcement(
+            as_interaction(interaction),
+            match_id,
+        )
+    )
+
+    persisted_spectator = session.scalar(
+        select(MatchSpectator).where(
+            MatchSpectator.match_id == match_id,
+            MatchSpectator.player_id == spectator.id,
+        )
+    )
+
+    assert_response(
+        interaction,
+        ["観戦応募を受け付けました。現在 1 / 6 人です。"],
+        ephemeral=True,
+    )
+    assert persisted_spectator is not None
+    assert match_operation_thread.added_user_ids == [spectator_discord_user_id]
+
+
 def test_match_spectate_command_requires_registered_player(
     session_factory: sessionmaker[Session],
 ) -> None:

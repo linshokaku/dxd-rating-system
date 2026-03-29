@@ -12,6 +12,7 @@ from dxd_rating.platform.discord.ui import (
     MATCHMAKING_PRESENCE_THREAD_LEAVE_BUTTON_LABEL,
     MATCHMAKING_PRESENCE_THREAD_PRESENT_BUTTON_LABEL,
     REGISTER_PANEL_BUTTON_LABEL,
+    MatchmakingNewsMatchAnnouncementSpectateButton,
 )
 
 
@@ -71,6 +72,8 @@ def test_setup_hook_restores_persistent_register_panel_view(
         MATCHMAKING_PRESENCE_THREAD_LEAVE_BUTTON_LABEL,
     ] in button_labels_by_view
     assert [REGISTER_PANEL_BUTTON_LABEL] in button_labels_by_view
+    dynamic_item_classes = set(client._connection._view_store._dynamic_items.values())
+    assert MatchmakingNewsMatchAnnouncementSpectateButton in dynamic_item_classes
 
 
 def test_setup_hook_skips_managed_channels_without_persistent_view(
@@ -105,3 +108,5 @@ def test_setup_hook_skips_managed_channels_without_persistent_view(
             MATCHMAKING_PRESENCE_THREAD_LEAVE_BUTTON_LABEL,
         ]
     ]
+    dynamic_item_classes = set(client._connection._view_store._dynamic_items.values())
+    assert MatchmakingNewsMatchAnnouncementSpectateButton in dynamic_item_classes

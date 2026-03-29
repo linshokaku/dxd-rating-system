@@ -23,7 +23,10 @@ from dxd_rating.contexts.matchmaking.application import (
 )
 from dxd_rating.platform.db.models import OutboxEventType
 from dxd_rating.platform.discord.ui import (
+    MATCHMAKING_NEWS_MATCH_ANNOUNCEMENT_SPECTATE_GUIDE_MESSAGE,
+    MatchmakingNewsMatchAnnouncementInteractionHandler,
     MatchmakingPresenceThreadInteractionHandler,
+    create_matchmaking_news_match_announcement_view,
     create_matchmaking_presence_thread_view,
 )
 from dxd_rating.platform.runtime.outbox import (
@@ -143,6 +146,9 @@ class DiscordOutboxEventPublisher:
         client: DiscordChannelClient,
         *,
         admin_discord_user_ids: frozenset[int] = frozenset(),
+        matchmaking_news_match_announcement_interaction_handler: (
+            MatchmakingNewsMatchAnnouncementInteractionHandler | None
+        ) = None,
         matchmaking_presence_interaction_handler: (
             MatchmakingPresenceThreadInteractionHandler | None
         ) = None,
@@ -150,6 +156,9 @@ class DiscordOutboxEventPublisher:
     ) -> None:
         self.client = client
         self.admin_discord_user_ids = admin_discord_user_ids
+        self.matchmaking_news_match_announcement_interaction_handler = (
+            matchmaking_news_match_announcement_interaction_handler
+        )
         self.matchmaking_presence_interaction_handler = matchmaking_presence_interaction_handler
         self.logger = logger or logging.getLogger(__name__)
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -616,17 +625,18 @@ class DiscordOutboxEventPublisher:
             indented_team_b_display_labels = [
                 f"    {label}" for label in rendered_team_b_player_display_names
             ]
-            return "\n".join(
-                [
-                    f"{MATCH_CREATED_NOTIFICATION_MESSAGE} match_id={match_id}",
-                    f"試合形式: {match_format}",
-                    f"試合階級: {queue_name}",
-                    "Team A",
-                    *indented_team_a_display_labels,
-                    "Team B",
-                    *indented_team_b_display_labels,
-                ]
-            )
+            lines = [
+                f"{MATCH_CREATED_NOTIFICATION_MESSAGE} match_id={match_id}",
+                f"試合形式: {match_format}",
+                f"試合階級: {queue_name}",
+                "Team A",
+                *indented_team_a_display_labels,
+                "Team B",
+                *indented_team_b_display_labels,
+            ]
+            if self.matchmaking_news_match_announcement_interaction_handler is not None:
+                lines.append(MATCHMAKING_NEWS_MATCH_ANNOUNCEMENT_SPECTATE_GUIDE_MESSAGE)
+            return "\n".join(lines)
 
         team_a_discord_user_ids = self._require_payload_int_list(
             payload,
@@ -685,6 +695,16 @@ class DiscordOutboxEventPublisher:
         event: PendingOutboxEvent,
         channel: DiscordSendableChannel,
     ) -> discord.ui.View | None:
+        if (
+            event.event_type == OutboxEventType.MATCH_CREATED
+            and self.matchmaking_news_match_announcement_interaction_handler is not None
+            and self._is_matchmaking_news_match_created_payload(event.payload)
+        ):
+            return create_matchmaking_news_match_announcement_view(
+                self.matchmaking_news_match_announcement_interaction_handler,
+                match_id=self._require_payload_int(event.payload, "match_id"),
+            )
+
         if self.matchmaking_presence_interaction_handler is None:
             return None
         if event.event_type != OutboxEventType.PRESENCE_REMINDER:
@@ -693,6 +713,13 @@ class DiscordOutboxEventPublisher:
             return None
         return create_matchmaking_presence_thread_view(
             self.matchmaking_presence_interaction_handler
+        )
+
+    def _is_matchmaking_news_match_created_payload(self, payload: dict[str, object]) -> bool:
+        return (
+            "team_a_player_display_names" in payload
+            and "team_b_player_display_names" in payload
+            and "queue_name" in payload
         )
 
     def _is_thread_like_channel(self, channel: object) -> bool:

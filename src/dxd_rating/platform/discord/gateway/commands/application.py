@@ -760,6 +760,22 @@ class BotCommandHandlers:
             executor_discord_user_id=interaction.user.id,
             success_message=None,
             failure_message=MATCH_SPECTATE_FAILED_MESSAGE,
+            ephemeral=False,
+        )
+
+    async def spectate_from_matchmaking_news_match_announcement(
+        self,
+        interaction: discord.Interaction[Any],
+        match_id: int,
+    ) -> None:
+        await self._sync_requesting_user_identity(interaction)
+        await self._run_match_spectate(
+            interaction=interaction,
+            match_id=match_id,
+            executor_discord_user_id=interaction.user.id,
+            success_message=None,
+            failure_message=MATCH_SPECTATE_FAILED_MESSAGE,
+            ephemeral=True,
         )
 
     async def match_win(self, interaction: discord.Interaction[Any], match_id: int) -> None:
@@ -1966,6 +1982,7 @@ class BotCommandHandlers:
             executor_discord_user_id=target_discord_user_id,
             success_message=DEV_MATCH_SPECTATE_SUCCESS_MESSAGE,
             failure_message=DEV_MATCH_ACTION_FAILED_MESSAGE,
+            ephemeral=False,
         )
 
     async def dev_match_win(
@@ -2132,6 +2149,7 @@ class BotCommandHandlers:
         executor_discord_user_id: int,
         success_message: str | None,
         failure_message: str,
+        ephemeral: bool,
     ) -> None:
         try:
             player_id = await asyncio.to_thread(self._lookup_player_id, executor_discord_user_id)
@@ -2143,7 +2161,7 @@ class BotCommandHandlers:
                 if executor_discord_user_id == interaction.user.id
                 else DEV_TARGET_NOT_REGISTERED_MESSAGE
             )
-            await self._send_message(interaction, message)
+            await self._send_message(interaction, message, ephemeral=ephemeral)
             return
         except MatchSpectatingRestrictedError:
             message = (
@@ -2151,10 +2169,10 @@ class BotCommandHandlers:
                 if executor_discord_user_id == interaction.user.id
                 else DEV_MATCH_SPECTATE_RESTRICTED_MESSAGE
             )
-            await self._send_message(interaction, message)
+            await self._send_message(interaction, message, ephemeral=ephemeral)
             return
         except MatchFlowError as exc:
-            await self._send_message(interaction, str(exc))
+            await self._send_message(interaction, str(exc), ephemeral=ephemeral)
             return
         except Exception:
             self.logger.exception(
@@ -2162,7 +2180,7 @@ class BotCommandHandlers:
                 executor_discord_user_id,
                 match_id,
             )
-            await self._send_message(interaction, failure_message)
+            await self._send_message(interaction, failure_message, ephemeral=ephemeral)
             return
 
         await self._best_effort_invite_match_operation_thread_user(
@@ -2172,7 +2190,7 @@ class BotCommandHandlers:
         )
 
         if success_message is not None:
-            await self._send_message(interaction, success_message)
+            await self._send_message(interaction, success_message, ephemeral=ephemeral)
             return
 
         await self._send_message(
@@ -2181,6 +2199,7 @@ class BotCommandHandlers:
                 "観戦応募を受け付けました。"
                 f"現在 {result.active_spectator_count} / {result.max_spectators} 人です。"
             ),
+            ephemeral=ephemeral,
         )
 
     async def _run_match_report(

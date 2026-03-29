@@ -29,6 +29,7 @@ from dxd_rating.platform.discord.ui import (
     MatchmakingPresenceThreadInteractionHandler,
     MatchOperationThreadInteractionHandler,
     create_match_operation_thread_initial_view,
+    create_match_operation_thread_parent_recruitment_view,
     create_matchmaking_news_match_announcement_view,
     create_matchmaking_presence_thread_view,
 )
@@ -337,6 +338,7 @@ class DiscordOutboxEventPublisher:
             await thread.send(
                 self._render_match_operation_thread_parent_recruitment_content(context),
                 allowed_mentions=self._allowed_mentions,
+                view=self._build_match_operation_thread_parent_recruitment_view(context),
             )
             await thread.send(
                 self._render_match_operation_thread_self_introduction_content(context),
@@ -575,6 +577,17 @@ class DiscordOutboxEventPublisher:
         if self.match_operation_thread_interaction_handler is None:
             return None
         return create_match_operation_thread_initial_view(
+            match_id=context.match_id,
+            interaction_handler=self.match_operation_thread_interaction_handler,
+        )
+
+    def _build_match_operation_thread_parent_recruitment_view(
+        self,
+        context: MatchOperationThreadContext,
+    ) -> discord.ui.View | None:
+        if self.match_operation_thread_interaction_handler is None:
+            return None
+        return create_match_operation_thread_parent_recruitment_view(
             match_id=context.match_id,
             interaction_handler=self.match_operation_thread_interaction_handler,
         )

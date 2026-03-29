@@ -59,6 +59,8 @@ from dxd_rating.platform.db.models import (
 )
 from dxd_rating.platform.discord.rest import DiscordOutboxEventPublisher
 from dxd_rating.platform.discord.ui import (
+    MATCH_OPERATION_THREAD_PARENT_BUTTON_CUSTOM_ID_PREFIX,
+    MATCH_OPERATION_THREAD_PARENT_BUTTON_LABEL,
     MATCH_OPERATION_THREAD_VOID_BUTTON_CUSTOM_ID_PREFIX,
     MATCH_OPERATION_THREAD_VOID_BUTTON_LABEL,
     MATCH_OPERATION_THREAD_VOID_GUIDE_MESSAGE,
@@ -318,6 +320,13 @@ class FakeMatchmakingNewsMatchAnnouncementInteractionHandler:
 
 @dataclass
 class FakeMatchOperationThreadInteractionHandler:
+    async def parent_from_match_operation_thread(
+        self,
+        interaction: discord.Interaction[discord.Client],
+        match_id: int,
+    ) -> None:
+        del interaction, match_id
+
     async def void_from_match_operation_thread(
         self,
         interaction: discord.Interaction[discord.Client],
@@ -2497,7 +2506,15 @@ def test_discord_outbox_publisher_creates_match_operation_thread_for_match_creat
     assert [getattr(child, "custom_id", None) for child in initial_view.children] == [
         f"{MATCH_OPERATION_THREAD_VOID_BUTTON_CUSTOM_ID_PREFIX}:2"
     ]
-    assert created_thread.sent_views[1:] == [None, None]
+    parent_recruitment_view = created_thread.sent_views[1]
+    assert parent_recruitment_view is not None
+    assert [getattr(child, "label", None) for child in parent_recruitment_view.children] == [
+        MATCH_OPERATION_THREAD_PARENT_BUTTON_LABEL
+    ]
+    assert [getattr(child, "custom_id", None) for child in parent_recruitment_view.children] == [
+        f"{MATCH_OPERATION_THREAD_PARENT_BUTTON_CUSTOM_ID_PREFIX}:2"
+    ]
+    assert created_thread.sent_views[2] is None
 
 
 def test_discord_outbox_publisher_reuses_existing_match_operation_thread_for_same_match() -> None:
@@ -2594,6 +2611,14 @@ def test_discord_outbox_publisher_reuses_existing_match_operation_thread_for_sam
     ]
     assert [getattr(child, "custom_id", None) for child in initial_view.children] == [
         f"{MATCH_OPERATION_THREAD_VOID_BUTTON_CUSTOM_ID_PREFIX}:3"
+    ]
+    parent_recruitment_view = matchmaking_channel.created_threads[0].sent_views[1]
+    assert parent_recruitment_view is not None
+    assert [getattr(child, "label", None) for child in parent_recruitment_view.children] == [
+        MATCH_OPERATION_THREAD_PARENT_BUTTON_LABEL
+    ]
+    assert [getattr(child, "custom_id", None) for child in parent_recruitment_view.children] == [
+        f"{MATCH_OPERATION_THREAD_PARENT_BUTTON_CUSTOM_ID_PREFIX}:3"
     ]
     assert len(announcement_channel.sent_messages) == 2
 

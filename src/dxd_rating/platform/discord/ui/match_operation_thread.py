@@ -11,6 +11,11 @@ MATCH_OPERATION_THREAD_VOID_BUTTON_CUSTOM_ID_PREFIX = "dxd_rating:match_operatio
 MATCH_OPERATION_THREAD_VOID_BUTTON_TEMPLATE = (
     r"^dxd_rating:match_operation_thread:void:(?P<match_id>\d+)$"
 )
+MATCH_OPERATION_THREAD_PARENT_BUTTON_LABEL = "親に立候補する"
+MATCH_OPERATION_THREAD_PARENT_BUTTON_CUSTOM_ID_PREFIX = "dxd_rating:match_operation_thread:parent"
+MATCH_OPERATION_THREAD_PARENT_BUTTON_TEMPLATE = (
+    r"^dxd_rating:match_operation_thread:parent:(?P<match_id>\d+)$"
+)
 MATCH_OPERATION_THREAD_VOID_GUIDE_MESSAGE = (
     "無効試合とする必要がある場合は下の「無効試合申請」ボタンを押してください。"
 )
@@ -20,6 +25,12 @@ logger = logging.getLogger(__name__)
 
 
 class MatchOperationThreadInteractionHandler(Protocol):
+    async def parent_from_match_operation_thread(
+        self,
+        interaction: discord.Interaction[Any],
+        match_id: int,
+    ) -> None: ...
+
     async def void_from_match_operation_thread(
         self,
         interaction: discord.Interaction[Any],
@@ -86,6 +97,65 @@ class MatchOperationThreadVoidButton(
         return f"{MATCH_OPERATION_THREAD_VOID_BUTTON_CUSTOM_ID_PREFIX}:{match_id}"
 
 
+class MatchOperationThreadParentButton(
+    discord.ui.DynamicItem[discord.ui.Button[discord.ui.View]],
+    template=MATCH_OPERATION_THREAD_PARENT_BUTTON_TEMPLATE,
+):
+    _registered_interaction_handler: ClassVar[MatchOperationThreadInteractionHandler | None] = None
+
+    def __init__(
+        self,
+        match_id: int,
+        *,
+        interaction_handler: MatchOperationThreadInteractionHandler | None = None,
+    ) -> None:
+        self.match_id = match_id
+        self._interaction_handler = interaction_handler or self._registered_interaction_handler
+        super().__init__(
+            discord.ui.Button(
+                label=MATCH_OPERATION_THREAD_PARENT_BUTTON_LABEL,
+                style=discord.ButtonStyle.primary,
+                custom_id=self._build_custom_id(match_id),
+            )
+        )
+
+    @classmethod
+    def bind_interaction_handler(
+        cls,
+        interaction_handler: MatchOperationThreadInteractionHandler,
+    ) -> None:
+        cls._registered_interaction_handler = interaction_handler
+
+    @classmethod
+    async def from_custom_id(
+        cls,
+        interaction: discord.Interaction[Any],
+        item: discord.ui.Item[Any],
+        match: re.Match[str],
+    ) -> MatchOperationThreadParentButton:
+        del interaction, item
+        return cls(match_id=int(match.group("match_id")))
+
+    async def callback(self, interaction: discord.Interaction[Any]) -> None:
+        if self._interaction_handler is None:
+            logger.error("Match operation thread interaction handler is not configured")
+            await _send_fallback_error_message(interaction)
+            return
+
+        await self._interaction_handler.parent_from_match_operation_thread(
+            interaction,
+            self.match_id,
+        )
+
+    @property
+    def label(self) -> str | None:
+        return self.item.label
+
+    @staticmethod
+    def _build_custom_id(match_id: int) -> str:
+        return f"{MATCH_OPERATION_THREAD_PARENT_BUTTON_CUSTOM_ID_PREFIX}:{match_id}"
+
+
 class MatchOperationThreadInitialView(discord.ui.View):
     def __init__(
         self,
@@ -96,6 +166,22 @@ class MatchOperationThreadInitialView(discord.ui.View):
         super().__init__(timeout=None)
         self.add_item(
             MatchOperationThreadVoidButton(
+                match_id,
+                interaction_handler=interaction_handler,
+            )
+        )
+
+
+class MatchOperationThreadParentRecruitmentView(discord.ui.View):
+    def __init__(
+        self,
+        *,
+        match_id: int,
+        interaction_handler: MatchOperationThreadInteractionHandler | None = None,
+    ) -> None:
+        super().__init__(timeout=None)
+        self.add_item(
+            MatchOperationThreadParentButton(
                 match_id,
                 interaction_handler=interaction_handler,
             )
@@ -129,9 +215,22 @@ def create_match_operation_thread_initial_view(
     )
 
 
+def create_match_operation_thread_parent_recruitment_view(
+    *,
+    match_id: int,
+    interaction_handler: MatchOperationThreadInteractionHandler | None = None,
+) -> discord.ui.View:
+    return MatchOperationThreadParentRecruitmentView(
+        match_id=match_id,
+        interaction_handler=interaction_handler,
+    )
+
+
 def register_match_operation_thread_dynamic_items(
     client: discord.Client,
     interaction_handler: MatchOperationThreadInteractionHandler,
 ) -> None:
+    MatchOperationThreadParentButton.bind_interaction_handler(interaction_handler)
     MatchOperationThreadVoidButton.bind_interaction_handler(interaction_handler)
+    client.add_dynamic_items(MatchOperationThreadParentButton)
     client.add_dynamic_items(MatchOperationThreadVoidButton)

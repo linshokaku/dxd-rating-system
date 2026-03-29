@@ -27,6 +27,7 @@ from dxd_rating.contexts.ui.application import (
 )
 from dxd_rating.platform.config.bot import BotSettings
 from dxd_rating.platform.db.models import (
+    ActiveMatchState,
     ManagedUiChannel,
     ManagedUiType,
     MatchFormat,
@@ -1650,6 +1651,49 @@ def test_match_operation_thread_void_button_responds_ephemerally(
     assert_response(
         interaction,
         ["勝敗報告を受け付けました。"],
+        ephemeral=True,
+    )
+
+
+def test_match_operation_thread_parent_button_responds_ephemerally(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    match_id, players = create_match(
+        session,
+        session_factory,
+        start_discord_user_id=123_456_789_012_345_723,
+        channel_id=13_015,
+        guild_id=14_015,
+    )
+    handlers = create_handlers(
+        session_factory,
+        matching_queue_service=MatchingQueueService(session_factory),
+    )
+    setup_matchmaking_managed_ui_channel(handlers, 13_015)
+    interaction = FakeInteraction(
+        user=FakeUser(id=players[0].discord_user_id),
+        channel_id=13_115,
+        guild_id=14_015,
+    )
+
+    asyncio.run(
+        handlers.parent_from_match_operation_thread(
+            as_interaction(interaction),
+            match_id,
+        )
+    )
+
+    active_state = session.scalar(
+        select(ActiveMatchState).where(ActiveMatchState.match_id == match_id)
+    )
+
+    assert active_state is not None
+    assert active_state.parent_player_id == players[0].id
+    assert active_state.parent_decided_at is not None
+    assert_response(
+        interaction,
+        ["親に立候補しました。"],
         ephemeral=True,
     )
 

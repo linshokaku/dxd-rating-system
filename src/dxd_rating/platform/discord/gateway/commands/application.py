@@ -752,6 +752,21 @@ class BotCommandHandlers:
             failure_message=MATCH_ACTION_FAILED_MESSAGE,
         )
 
+    async def parent_from_match_operation_thread(
+        self,
+        interaction: discord.Interaction[Any],
+        match_id: int,
+    ) -> None:
+        await self._sync_requesting_user_identity(interaction)
+        await self._run_match_parent(
+            interaction=interaction,
+            match_id=match_id,
+            executor_discord_user_id=interaction.user.id,
+            success_message=MATCH_PARENT_SUCCESS_MESSAGE,
+            failure_message=MATCH_ACTION_FAILED_MESSAGE,
+            ephemeral=True,
+        )
+
     async def match_spectate(self, interaction: discord.Interaction[Any], match_id: int) -> None:
         await self._sync_requesting_user_identity(interaction)
         await self._run_match_spectate(
@@ -2119,6 +2134,7 @@ class BotCommandHandlers:
         executor_discord_user_id: int | None,
         success_message: str,
         failure_message: str,
+        ephemeral: bool = False,
     ) -> None:
         if executor_discord_user_id is None:
             return
@@ -2141,10 +2157,10 @@ class BotCommandHandlers:
                 if executor_discord_user_id == interaction.user.id
                 else DEV_TARGET_NOT_REGISTERED_MESSAGE
             )
-            await self._send_message(interaction, message)
+            await self._send_message(interaction, message, ephemeral=ephemeral)
             return
         except MatchFlowError as exc:
-            await self._send_message(interaction, str(exc))
+            await self._send_message(interaction, str(exc), ephemeral=ephemeral)
             return
         except Exception:
             self.logger.exception(
@@ -2152,10 +2168,10 @@ class BotCommandHandlers:
                 executor_discord_user_id,
                 match_id,
             )
-            await self._send_message(interaction, failure_message)
+            await self._send_message(interaction, failure_message, ephemeral=ephemeral)
             return
 
-        await self._send_message(interaction, success_message)
+        await self._send_message(interaction, success_message, ephemeral=ephemeral)
 
     async def _run_match_spectate(
         self,

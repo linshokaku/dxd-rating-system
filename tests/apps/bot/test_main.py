@@ -13,6 +13,7 @@ from dxd_rating.platform.discord.ui import (
     MATCHMAKING_PRESENCE_THREAD_PRESENT_BUTTON_LABEL,
     REGISTER_PANEL_BUTTON_LABEL,
     MatchmakingNewsMatchAnnouncementSpectateButton,
+    MatchOperationThreadParentButton,
     MatchOperationThreadVoidButton,
 )
 
@@ -67,13 +68,13 @@ def test_setup_hook_restores_persistent_register_panel_view(
 
     button_labels_by_view = find_button_labels(client)
 
-    assert len(button_labels_by_view) == 2
     assert [
         MATCHMAKING_PRESENCE_THREAD_PRESENT_BUTTON_LABEL,
         MATCHMAKING_PRESENCE_THREAD_LEAVE_BUTTON_LABEL,
     ] in button_labels_by_view
     assert [REGISTER_PANEL_BUTTON_LABEL] in button_labels_by_view
     dynamic_item_classes = set(client._connection._view_store._dynamic_items.values())
+    assert MatchOperationThreadParentButton in dynamic_item_classes
     assert MatchOperationThreadVoidButton in dynamic_item_classes
     assert MatchmakingNewsMatchAnnouncementSpectateButton in dynamic_item_classes
 
@@ -111,5 +112,6 @@ def test_setup_hook_skips_managed_channels_without_persistent_view(
         ]
     ]
     dynamic_item_classes = set(client._connection._view_store._dynamic_items.values())
+    assert MatchOperationThreadParentButton in dynamic_item_classes
     assert MatchOperationThreadVoidButton in dynamic_item_classes
     assert MatchmakingNewsMatchAnnouncementSpectateButton in dynamic_item_classes

@@ -64,10 +64,9 @@
 - 通常ユーザー操作の `presence_reminder` と `queue_expired` の UI は [ui/matchmaking_presence_thread.md](ui/matchmaking_presence_thread.md) に従う
 - 開発者コマンド操作の `presence_reminder` と `queue_expired` も、`/dev_join` 成功時に作成された在席確認 thread の `channel_id` 宛てに送る
 - 開発者コマンド操作の `presence_reminder` と `queue_expired` も、公開チャンネルではなく在席確認 thread 内で行う
-- `match_created` は、公開の `レート戦マッチ速報` チャンネル通知を維持したうえで、参加者ごとの通知先コンテキストから決定した channel にも送る
-- 在席確認 thread がある参加者には、その thread に `match_created` を送る
+- `match_created` は、公開の `レート戦マッチ速報` チャンネル通知を維持したうえで、在席確認 thread がある参加者にだけその thread へ送る
 - 在席確認 thread 向けの `match_created` には、対象参加者への mention を付ける
-- 在席確認 thread が無い参加者だけは、現行どおり保存済みの通常通知先 channel へ送る
+- `match_created` を `レート戦マッチング` 親チャンネルや通常通知先 channel へフォールバックして送らない
 - mention 形式は `<@discord_user_id>` を用いる
 
 補足:
@@ -165,8 +164,8 @@
 現時点の配送方針:
 
 - 同じ match について、公開のマッチ速報チャンネルへ 1 回送る
-- 参加者ごとに「その人の現在の通知先 channel」へ送ってよい
-- 同じ `channel_id` に重複する配送先があれば 1 回にまとめてよい
+- 在席確認 thread がある参加者ごとに、その thread へ 1 回送る
+- `match_created` を `レート戦マッチング` 親チャンネルへ直接送らない
 - 公開チャンネル向け `match_created` のメッセージ先頭には mention を付けない
 - 在席確認 thread 向け `match_created` は、対象プレイヤーへの mention を先頭に付けてよい
 

@@ -39,6 +39,8 @@ from dxd_rating.platform.db.models import (
     MatchReportInputResult,
     MatchSpectator,
     MatchState,
+    OutboxEvent,
+    OutboxEventType,
     PenaltyType,
     Player,
     PlayerAccessRestriction,
@@ -440,6 +442,10 @@ def create_player(session: Session, discord_user_id: int) -> Player:
     return player
 
 
+def create_players(session: Session, count: int, *, start_discord_user_id: int) -> list[Player]:
+    return [create_player(session, start_discord_user_id + offset) for offset in range(count)]
+
+
 def get_active_season_id(session: Session) -> int:
     return ensure_active_and_upcoming_seasons(session).active.id
 
@@ -533,6 +539,11 @@ def get_queue_entry(session: Session, player_id: int) -> MatchQueueEntry:
     return queue_entry
 
 
+def get_outbox_events(session: Session) -> list[OutboxEvent]:
+    session.expire_all()
+    return session.scalars(select(OutboxEvent).order_by(OutboxEvent.id)).all()
+
+
 def create_match(
     session: Session,
     session_factory: sessionmaker[Session],
@@ -559,6 +570,32 @@ def create_match(
 
     assert len(created_matches) == 1
     return created_matches[0].match_id, players
+
+
+def seed_waiting_entries_with_presence_threads(
+    session_factory: sessionmaker[Session],
+    players: list[Player],
+    *,
+    channel_id: int,
+    guild_id: int,
+    start_presence_thread_channel_id: int,
+) -> None:
+    queue_service = MatchingQueueService(session_factory)
+    for index, player in enumerate(players):
+        join_result = queue_service.join_queue(
+            player.id,
+            DEFAULT_MATCH_FORMAT,
+            DEFAULT_QUEUE_NAME,
+            notification_context=MatchingQueueNotificationContext(
+                channel_id=channel_id,
+                guild_id=guild_id,
+                mention_discord_user_id=player.discord_user_id,
+            ),
+        )
+        assert queue_service.update_waiting_presence_thread_channel_id(
+            join_result.queue_entry_id,
+            start_presence_thread_channel_id + index,
+        )
 
 
 def test_register_command_registers_requesting_user(
@@ -695,6 +732,101 @@ def test_join_command_joins_requesting_player_and_stores_notification_context(
         message.content for message in matchmaking_channel.created_threads[0].sent_messages
     ] == ["キューに参加しました。5分間マッチングします。"]
     assert_presence_thread_controls(matchmaking_channel.created_threads[0].sent_messages[0].view)
+
+
+def test_join_command_routes_match_created_to_presence_threads_without_parent_fallback(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    joining_discord_user_id = 123_456_789_012_345_681
+    existing_players = create_players(session, 5, start_discord_user_id=123_456_789_012_345_700)
+    joining_player = create_player(session, joining_discord_user_id)
+    handlers = create_handlers(
+        session_factory,
+        matching_queue_service=MatchingQueueService(session_factory),
+    )
+    guild = FakeGuild(id=4_011)
+    matchmaking_channel = FakeTextChannel(
+        id=3_011,
+        name="レート戦マッチング",
+        guild=guild,
+    )
+    matchmaking_news_channel = FakeTextChannel(
+        id=3_012,
+        name="レート戦マッチ速報",
+        guild=guild,
+    )
+    command_channel = FakeTextChannel(
+        id=3_013,
+        name="雑談",
+        guild=guild,
+    )
+    guild.channels.extend([matchmaking_channel, matchmaking_news_channel, command_channel])
+    setup_matchmaking_managed_ui_channel(handlers, matchmaking_channel.id)
+    handlers.managed_ui_service.create_managed_ui_channel(
+        ui_type=ManagedUiType.MATCHMAKING_NEWS_CHANNEL,
+        channel_id=matchmaking_news_channel.id,
+        message_id=70_012,
+        created_by_discord_user_id=joining_discord_user_id,
+    )
+    seed_waiting_entries_with_presence_threads(
+        session_factory,
+        existing_players,
+        channel_id=matchmaking_channel.id,
+        guild_id=guild.id,
+        start_presence_thread_channel_id=20_100,
+    )
+    interaction = FakeInteraction(
+        user=FakeUser(
+            id=joining_discord_user_id,
+            name="queue-user",
+            global_name="queue-global",
+            nick="queue-guild",
+        ),
+        channel_id=command_channel.id,
+        guild_id=guild.id,
+        guild=guild,
+    )
+
+    asyncio.run(
+        handlers.join(
+            as_interaction(interaction),
+            DEFAULT_MATCH_FORMAT.value,
+            DEFAULT_QUEUE_NAME,
+        )
+    )
+
+    queue_entry = get_queue_entry(session, joining_player.id)
+    match_created_events = [
+        event
+        for event in get_outbox_events(session)
+        if event.event_type == OutboxEventType.MATCH_CREATED
+    ]
+    destination_channel_ids = {
+        event.payload["destination"]["channel_id"] for event in match_created_events
+    }
+    participant_events = [
+        event
+        for event in match_created_events
+        if event.payload["destination"]["channel_id"] != matchmaking_news_channel.id
+    ]
+
+    assert queue_entry.status == MatchQueueEntryStatus.MATCHED
+    assert len(match_created_events) == 7
+    assert matchmaking_channel.id not in destination_channel_ids
+    assert matchmaking_news_channel.id in destination_channel_ids
+    assert queue_entry.presence_thread_channel_id == 20_001
+    assert queue_entry.presence_thread_channel_id in destination_channel_ids
+    assert len(participant_events) == 6
+    assert {event.payload["destination"]["channel_id"] for event in participant_events} == {
+        20_001,
+        20_100,
+        20_101,
+        20_102,
+        20_103,
+        20_104,
+    }
+    assert all("mention_discord_user_id" in event.payload for event in participant_events)
 
 
 def test_join_command_requires_registered_player(session_factory: sessionmaker[Session]) -> None:
@@ -2153,6 +2285,101 @@ def test_dev_join_creates_presence_thread_for_dummy_user_under_matchmaking_chann
     assert len(matchmaking_channel.created_threads) == 1
     assert matchmaking_channel.created_threads[0].name == "在席確認-<dummy_777>"
     assert matchmaking_channel.created_threads[0].added_user_ids == [executor_discord_user_id]
+
+
+def test_dev_join_routes_match_created_to_presence_threads_without_parent_fallback(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    executor_discord_user_id = 10
+    target_discord_user_id = 777
+    existing_players = create_players(session, 5, start_discord_user_id=880)
+    target_player = create_player(session, target_discord_user_id)
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({executor_discord_user_id}),
+        matching_queue_service=MatchingQueueService(session_factory),
+    )
+    guild = FakeGuild(
+        id=12_011,
+        members={executor_discord_user_id: FakeMember(id=executor_discord_user_id)},
+    )
+    matchmaking_channel = FakeTextChannel(
+        id=11_011,
+        name="レート戦マッチング",
+        guild=guild,
+    )
+    matchmaking_news_channel = FakeTextChannel(
+        id=11_012,
+        name="レート戦マッチ速報",
+        guild=guild,
+    )
+    guild.channels.extend([matchmaking_channel, matchmaking_news_channel])
+    setup_matchmaking_managed_ui_channel(
+        handlers,
+        matchmaking_channel.id,
+        created_by_discord_user_id=executor_discord_user_id,
+    )
+    handlers.managed_ui_service.create_managed_ui_channel(
+        ui_type=ManagedUiType.MATCHMAKING_NEWS_CHANNEL,
+        channel_id=matchmaking_news_channel.id,
+        message_id=71_012,
+        created_by_discord_user_id=executor_discord_user_id,
+    )
+    seed_waiting_entries_with_presence_threads(
+        session_factory,
+        existing_players,
+        channel_id=matchmaking_channel.id,
+        guild_id=guild.id,
+        start_presence_thread_channel_id=21_100,
+    )
+    interaction = FakeInteraction(
+        user=FakeUser(id=executor_discord_user_id),
+        channel_id=99_011,
+        guild_id=guild.id,
+        guild=guild,
+    )
+
+    asyncio.run(
+        handlers.dev_join(
+            as_interaction(interaction),
+            DEFAULT_MATCH_FORMAT.value,
+            DEFAULT_QUEUE_NAME,
+            str(target_discord_user_id),
+        )
+    )
+
+    queue_entry = get_queue_entry(session, target_player.id)
+    match_created_events = [
+        event
+        for event in get_outbox_events(session)
+        if event.event_type == OutboxEventType.MATCH_CREATED
+    ]
+    destination_channel_ids = {
+        event.payload["destination"]["channel_id"] for event in match_created_events
+    }
+    participant_events = [
+        event
+        for event in match_created_events
+        if event.payload["destination"]["channel_id"] != matchmaking_news_channel.id
+    ]
+
+    assert queue_entry.status == MatchQueueEntryStatus.MATCHED
+    assert len(match_created_events) == 7
+    assert matchmaking_channel.id not in destination_channel_ids
+    assert matchmaking_news_channel.id in destination_channel_ids
+    assert queue_entry.presence_thread_channel_id == 20_001
+    assert queue_entry.presence_thread_channel_id in destination_channel_ids
+    assert len(participant_events) == 6
+    assert {event.payload["destination"]["channel_id"] for event in participant_events} == {
+        20_001,
+        21_100,
+        21_101,
+        21_102,
+        21_103,
+        21_104,
+    }
+    assert all("mention_discord_user_id" in event.payload for event in participant_events)
 
 
 def test_dev_join_returns_internal_error_when_setup_matchmaking_channel_is_missing(

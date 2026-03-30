@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from collections.abc import Iterable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol, cast
 
@@ -271,6 +271,7 @@ class MatchingQueueCommandService(Protocol):
         queue_name: str,
         *,
         notification_context: MatchingQueueNotificationContext | None = None,
+        after_join: Callable[[JoinQueueResult], Awaitable[None]] | None = None,
     ) -> JoinQueueResult: ...
 
     async def update_waiting_notification_context(
@@ -498,6 +499,7 @@ class BotCommandHandlers:
     ) -> None:
         await self._sync_requesting_user_identity(interaction)
         parent_channel: discord.abc.GuildChannel | None = None
+        thread_id: int | None = None
         try:
             parent_channel = await self._resolve_required_matchmaking_presence_parent_channel(
                 interaction
@@ -508,11 +510,28 @@ class BotCommandHandlers:
             )
             player_id = await asyncio.to_thread(self._lookup_player_id, interaction.user.id)
             service = self._require_matching_queue_service()
+
+            async def after_join(result: JoinQueueResult) -> None:
+                nonlocal thread_id
+                if not create_presence_thread:
+                    return
+
+                thread_id = await self._create_and_bind_matchmaking_presence_thread(
+                    interaction,
+                    queue_entry_id=result.queue_entry_id,
+                    parent_channel=parent_channel,
+                    initial_message=result.message,
+                    target_discord_user_id=interaction.user.id,
+                    target_user=interaction.user,
+                    invite_target_user=True,
+                )
+
             result = await service.join_queue(
                 player_id,
                 match_format,
                 queue_name,
                 notification_context=notification_context,
+                after_join=after_join,
             )
         except PlayerNotRegisteredError:
             await self._send_player_operation_message(
@@ -556,23 +575,6 @@ class BotCommandHandlers:
             )
             await self._send_player_operation_message(interaction, JOIN_FAILED_MESSAGE)
             return
-
-        thread_id: int | None = None
-        if create_presence_thread:
-            thread_id = await self._best_effort_create_matchmaking_presence_thread(
-                interaction,
-                parent_channel=parent_channel,
-                initial_message=result.message,
-                target_discord_user_id=interaction.user.id,
-                target_user=interaction.user,
-                invite_target_user=True,
-            )
-            if thread_id is not None:
-                service = self._require_matching_queue_service()
-                await service.update_waiting_presence_thread_channel_id(
-                    result.queue_entry_id,
-                    thread_id,
-                )
 
         await self._send_player_operation_message(
             interaction,
@@ -1789,6 +1791,7 @@ class BotCommandHandlers:
             return
 
         parent_channel: discord.abc.GuildChannel | None = None
+        thread_id: int | None = None
         try:
             target_discord_user_id = self._parse_discord_user_id(discord_user_id)
             parent_channel = await self._resolve_required_matchmaking_presence_parent_channel(
@@ -1801,11 +1804,28 @@ class BotCommandHandlers:
             )
             player_id = await asyncio.to_thread(self._lookup_player_id, target_discord_user_id)
             service = self._require_matching_queue_service()
-            result = await service.join_queue(
+
+            async def after_join(result: JoinQueueResult) -> None:
+                nonlocal thread_id
+                thread_id = await self._create_and_bind_matchmaking_presence_thread(
+                    interaction,
+                    queue_entry_id=result.queue_entry_id,
+                    parent_channel=parent_channel,
+                    initial_message=result.message,
+                    target_discord_user_id=target_discord_user_id,
+                    target_user=await self._resolve_presence_thread_target_user(
+                        interaction,
+                        target_discord_user_id,
+                    ),
+                    invite_target_user=not is_dummy_discord_user_id(target_discord_user_id),
+                )
+
+            await service.join_queue(
                 player_id,
                 match_format,
                 queue_name,
                 notification_context=notification_context,
+                after_join=after_join,
             )
         except ValueError:
             await self._send_message(interaction, INVALID_DISCORD_USER_ID_MESSAGE)
@@ -1843,24 +1863,6 @@ class BotCommandHandlers:
             )
             await self._send_message(interaction, DEV_JOIN_FAILED_MESSAGE)
             return
-
-        thread_id = await self._best_effort_create_matchmaking_presence_thread(
-            interaction,
-            parent_channel=parent_channel,
-            initial_message=result.message,
-            target_discord_user_id=target_discord_user_id,
-            target_user=await self._resolve_presence_thread_target_user(
-                interaction,
-                target_discord_user_id,
-            ),
-            invite_target_user=not is_dummy_discord_user_id(target_discord_user_id),
-        )
-        if thread_id is not None:
-            service = self._require_matching_queue_service()
-            await service.update_waiting_presence_thread_channel_id(
-                result.queue_entry_id,
-                thread_id,
-            )
 
         await self._send_message(interaction, DEV_JOIN_SUCCESS_MESSAGE)
 
@@ -3083,6 +3085,43 @@ class BotCommandHandlers:
                 interaction.guild_id,
             )
         return None
+
+    async def _create_and_bind_matchmaking_presence_thread(
+        self,
+        interaction: discord.Interaction[Any],
+        *,
+        queue_entry_id: int,
+        parent_channel: discord.abc.GuildChannel | None,
+        initial_message: str,
+        target_discord_user_id: int,
+        target_user: DiscordUserLike | None,
+        invite_target_user: bool,
+    ) -> int | None:
+        thread_id = await self._best_effort_create_matchmaking_presence_thread(
+            interaction,
+            parent_channel=parent_channel,
+            initial_message=initial_message,
+            target_discord_user_id=target_discord_user_id,
+            target_user=target_user,
+            invite_target_user=invite_target_user,
+        )
+        if thread_id is None:
+            return None
+
+        service = self._require_matching_queue_service()
+        updated = await service.update_waiting_presence_thread_channel_id(
+            queue_entry_id,
+            thread_id,
+        )
+        if not updated:
+            self.logger.warning(
+                "Failed to bind matchmaking presence thread queue_entry_id=%s "
+                "thread_id=%s discord_user_id=%s",
+                queue_entry_id,
+                thread_id,
+                target_discord_user_id,
+            )
+        return thread_id
 
     async def _best_effort_invite_match_operation_thread_user(
         self,

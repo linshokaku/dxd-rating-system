@@ -266,6 +266,7 @@ class MatchRuntime:
         queue_name: str,
         *,
         notification_context: MatchingQueueNotificationContext | None = None,
+        after_join: Callable[[JoinQueueResult], Awaitable[None]] | None = None,
     ) -> JoinQueueResult:
         self._ensure_open()
         self._bind_current_loop_if_needed()
@@ -299,6 +300,8 @@ class MatchRuntime:
                 result.revision,
             ),
         )
+        if after_join is not None:
+            await after_join(result)
         await self._try_create_matches_safely(
             context="join",
             queue_class_id=result.queue_class_id,

@@ -924,7 +924,6 @@ class MatchingQueueService:
                 key=lambda entry: (entry.joined_at, entry.id),
             )
         )
-        fallback_destinations_by_channel_id: dict[int, NotificationDestinationPayload] = {}
         team_a_discord_user_ids = [
             queue_entry.notification_mention_discord_user_id for queue_entry in team_a_entries
         ]
@@ -937,12 +936,13 @@ class MatchingQueueService:
         payloads: list[dict[str, Any]] = []
         for queue_entry in all_entries:
             if queue_entry.presence_thread_channel_id is None:
-                destination = self._build_channel_destination_payload(
-                    queue_entry,
-                    event_context="match_created",
+                self.logger.warning(
+                    "Skipping participant match_created notification without presence thread "
+                    "queue_entry_id=%s player_id=%s notification_channel_id=%s",
+                    queue_entry.id,
+                    queue_entry.player_id,
+                    queue_entry.notification_channel_id,
                 )
-                channel_id = destination["channel_id"]
-                fallback_destinations_by_channel_id.setdefault(channel_id, destination)
                 continue
 
             payloads.append(
@@ -958,24 +958,6 @@ class MatchingQueueService:
                     player_ids=player_ids,
                 )
             )
-
-        for destination in fallback_destinations_by_channel_id.values():
-            payload: dict[str, Any] = {
-                "match_id": match_id,
-                "match_format": match_format.value,
-                "queue_name": queue_class_definition.queue_name,
-                "queue_entry_ids": queue_entry_ids,
-                "player_ids": player_ids,
-                "destination": destination,
-                "team_a_discord_user_ids": team_a_discord_user_ids,
-                "team_b_discord_user_ids": team_b_discord_user_ids,
-            }
-            self._apply_match_operation_thread_payload(
-                payload,
-                matchmaking_channel=matchmaking_channel,
-                create_match_operation_thread=True,
-            )
-            payloads.append(payload)
 
         return tuple(payloads)
 
@@ -998,7 +980,7 @@ class MatchingQueueService:
             "queue_name": queue_class_definition.queue_name,
             "queue_entry_ids": list(queue_entry_ids),
             "player_ids": list(player_ids),
-            "destination": self._build_player_operation_destination_payload(
+            "destination": self._build_presence_thread_destination_payload(
                 queue_entry,
                 event_context="match_created",
             ),
@@ -1279,18 +1261,19 @@ class MatchingQueueService:
             "guild_id": entry.notification_guild_id,
         }
 
-    def _build_channel_destination_payload(
+    def _build_presence_thread_destination_payload(
         self,
         entry: MatchQueueEntry,
         *,
         event_context: str,
     ) -> NotificationDestinationPayload:
-        if entry.notification_channel_id is None:
+        if entry.presence_thread_channel_id is None:
             raise ValueError(
-                f"notification_channel_id is missing for {event_context} queue_entry_id={entry.id}"
+                "presence_thread_channel_id is missing for "
+                f"{event_context} queue_entry_id={entry.id}"
             )
         return {
             "kind": "channel",
-            "channel_id": entry.notification_channel_id,
+            "channel_id": entry.presence_thread_channel_id,
             "guild_id": entry.notification_guild_id,
         }

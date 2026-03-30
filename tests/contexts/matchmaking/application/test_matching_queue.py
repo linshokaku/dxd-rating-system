@@ -1085,7 +1085,7 @@ def test_try_create_matches_creates_single_match_and_marks_entries_matched(
     assert created_matches[0].queue_entry_ids == tuple(entry.id for entry in queue_entries)
     assert len(participants) == 6
     assert all(entry.status == MatchQueueEntryStatus.MATCHED for entry in entries)
-    assert len(outbox_events) == len({entry.notification_channel_id for entry in entries})
+    assert outbox_events == []
     assert all(event.event_type == OutboxEventType.MATCH_CREATED for event in outbox_events)
     assert all("destination" in event.payload for event in outbox_events)
 
@@ -1123,7 +1123,7 @@ def test_try_create_matches_routes_match_created_to_matchmaking_news_channel_whe
     outbox_events = get_outbox_events(session)
 
     assert len(created_matches) == 1
-    assert len(outbox_events) == 1 + len({entry.notification_channel_id for entry in entries})
+    assert len(outbox_events) == 1
 
     expected_announcement_guild_id = min(
         entry.notification_guild_id for entry in entries if entry.notification_guild_id is not None
@@ -1160,7 +1160,7 @@ def test_try_create_matches_routes_match_created_to_matchmaking_news_channel_whe
     ]
 
     assert len(announcement_events) == 1
-    assert len(participant_events) == len({entry.notification_channel_id for entry in entries})
+    assert len(participant_events) == 0
 
     announcement_event = announcement_events[0]
     assert announcement_event.event_type == OutboxEventType.MATCH_CREATED
@@ -1181,34 +1181,6 @@ def test_try_create_matches_routes_match_created_to_matchmaking_news_channel_whe
         "match_operation_thread_parent_channel_id": matchmaking_channel.channel_id,
         "create_match_operation_thread": True,
     }
-    assert {event.payload["destination"]["channel_id"] for event in participant_events} == {
-        entry.notification_channel_id for entry in entries
-    }
-    assert all(event.event_type == OutboxEventType.MATCH_CREATED for event in participant_events)
-    assert all(
-        event.payload["queue_entry_ids"] == [entry.id for entry in entries]
-        for event in participant_events
-    )
-    assert all(
-        event.payload["player_ids"] == [entry.player_id for entry in entries]
-        for event in participant_events
-    )
-    assert all(
-        event.payload["team_a_discord_user_ids"] == expected_team_a_discord_user_ids
-        for event in participant_events
-    )
-    assert all(
-        event.payload["team_b_discord_user_ids"] == expected_team_b_discord_user_ids
-        for event in participant_events
-    )
-    assert all("mention_discord_user_id" not in event.payload for event in participant_events)
-    assert all(
-        event.payload["match_operation_thread_parent_channel_id"] == matchmaking_channel.channel_id
-        for event in participant_events
-    )
-    assert all(
-        event.payload["create_match_operation_thread"] is True for event in participant_events
-    )
 
 
 def test_try_create_matches_routes_match_created_to_presence_threads_when_available(
@@ -1308,6 +1280,70 @@ def test_try_create_matches_routes_match_created_to_presence_threads_when_availa
             == matchmaking_channel.channel_id
         )
         assert event.payload["create_match_operation_thread"] is True
+
+
+def test_try_create_matches_skips_missing_presence_thread_without_parent_fallback(
+    session: Session,
+    session_factory: sessionmaker[Session],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    matchmaking_channel = create_managed_ui_channel(
+        session,
+        ui_type=ManagedUiType.MATCHMAKING_CHANNEL,
+        channel_id=880_020,
+        message_id=880_120,
+    )
+    matchmaking_news_channel = create_managed_ui_channel(
+        session,
+        ui_type=ManagedUiType.MATCHMAKING_NEWS_CHANNEL,
+        channel_id=880_021,
+        message_id=880_121,
+    )
+    players = create_players(session, 6, start_discord_user_id=30_311)
+    entries = create_waiting_entries(session, players)
+    service = create_matching_queue_service(session_factory)
+    expected_presence_thread_channel_ids: set[int] = set()
+
+    for index, entry in enumerate(entries[:-1], start=1):
+        presence_thread_channel_id = 991_000 + index
+        service.update_waiting_presence_thread_channel_id(entry.id, presence_thread_channel_id)
+        expected_presence_thread_channel_ids.add(presence_thread_channel_id)
+
+    caplog.set_level(logging.WARNING)
+
+    created_matches = service.try_create_matches()
+
+    outbox_events = get_outbox_events(session)
+    announcement_events = [
+        event
+        for event in outbox_events
+        if event.payload["destination"]["channel_id"] == matchmaking_news_channel.channel_id
+    ]
+    participant_events = [
+        event
+        for event in outbox_events
+        if event.payload["destination"]["channel_id"] != matchmaking_news_channel.channel_id
+    ]
+    missing_presence_entry = entries[-1]
+
+    assert len(created_matches) == 1
+    assert len(announcement_events) == 1
+    assert len(participant_events) == len(entries) - 1
+    assert {
+        event.payload["destination"]["channel_id"] for event in participant_events
+    } == expected_presence_thread_channel_ids
+    assert all(
+        event.payload["destination"]["channel_id"] != missing_presence_entry.notification_channel_id
+        for event in participant_events
+    )
+    assert (
+        "Skipping participant match_created notification without presence thread "
+        f"queue_entry_id={missing_presence_entry.id}"
+    ) in caplog.text
+    assert all(
+        event.payload["match_operation_thread_parent_channel_id"] == matchmaking_channel.channel_id
+        for event in outbox_events
+    )
 
 
 # 12 人以上の待機で 1 回の `try_create_matches()` が複数マッチを連続生成できること
@@ -1457,7 +1493,7 @@ def test_matched_entries_make_reminder_and_expire_tasks_noop(
 
     assert reminder_result.reminded is False
     assert expire_result.expired is False
-    assert len(outbox_events) == len({entry.notification_channel_id for entry in entries})
+    assert outbox_events == []
     assert all(event.event_type == OutboxEventType.MATCH_CREATED for event in outbox_events)
 
 
@@ -1481,7 +1517,7 @@ def test_matching_queue_outbox_event_types_are_generated_for_supported_flows(
         player_id=expired_player.id,
         expire_at=now - timedelta(seconds=1),
     )
-    match_entries = create_waiting_entries(
+    create_waiting_entries(
         session,
         match_players,
         base_joined_at=now + timedelta(seconds=1),
@@ -1494,9 +1530,7 @@ def test_matching_queue_outbox_event_types_are_generated_for_supported_flows(
 
     event_types = [event.event_type for event in get_outbox_events(session)]
 
-    expected_match_created_event_count = len(
-        {entry.notification_channel_id for entry in match_entries}
-    )
+    expected_match_created_event_count = 0
     assert event_types[:2] == [
         OutboxEventType.PRESENCE_REMINDER,
         OutboxEventType.QUEUE_EXPIRED,

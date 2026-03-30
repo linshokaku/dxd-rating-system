@@ -514,6 +514,7 @@ def test_match_runtime_join_queue_calls_service_and_schedules_timers(
     handler_calls: list[dict[str, object]] = []
     scheduled: list[dict[str, object]] = []
     try_create_matches_calls: list[tuple[str, str | None]] = []
+    execution_order: list[tuple[str, object]] = []
 
     def fake_handler_call(
         handler: Callable[..., object],
@@ -560,10 +561,14 @@ def test_match_runtime_join_queue_calls_service_and_schedules_timers(
         context: str,
         queue_class_id: str | None = None,
     ) -> tuple[CreatedMatchResult, ...]:
+        execution_order.append(("try_create_matches", queue_class_id))
         try_create_matches_calls.append((context, queue_class_id))
         return tuple()
 
     monkeypatch.setattr(runtime, "_try_create_matches_safely", fake_try_create_matches_safely)
+
+    async def after_join(result: JoinQueueResult) -> None:
+        execution_order.append(("after_join", result.queue_entry_id))
 
     result = asyncio.run(
         runtime.join_queue(
@@ -571,6 +576,7 @@ def test_match_runtime_join_queue_calls_service_and_schedules_timers(
             DEFAULT_MATCH_FORMAT,
             DEFAULT_QUEUE_NAME,
             notification_context=notification_context,
+            after_join=after_join,
         )
     )
 
@@ -610,6 +616,10 @@ def test_match_runtime_join_queue_calls_service_and_schedules_timers(
         },
     ]
     assert try_create_matches_calls == [("join", DEFAULT_QUEUE_CLASS_ID)]
+    assert execution_order == [
+        ("after_join", join_result.queue_entry_id),
+        ("try_create_matches", DEFAULT_QUEUE_CLASS_ID),
+    ]
 
 
 def test_match_runtime_present_calls_service_and_replaces_timers(
@@ -1734,7 +1744,7 @@ def test_runtime_startup_sync_recovers_missing_match_attempt_after_join_commit(
     assert len(startup_result.match_runtime.created_match_ids) == 1
     assert len(matches) == 1
     assert all(entry.status == MatchQueueEntryStatus.MATCHED for entry in queue_entries)
-    assert [event.event_type for event in publisher.events] == [OutboxEventType.MATCH_CREATED]
+    assert publisher.events == []
 
 
 def test_outbox_dispatcher_publishes_pending_events(

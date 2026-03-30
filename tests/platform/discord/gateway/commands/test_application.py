@@ -31,10 +31,13 @@ from dxd_rating.platform.db.models import (
     ManagedUiChannel,
     ManagedUiType,
     MatchFormat,
+    MatchParticipant,
+    MatchParticipantTeam,
     MatchQueueEntry,
     MatchQueueEntryStatus,
     MatchReport,
     MatchReportInputResult,
+    MatchState,
     MatchSpectator,
     PenaltyType,
     Player,
@@ -1766,6 +1769,117 @@ def test_match_operation_thread_parent_button_responds_ephemerally(
     assert_response(
         interaction,
         ["親に立候補しました。"],
+        ephemeral=True,
+    )
+
+
+def test_match_operation_thread_approve_button_responds_ephemerally(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    match_id, players = create_match(
+        session,
+        session_factory,
+        start_discord_user_id=123_456_789_012_345_724,
+        channel_id=13_016,
+        guild_id=14_016,
+    )
+    handlers = create_handlers(
+        session_factory,
+        matching_queue_service=MatchingQueueService(session_factory),
+    )
+    setup_matchmaking_managed_ui_channel(handlers, 13_016)
+    match_service = MatchFlowService(session_factory)
+    match_service.volunteer_parent(match_id, players[0].id)
+
+    session.expire_all()
+    active_state = session.scalar(
+        select(ActiveMatchState).where(ActiveMatchState.match_id == match_id)
+    )
+    assert active_state is not None
+    now = datetime.now(timezone.utc)
+    active_state.report_open_at = now - timedelta(minutes=1)
+    active_state.report_deadline_at = now + timedelta(minutes=10)
+    session.commit()
+    assert match_service.process_report_open(match_id) is True
+
+    participants = session.scalars(
+        select(MatchParticipant).where(MatchParticipant.match_id == match_id)
+    ).all()
+    participant_by_player_id = {
+        participant.player_id: participant for participant in participants
+    }
+    dissenting_player = next(
+        player
+        for player in players
+        if participant_by_player_id[player.id].team == MatchParticipantTeam.TEAM_B
+    )
+
+    for player in players:
+        participant = participant_by_player_id[player.id]
+        if participant.team == MatchParticipantTeam.TEAM_A:
+            input_result = MatchReportInputResult.WIN
+        elif player.id == dissenting_player.id:
+            input_result = MatchReportInputResult.DRAW
+        else:
+            input_result = MatchReportInputResult.LOSE
+        match_service.submit_report(match_id, player.id, input_result)
+
+    interaction = FakeInteraction(
+        user=FakeUser(id=dissenting_player.discord_user_id),
+        channel_id=13_116,
+        guild_id=14_016,
+    )
+
+    asyncio.run(
+        handlers.approve_from_match_operation_thread(
+            as_interaction(interaction),
+            match_id,
+        )
+    )
+
+    session.expire_all()
+    active_state = session.get(ActiveMatchState, match_id)
+    assert active_state is not None
+    assert active_state.state == MatchState.FINALIZED
+    assert_response(
+        interaction,
+        ["仮決定結果を承認しました。"],
+        ephemeral=True,
+    )
+
+
+def test_match_operation_thread_approve_button_returns_business_error_ephemerally(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    match_id, players = create_match(
+        session,
+        session_factory,
+        start_discord_user_id=123_456_789_012_345_725,
+        channel_id=13_017,
+        guild_id=14_017,
+    )
+    handlers = create_handlers(
+        session_factory,
+        matching_queue_service=MatchingQueueService(session_factory),
+    )
+    interaction = FakeInteraction(
+        user=FakeUser(id=players[0].discord_user_id),
+        channel_id=13_117,
+        guild_id=14_017,
+    )
+
+    asyncio.run(
+        handlers.approve_from_match_operation_thread(
+            as_interaction(interaction),
+            match_id,
+        )
+    )
+
+    assert_response(
+        interaction,
+        ["この試合は承認期間中ではありません。"],
         ephemeral=True,
     )
 

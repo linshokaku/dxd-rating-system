@@ -29,6 +29,7 @@ from dxd_rating.platform.discord.ui import (
     MatchmakingNewsMatchAnnouncementInteractionHandler,
     MatchmakingPresenceThreadInteractionHandler,
     MatchOperationThreadInteractionHandler,
+    create_match_operation_thread_approval_view,
     create_match_operation_thread_initial_view,
     create_match_operation_thread_parent_recruitment_view,
     create_match_operation_thread_report_view,
@@ -842,14 +843,29 @@ class DiscordOutboxEventPublisher:
         self,
         event: PendingOutboxEvent,
     ) -> discord.ui.View | None:
-        if (
-            event.event_type != OutboxEventType.MATCH_REPORT_OPENED
-            or self.match_operation_thread_interaction_handler is None
-        ):
+        if self.match_operation_thread_interaction_handler is None:
             return None
 
-        return create_match_operation_thread_report_view(
-            match_id=self._require_payload_int(event.payload, "match_id"),
+        match_id = self._require_payload_int(event.payload, "match_id")
+        if event.event_type == OutboxEventType.MATCH_REPORT_OPENED:
+            return create_match_operation_thread_report_view(
+                match_id=match_id,
+                interaction_handler=self.match_operation_thread_interaction_handler,
+            )
+
+        if event.event_type != OutboxEventType.MATCH_APPROVAL_REQUESTED:
+            return None
+
+        phase_started = self._require_payload_bool_with_default(
+            event.payload,
+            "phase_started",
+            False,
+        )
+        if phase_started:
+            return None
+
+        return create_match_operation_thread_approval_view(
+            match_id=match_id,
             interaction_handler=self.match_operation_thread_interaction_handler,
         )
 

@@ -31,6 +31,11 @@ MATCH_OPERATION_THREAD_PARENT_BUTTON_CUSTOM_ID_PREFIX = "dxd_rating:match_operat
 MATCH_OPERATION_THREAD_PARENT_BUTTON_TEMPLATE = (
     r"^dxd_rating:match_operation_thread:parent:(?P<match_id>\d+)$"
 )
+MATCH_OPERATION_THREAD_APPROVE_BUTTON_LABEL = "承認"
+MATCH_OPERATION_THREAD_APPROVE_BUTTON_CUSTOM_ID_PREFIX = "dxd_rating:match_operation_thread:approve"
+MATCH_OPERATION_THREAD_APPROVE_BUTTON_TEMPLATE = (
+    r"^dxd_rating:match_operation_thread:approve:(?P<match_id>\d+)$"
+)
 MATCH_OPERATION_THREAD_VOID_GUIDE_MESSAGE = (
     "無効試合とする必要がある場合は下の「無効試合申請」ボタンを押してください。"
 )
@@ -65,6 +70,12 @@ class MatchOperationThreadInteractionHandler(Protocol):
     ) -> None: ...
 
     async def void_from_match_operation_thread(
+        self,
+        interaction: discord.Interaction[Any],
+        match_id: int,
+    ) -> None: ...
+
+    async def approve_from_match_operation_thread(
         self,
         interaction: discord.Interaction[Any],
         match_id: int,
@@ -366,6 +377,65 @@ class MatchOperationThreadParentButton(
         return f"{MATCH_OPERATION_THREAD_PARENT_BUTTON_CUSTOM_ID_PREFIX}:{match_id}"
 
 
+class MatchOperationThreadApproveButton(
+    discord.ui.DynamicItem[discord.ui.Button[discord.ui.View]],
+    template=MATCH_OPERATION_THREAD_APPROVE_BUTTON_TEMPLATE,
+):
+    _registered_interaction_handler: ClassVar[MatchOperationThreadInteractionHandler | None] = None
+
+    def __init__(
+        self,
+        match_id: int,
+        *,
+        interaction_handler: MatchOperationThreadInteractionHandler | None = None,
+    ) -> None:
+        self.match_id = match_id
+        self._interaction_handler = interaction_handler or self._registered_interaction_handler
+        super().__init__(
+            discord.ui.Button(
+                label=MATCH_OPERATION_THREAD_APPROVE_BUTTON_LABEL,
+                style=discord.ButtonStyle.danger,
+                custom_id=self._build_custom_id(match_id),
+            )
+        )
+
+    @classmethod
+    def bind_interaction_handler(
+        cls,
+        interaction_handler: MatchOperationThreadInteractionHandler,
+    ) -> None:
+        cls._registered_interaction_handler = interaction_handler
+
+    @classmethod
+    async def from_custom_id(
+        cls,
+        interaction: discord.Interaction[Any],
+        item: discord.ui.Item[Any],
+        match: re.Match[str],
+    ) -> MatchOperationThreadApproveButton:
+        del interaction, item
+        return cls(match_id=int(match.group("match_id")))
+
+    async def callback(self, interaction: discord.Interaction[Any]) -> None:
+        if self._interaction_handler is None:
+            logger.error("Match operation thread interaction handler is not configured")
+            await _send_fallback_error_message(interaction)
+            return
+
+        await self._interaction_handler.approve_from_match_operation_thread(
+            interaction,
+            self.match_id,
+        )
+
+    @property
+    def label(self) -> str | None:
+        return self.item.label
+
+    @staticmethod
+    def _build_custom_id(match_id: int) -> str:
+        return f"{MATCH_OPERATION_THREAD_APPROVE_BUTTON_CUSTOM_ID_PREFIX}:{match_id}"
+
+
 class MatchOperationThreadInitialView(discord.ui.View):
     def __init__(
         self,
@@ -432,6 +502,22 @@ class MatchOperationThreadReportView(discord.ui.View):
         )
 
 
+class MatchOperationThreadApprovalView(discord.ui.View):
+    def __init__(
+        self,
+        *,
+        match_id: int,
+        interaction_handler: MatchOperationThreadInteractionHandler | None = None,
+    ) -> None:
+        super().__init__(timeout=None)
+        self.add_item(
+            MatchOperationThreadApproveButton(
+                match_id,
+                interaction_handler=interaction_handler,
+            )
+        )
+
+
 async def _send_fallback_error_message(interaction: discord.Interaction[Any]) -> None:
     try:
         if interaction.response.is_done():
@@ -481,6 +567,17 @@ def create_match_operation_thread_report_view(
     )
 
 
+def create_match_operation_thread_approval_view(
+    *,
+    match_id: int,
+    interaction_handler: MatchOperationThreadInteractionHandler | None = None,
+) -> discord.ui.View:
+    return MatchOperationThreadApprovalView(
+        match_id=match_id,
+        interaction_handler=interaction_handler,
+    )
+
+
 def register_match_operation_thread_dynamic_items(
     client: discord.Client,
     interaction_handler: MatchOperationThreadInteractionHandler,
@@ -490,8 +587,10 @@ def register_match_operation_thread_dynamic_items(
     MatchOperationThreadLoseButton.bind_interaction_handler(interaction_handler)
     MatchOperationThreadParentButton.bind_interaction_handler(interaction_handler)
     MatchOperationThreadVoidButton.bind_interaction_handler(interaction_handler)
+    MatchOperationThreadApproveButton.bind_interaction_handler(interaction_handler)
     client.add_dynamic_items(MatchOperationThreadWinButton)
     client.add_dynamic_items(MatchOperationThreadDrawButton)
     client.add_dynamic_items(MatchOperationThreadLoseButton)
     client.add_dynamic_items(MatchOperationThreadParentButton)
     client.add_dynamic_items(MatchOperationThreadVoidButton)
+    client.add_dynamic_items(MatchOperationThreadApproveButton)

@@ -60,6 +60,8 @@ from dxd_rating.platform.db.models import (
 )
 from dxd_rating.platform.discord.rest import DiscordOutboxEventPublisher
 from dxd_rating.platform.discord.ui import (
+    MATCH_OPERATION_THREAD_APPROVE_BUTTON_CUSTOM_ID_PREFIX,
+    MATCH_OPERATION_THREAD_APPROVE_BUTTON_LABEL,
     MATCH_OPERATION_THREAD_DRAW_BUTTON_CUSTOM_ID_PREFIX,
     MATCH_OPERATION_THREAD_DRAW_BUTTON_LABEL,
     MATCH_OPERATION_THREAD_LOSE_BUTTON_CUSTOM_ID_PREFIX,
@@ -356,6 +358,13 @@ class FakeMatchOperationThreadInteractionHandler:
         del interaction, match_id
 
     async def void_from_match_operation_thread(
+        self,
+        interaction: discord.Interaction[discord.Client],
+        match_id: int,
+    ) -> None:
+        del interaction, match_id
+
+    async def approve_from_match_operation_thread(
         self,
         interaction: discord.Interaction[discord.Client],
         match_id: int,
@@ -2713,27 +2722,140 @@ def test_discord_outbox_publisher_routes_approval_request_to_match_operation_thr
 
     asyncio.run(scenario())
 
-    assert match_channel.sent_messages == [
-        "\n".join(
-            [
-                MATCH_CREATED_NOTIFICATION_MESSAGE,
-                "試合形式: 3v3",
-                "試合階級: regular",
-                "Team A",
-                "    A",
-                "    B",
-                "    C",
-                "Team B",
-                "    D",
-                "    E",
-                "    F",
-            ]
-        )
-    ]
+    assert match_channel.sent_messages == []
     assert len(matchmaking_channel.created_threads) == 1
     created_thread = matchmaking_channel.created_threads[0]
     assert created_thread.added_user_ids == [83_001, 83_002, 89_003]
     assert created_thread.sent_messages == [expected_message]
+    assert created_thread.sent_views == [None]
+
+
+def test_discord_outbox_publisher_adds_approval_button_to_match_operation_thread_request() -> None:
+    guild = FakeDiscordGuild(id=910_015_3)
+    match_channel = FakeDiscordChannel(
+        id=900_015_3,
+        guild=guild,
+    )
+    matchmaking_channel = FakeDiscordChannel(
+        id=900_115_3,
+        guild=guild,
+    )
+    client = FakeDiscordClient(
+        channels={
+            match_channel.id: match_channel,
+            matchmaking_channel.id: matchmaking_channel,
+        },
+        users={
+            83_201: FakeDiscordUser(id=83_201),
+            83_202: FakeDiscordUser(id=83_202),
+        },
+    )
+    publisher = DiscordOutboxEventPublisher(
+        client=client,
+        match_operation_thread_interaction_handler=FakeMatchOperationThreadInteractionHandler(),
+    )
+
+    async def scenario() -> None:
+        await publish_with_bound_loop(
+            publisher,
+            PendingOutboxEvent(
+                id=9_01,
+                event_type=OutboxEventType.MATCH_APPROVAL_REQUESTED,
+                dedupe_key="match_approval_requested:41:thread",
+                payload={
+                    "match_id": 41,
+                    "provisional_result": "team_b_win",
+                    "approval_deadline_at": "2026-03-20T12:44:56+00:00",
+                    "phase_started": False,
+                    "approval_target_discord_user_ids": [83_201, 83_202],
+                    "destination": {
+                        "channel_id": match_channel.id,
+                        "guild_id": guild.id,
+                    },
+                    "team_a_discord_user_ids": [83_201],
+                    "team_b_discord_user_ids": [83_202],
+                    "match_operation_thread_parent_channel_id": matchmaking_channel.id,
+                },
+                created_at=datetime.now(timezone.utc),
+            ),
+        )
+
+    asyncio.run(scenario())
+
+    assert match_channel.sent_messages == []
+    assert len(matchmaking_channel.created_threads) == 1
+    created_thread = matchmaking_channel.created_threads[0]
+    assert len(created_thread.sent_messages) == 1
+    approval_view = created_thread.sent_views[0]
+    assert approval_view is not None
+    assert [getattr(child, "label", None) for child in approval_view.children] == [
+        MATCH_OPERATION_THREAD_APPROVE_BUTTON_LABEL
+    ]
+    assert [getattr(child, "custom_id", None) for child in approval_view.children] == [
+        f"{MATCH_OPERATION_THREAD_APPROVE_BUTTON_CUSTOM_ID_PREFIX}:41"
+    ]
+    assert [
+        getattr(getattr(child, "item", None), "style", None)
+        for child in approval_view.children
+    ] == [discord.ButtonStyle.danger]
+
+
+def test_discord_outbox_publisher_does_not_add_approval_button_for_phase_started_message() -> None:
+    guild = FakeDiscordGuild(id=910_015_4)
+    match_channel = FakeDiscordChannel(
+        id=900_015_4,
+        guild=guild,
+    )
+    matchmaking_channel = FakeDiscordChannel(
+        id=900_115_4,
+        guild=guild,
+    )
+    client = FakeDiscordClient(
+        channels={
+            match_channel.id: match_channel,
+            matchmaking_channel.id: matchmaking_channel,
+        },
+        users={
+            83_301: FakeDiscordUser(id=83_301),
+            83_302: FakeDiscordUser(id=83_302),
+        },
+    )
+    publisher = DiscordOutboxEventPublisher(
+        client=client,
+        match_operation_thread_interaction_handler=FakeMatchOperationThreadInteractionHandler(),
+    )
+
+    async def scenario() -> None:
+        await publish_with_bound_loop(
+            publisher,
+            PendingOutboxEvent(
+                id=9_02,
+                event_type=OutboxEventType.MATCH_APPROVAL_REQUESTED,
+                dedupe_key="match_approval_requested:phase_started:42:thread",
+                payload={
+                    "match_id": 42,
+                    "provisional_result": "team_a_win",
+                    "approval_deadline_at": "2026-03-20T12:34:56+00:00",
+                    "phase_started": True,
+                    "destination": {
+                        "channel_id": match_channel.id,
+                        "guild_id": guild.id,
+                    },
+                    "team_a_discord_user_ids": [83_301],
+                    "team_b_discord_user_ids": [83_302],
+                    "match_operation_thread_parent_channel_id": matchmaking_channel.id,
+                },
+                created_at=datetime.now(timezone.utc),
+            ),
+        )
+
+    asyncio.run(scenario())
+
+    assert match_channel.sent_messages == []
+    assert len(matchmaking_channel.created_threads) == 1
+    created_thread = matchmaking_channel.created_threads[0]
+    assert len(created_thread.sent_messages) == 1
+    assert created_thread.sent_views == [None]
 
 
 def test_discord_outbox_publisher_routes_report_opened_to_match_operation_thread() -> None:

@@ -903,31 +903,28 @@ class BotCommandHandlers:
 
     async def match_approve(self, interaction: discord.Interaction[Any], match_id: int) -> None:
         await self._sync_requesting_user_identity(interaction)
-        try:
-            notification_context = self._build_notification_context(interaction)
-            player_id = await asyncio.to_thread(self._lookup_player_id, interaction.user.id)
-            service = self._require_match_service()
-            await service.approve_match_result(
-                match_id,
-                player_id,
-                notification_context=notification_context,
-            )
-        except PlayerNotRegisteredError:
-            await self._send_message(interaction, PLAYER_REGISTRATION_REQUIRED_MESSAGE)
-            return
-        except MatchFlowError as exc:
-            await self._send_message(interaction, str(exc))
-            return
-        except Exception:
-            self.logger.exception(
-                "Failed to execute /match_approve command discord_user_id=%s match_id=%s",
-                interaction.user.id,
-                match_id,
-            )
-            await self._send_message(interaction, MATCH_ACTION_FAILED_MESSAGE)
-            return
+        await self._run_match_approve(
+            interaction=interaction,
+            match_id=match_id,
+            executor_discord_user_id=interaction.user.id,
+            success_message=MATCH_APPROVE_SUCCESS_MESSAGE,
+            failure_message=MATCH_ACTION_FAILED_MESSAGE,
+        )
 
-        await self._send_message(interaction, MATCH_APPROVE_SUCCESS_MESSAGE)
+    async def approve_from_match_operation_thread(
+        self,
+        interaction: discord.Interaction[Any],
+        match_id: int,
+    ) -> None:
+        await self._sync_requesting_user_identity(interaction)
+        await self._run_match_approve(
+            interaction=interaction,
+            match_id=match_id,
+            executor_discord_user_id=interaction.user.id,
+            success_message=MATCH_APPROVE_SUCCESS_MESSAGE,
+            failure_message=MATCH_ACTION_FAILED_MESSAGE,
+            ephemeral=True,
+        )
 
     async def admin_match_result(
         self,
@@ -2324,6 +2321,50 @@ class BotCommandHandlers:
                 executor_discord_user_id,
                 match_id,
                 input_result.value,
+            )
+            await self._send_message(interaction, failure_message, ephemeral=ephemeral)
+            return
+
+        await self._send_message(interaction, success_message, ephemeral=ephemeral)
+
+    async def _run_match_approve(
+        self,
+        *,
+        interaction: discord.Interaction[Any],
+        match_id: int,
+        executor_discord_user_id: int,
+        success_message: str,
+        failure_message: str,
+        ephemeral: bool = False,
+    ) -> None:
+        try:
+            notification_context = self._build_notification_context(
+                interaction,
+                mention_discord_user_id=executor_discord_user_id,
+            )
+            player_id = await asyncio.to_thread(self._lookup_player_id, executor_discord_user_id)
+            service = self._require_match_service()
+            await service.approve_match_result(
+                match_id,
+                player_id,
+                notification_context=notification_context,
+            )
+        except PlayerNotRegisteredError:
+            message = (
+                PLAYER_REGISTRATION_REQUIRED_MESSAGE
+                if executor_discord_user_id == interaction.user.id
+                else DEV_TARGET_NOT_REGISTERED_MESSAGE
+            )
+            await self._send_message(interaction, message, ephemeral=ephemeral)
+            return
+        except MatchFlowError as exc:
+            await self._send_message(interaction, str(exc), ephemeral=ephemeral)
+            return
+        except Exception:
+            self.logger.exception(
+                "Failed to execute match_approve command executor_discord_user_id=%s match_id=%s",
+                executor_discord_user_id,
+                match_id,
             )
             await self._send_message(interaction, failure_message, ephemeral=ephemeral)
             return

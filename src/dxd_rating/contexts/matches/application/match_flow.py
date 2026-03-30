@@ -102,9 +102,7 @@ from dxd_rating.shared.constants import (
 )
 
 MATCH_PARENT_ASSIGNED_NOTIFICATION_MESSAGE = "親が決定しました。"
-MATCH_REPORT_OPENED_NOTIFICATION_MESSAGE = (
-    "試合が終わったら参加者全員試合結果を報告してください。"
-)
+MATCH_REPORT_OPENED_NOTIFICATION_MESSAGE = "試合が終わったら参加者全員試合結果を報告してください。"
 MATCH_APPROVAL_STARTED_NOTIFICATION_MESSAGE = "承認フェーズに移行しました。"
 MATCH_APPROVAL_REQUESTED_NOTIFICATION_MESSAGE = "仮決定結果の承認が必要です。"
 MATCH_FINALIZED_NOTIFICATION_MESSAGE = "試合結果が確定しました。"

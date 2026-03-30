@@ -64,8 +64,10 @@
 - 通常ユーザー操作の `presence_reminder` と `queue_expired` の UI は [ui/matchmaking_presence_thread.md](ui/matchmaking_presence_thread.md) に従う
 - 開発者コマンド操作の `presence_reminder` と `queue_expired` も、`/dev_join` 成功時に作成された在席確認 thread の `channel_id` 宛てに送る
 - 開発者コマンド操作の `presence_reminder` と `queue_expired` も、公開チャンネルではなく在席確認 thread 内で行う
-- `match_created` は、参加者ごとの通知先コンテキストから決定した channel に送る
-- `match_created` は特定プレイヤーへの mention を付けない
+- `match_created` は、公開の `レート戦マッチ速報` チャンネル通知を維持したうえで、参加者ごとの通知先コンテキストから決定した channel にも送る
+- 在席確認 thread がある参加者には、その thread に `match_created` を送る
+- 在席確認 thread 向けの `match_created` には、対象参加者への mention を付ける
+- 在席確認 thread が無い参加者だけは、現行どおり保存済みの通常通知先 channel へ送る
 - mention 形式は `<@discord_user_id>` を用いる
 
 補足:
@@ -154,17 +156,19 @@
 
 ### `match_created`
 
-- `match_created` は 1 件の `match_id` ごとに 1 event を作成する
-- `1v1` の 1 バッチ 2 試合は、2 件の `match_created` event として扱う
+- `match_created` は 1 件の `match_id` ごとに 1 回のマッチ成立通知を表す
+- `1v1` の 1 バッチ 2 試合は、2 件の `match_created` 通知として扱う
 - service 層は、参加した各 `queue_entry` の通知先コンテキストをもとに配送先を集約する
 - 実際の Discord 送信 1 件ごとに 1 outbox event を作成する
 - 各 event の payload には、送信先スナップショット、`match_format`、表示用チーム情報を含める
 
 現時点の配送方針:
 
-- 同じ match について、参加者ごとに「その人の現在の通知先 channel」へ送ってよい
+- 同じ match について、公開のマッチ速報チャンネルへ 1 回送る
+- 参加者ごとに「その人の現在の通知先 channel」へ送ってよい
 - 同じ `channel_id` に重複する配送先があれば 1 回にまとめてよい
-- `match_created` のメッセージ先頭には mention を付けない
+- 公開チャンネル向け `match_created` のメッセージ先頭には mention を付けない
+- 在席確認 thread 向け `match_created` は、対象プレイヤーへの mention を先頭に付けてよい
 
 メッセージ例:
 
@@ -213,6 +217,9 @@ Team B
   - `destination`
   - `team_a_discord_user_ids`
   - `team_b_discord_user_ids`
+  - `mention_discord_user_id` (在席確認 thread 向け payload のみ)
+  - `match_operation_thread_parent_channel_id` (試合運営 thread 導線を解決する payload)
+  - `create_match_operation_thread` (必要なら試合運営 thread を先に作成できる payload)
 
 補足:
 

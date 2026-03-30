@@ -809,6 +809,14 @@ class MatchingQueueService:
             session,
             ManagedUiType.MATCHMAKING_CHANNEL,
         )
+        participant_payloads = self._build_participant_match_created_payloads(
+            match_id=match_id,
+            match_format=match_format,
+            queue_class_definition=queue_class_definition,
+            matchmaking_channel=matchmaking_channel,
+            team_a_entries=team_a_entries,
+            team_b_entries=team_b_entries,
+        )
         matchmaking_news_payload = self._build_matchmaking_news_match_created_payload(
             session,
             match_id=match_id,
@@ -819,16 +827,9 @@ class MatchingQueueService:
             team_b_entries=team_b_entries,
         )
         if matchmaking_news_payload is not None:
-            return (matchmaking_news_payload,)
+            return (matchmaking_news_payload, *participant_payloads)
 
-        return self._build_legacy_match_created_payloads(
-            match_id=match_id,
-            match_format=match_format,
-            queue_class_definition=queue_class_definition,
-            matchmaking_channel=matchmaking_channel,
-            team_a_entries=team_a_entries,
-            team_b_entries=team_b_entries,
-        )
+        return participant_payloads
 
     def _build_matchmaking_news_match_created_payload(
         self,
@@ -907,7 +908,7 @@ class MatchingQueueService:
         )
         return payload
 
-    def _build_legacy_match_created_payloads(
+    def _build_participant_match_created_payloads(
         self,
         *,
         match_id: int,
@@ -923,29 +924,48 @@ class MatchingQueueService:
                 key=lambda entry: (entry.joined_at, entry.id),
             )
         )
-        destinations_by_channel_id: dict[int, NotificationDestinationPayload] = {}
-        for queue_entry in all_entries:
-            destination = self._build_channel_destination_payload(
-                queue_entry,
-                event_context="match_created",
-            )
-            destinations_by_channel_id.setdefault(destination["channel_id"], destination)
-
+        fallback_destinations_by_channel_id: dict[int, NotificationDestinationPayload] = {}
         team_a_discord_user_ids = [
             queue_entry.notification_mention_discord_user_id for queue_entry in team_a_entries
         ]
         team_b_discord_user_ids = [
             queue_entry.notification_mention_discord_user_id for queue_entry in team_b_entries
         ]
+        queue_entry_ids = [entry.id for entry in all_entries]
+        player_ids = [entry.player_id for entry in all_entries]
 
         payloads: list[dict[str, Any]] = []
-        for index, destination in enumerate(destinations_by_channel_id.values()):
+        for queue_entry in all_entries:
+            if queue_entry.presence_thread_channel_id is None:
+                destination = self._build_channel_destination_payload(
+                    queue_entry,
+                    event_context="match_created",
+                )
+                channel_id = destination["channel_id"]
+                fallback_destinations_by_channel_id.setdefault(channel_id, destination)
+                continue
+
+            payloads.append(
+                self._build_presence_thread_match_created_payload(
+                    match_id=match_id,
+                    match_format=match_format,
+                    queue_class_definition=queue_class_definition,
+                    matchmaking_channel=matchmaking_channel,
+                    queue_entry=queue_entry,
+                    team_a_discord_user_ids=team_a_discord_user_ids,
+                    team_b_discord_user_ids=team_b_discord_user_ids,
+                    queue_entry_ids=queue_entry_ids,
+                    player_ids=player_ids,
+                )
+            )
+
+        for destination in fallback_destinations_by_channel_id.values():
             payload: dict[str, Any] = {
                 "match_id": match_id,
                 "match_format": match_format.value,
                 "queue_name": queue_class_definition.queue_name,
-                "queue_entry_ids": [queue_entry.id for queue_entry in all_entries],
-                "player_ids": [queue_entry.player_id for queue_entry in all_entries],
+                "queue_entry_ids": queue_entry_ids,
+                "player_ids": player_ids,
                 "destination": destination,
                 "team_a_discord_user_ids": team_a_discord_user_ids,
                 "team_b_discord_user_ids": team_b_discord_user_ids,
@@ -953,11 +973,45 @@ class MatchingQueueService:
             self._apply_match_operation_thread_payload(
                 payload,
                 matchmaking_channel=matchmaking_channel,
-                create_match_operation_thread=index == 0,
+                create_match_operation_thread=True,
             )
             payloads.append(payload)
 
         return tuple(payloads)
+
+    def _build_presence_thread_match_created_payload(
+        self,
+        *,
+        match_id: int,
+        match_format: MatchFormat,
+        queue_class_definition: MatchQueueClassDefinition,
+        matchmaking_channel: ManagedUiChannel | None,
+        queue_entry: MatchQueueEntry,
+        team_a_discord_user_ids: Sequence[int],
+        team_b_discord_user_ids: Sequence[int],
+        queue_entry_ids: Sequence[int],
+        player_ids: Sequence[int],
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "match_id": match_id,
+            "match_format": match_format.value,
+            "queue_name": queue_class_definition.queue_name,
+            "queue_entry_ids": list(queue_entry_ids),
+            "player_ids": list(player_ids),
+            "destination": self._build_player_operation_destination_payload(
+                queue_entry,
+                event_context="match_created",
+            ),
+            "mention_discord_user_id": queue_entry.notification_mention_discord_user_id,
+            "team_a_discord_user_ids": list(team_a_discord_user_ids),
+            "team_b_discord_user_ids": list(team_b_discord_user_ids),
+        }
+        self._apply_match_operation_thread_payload(
+            payload,
+            matchmaking_channel=matchmaking_channel,
+            create_match_operation_thread=True,
+        )
+        return payload
 
     def _get_managed_ui_channel(
         self,

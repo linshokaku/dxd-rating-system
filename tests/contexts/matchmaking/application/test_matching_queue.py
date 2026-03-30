@@ -1123,12 +1123,21 @@ def test_try_create_matches_routes_match_created_to_matchmaking_news_channel_whe
     outbox_events = get_outbox_events(session)
 
     assert len(created_matches) == 1
-    assert len(outbox_events) == 1
+    assert len(outbox_events) == 1 + len({entry.notification_channel_id for entry in entries})
 
-    outbox_event = outbox_events[0]
     expected_announcement_guild_id = min(
         entry.notification_guild_id for entry in entries if entry.notification_guild_id is not None
     )
+    expected_team_a_discord_user_ids = [
+        players_by_id[participant.player_id].discord_user_id
+        for participant in participants
+        if participant.team == MatchParticipantTeam.TEAM_A
+    ]
+    expected_team_b_discord_user_ids = [
+        players_by_id[participant.player_id].discord_user_id
+        for participant in participants
+        if participant.team == MatchParticipantTeam.TEAM_B
+    ]
     expected_team_a_display_names = [
         players_by_id[participant.player_id].display_name
         for participant in participants
@@ -1139,10 +1148,24 @@ def test_try_create_matches_routes_match_created_to_matchmaking_news_channel_whe
         for participant in participants
         if participant.team == MatchParticipantTeam.TEAM_B
     ]
+    announcement_events = [
+        event
+        for event in outbox_events
+        if event.payload["destination"]["channel_id"] == matchmaking_news_channel.channel_id
+    ]
+    participant_events = [
+        event
+        for event in outbox_events
+        if event.payload["destination"]["channel_id"] != matchmaking_news_channel.channel_id
+    ]
 
-    assert outbox_event.event_type == OutboxEventType.MATCH_CREATED
-    assert outbox_event.dedupe_key == f"match_created:{created_matches[0].match_id}:880001"
-    assert outbox_event.payload == {
+    assert len(announcement_events) == 1
+    assert len(participant_events) == len({entry.notification_channel_id for entry in entries})
+
+    announcement_event = announcement_events[0]
+    assert announcement_event.event_type == OutboxEventType.MATCH_CREATED
+    assert announcement_event.dedupe_key == f"match_created:{created_matches[0].match_id}:880001"
+    assert announcement_event.payload == {
         "match_id": created_matches[0].match_id,
         "match_format": DEFAULT_MATCH_FORMAT.value,
         "queue_name": DEFAULT_QUEUE_NAME,
@@ -1151,21 +1174,140 @@ def test_try_create_matches_routes_match_created_to_matchmaking_news_channel_whe
             "channel_id": matchmaking_news_channel.channel_id,
             "guild_id": expected_announcement_guild_id,
         },
-        "team_a_discord_user_ids": [
-            players_by_id[participant.player_id].discord_user_id
-            for participant in participants
-            if participant.team == MatchParticipantTeam.TEAM_A
-        ],
-        "team_b_discord_user_ids": [
-            players_by_id[participant.player_id].discord_user_id
-            for participant in participants
-            if participant.team == MatchParticipantTeam.TEAM_B
-        ],
+        "team_a_discord_user_ids": expected_team_a_discord_user_ids,
+        "team_b_discord_user_ids": expected_team_b_discord_user_ids,
         "team_a_player_display_names": expected_team_a_display_names,
         "team_b_player_display_names": expected_team_b_display_names,
         "match_operation_thread_parent_channel_id": matchmaking_channel.channel_id,
         "create_match_operation_thread": True,
     }
+    assert {event.payload["destination"]["channel_id"] for event in participant_events} == {
+        entry.notification_channel_id for entry in entries
+    }
+    assert all(event.event_type == OutboxEventType.MATCH_CREATED for event in participant_events)
+    assert all(
+        event.payload["queue_entry_ids"] == [entry.id for entry in entries]
+        for event in participant_events
+    )
+    assert all(
+        event.payload["player_ids"] == [entry.player_id for entry in entries]
+        for event in participant_events
+    )
+    assert all(
+        event.payload["team_a_discord_user_ids"] == expected_team_a_discord_user_ids
+        for event in participant_events
+    )
+    assert all(
+        event.payload["team_b_discord_user_ids"] == expected_team_b_discord_user_ids
+        for event in participant_events
+    )
+    assert all("mention_discord_user_id" not in event.payload for event in participant_events)
+    assert all(
+        event.payload["match_operation_thread_parent_channel_id"] == matchmaking_channel.channel_id
+        for event in participant_events
+    )
+    assert all(
+        event.payload["create_match_operation_thread"] is True for event in participant_events
+    )
+
+
+def test_try_create_matches_routes_match_created_to_presence_threads_when_available(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    matchmaking_channel = create_managed_ui_channel(
+        session,
+        ui_type=ManagedUiType.MATCHMAKING_CHANNEL,
+        channel_id=880_010,
+        message_id=880_110,
+    )
+    matchmaking_news_channel = create_managed_ui_channel(
+        session,
+        ui_type=ManagedUiType.MATCHMAKING_NEWS_CHANNEL,
+        channel_id=880_011,
+        message_id=880_111,
+    )
+    players = create_players(session, 6, start_discord_user_id=30_211)
+    for index, player in enumerate(players, start=1):
+        player.display_name = f"Player {index}"
+    session.commit()
+    entries = create_waiting_entries(session, players)
+    service = create_matching_queue_service(session_factory)
+    expected_presence_thread_channel_ids_by_entry_id: dict[int, int] = {}
+    for index, entry in enumerate(entries, start=1):
+        presence_thread_channel_id = 990_000 + index
+        service.update_waiting_presence_thread_channel_id(entry.id, presence_thread_channel_id)
+        expected_presence_thread_channel_ids_by_entry_id[entry.id] = presence_thread_channel_id
+
+    created_matches = service.try_create_matches()
+
+    session.expire_all()
+    participants = session.scalars(
+        select(MatchParticipant).order_by(MatchParticipant.team.asc(), MatchParticipant.slot.asc())
+    ).all()
+    players_by_id = {player.id: player for player in session.scalars(select(Player)).all()}
+    entries_by_id = {entry.id: entry for entry in session.scalars(select(MatchQueueEntry)).all()}
+    outbox_events = get_outbox_events(session)
+
+    assert len(created_matches) == 1
+    assert len(outbox_events) == 1 + len(entries)
+
+    expected_team_a_discord_user_ids = [
+        players_by_id[participant.player_id].discord_user_id
+        for participant in participants
+        if participant.team == MatchParticipantTeam.TEAM_A
+    ]
+    expected_team_b_discord_user_ids = [
+        players_by_id[participant.player_id].discord_user_id
+        for participant in participants
+        if participant.team == MatchParticipantTeam.TEAM_B
+    ]
+    announcement_events = [
+        event
+        for event in outbox_events
+        if event.payload["destination"]["channel_id"] == matchmaking_news_channel.channel_id
+    ]
+    participant_events = [
+        event
+        for event in outbox_events
+        if event.payload["destination"]["channel_id"] != matchmaking_news_channel.channel_id
+    ]
+
+    assert len(announcement_events) == 1
+    assert len(participant_events) == len(entries)
+    assert {event.payload["destination"]["channel_id"] for event in participant_events} == set(
+        expected_presence_thread_channel_ids_by_entry_id.values()
+    )
+
+    for event in participant_events:
+        queue_entry_ids = event.payload["queue_entry_ids"]
+        assert queue_entry_ids == [entry.id for entry in entries]
+        entry_id = next(
+            candidate_entry_id
+            for candidate_entry_id, channel_id in (
+                expected_presence_thread_channel_ids_by_entry_id.items()
+            )
+            if channel_id == event.payload["destination"]["channel_id"]
+        )
+        queue_entry = entries_by_id[entry_id]
+        assert event.event_type == OutboxEventType.MATCH_CREATED
+        assert event.payload["destination"] == {
+            "kind": "channel",
+            "channel_id": expected_presence_thread_channel_ids_by_entry_id[entry_id],
+            "guild_id": queue_entry.notification_guild_id,
+        }
+        assert event.payload["player_ids"] == [entry.player_id for entry in entries]
+        assert (
+            event.payload["mention_discord_user_id"]
+            == queue_entry.notification_mention_discord_user_id
+        )
+        assert event.payload["team_a_discord_user_ids"] == expected_team_a_discord_user_ids
+        assert event.payload["team_b_discord_user_ids"] == expected_team_b_discord_user_ids
+        assert (
+            event.payload["match_operation_thread_parent_channel_id"]
+            == matchmaking_channel.channel_id
+        )
+        assert event.payload["create_match_operation_thread"] is True
 
 
 # 12 人以上の待機で 1 回の `try_create_matches()` が複数マッチを連続生成できること
@@ -1362,25 +1504,35 @@ def test_matching_queue_outbox_event_types_are_generated_for_supported_flows(
     assert event_types[2:] == [OutboxEventType.MATCH_CREATED] * expected_match_created_event_count
 
 
-def test_try_create_matches_keeps_match_created_destination_on_notification_channel(
+def test_try_create_matches_prefers_presence_thread_for_match_created_destination(
     session: Session,
     session_factory: sessionmaker[Session],
 ) -> None:
     players = create_players(session, 6, start_discord_user_id=50_300)
     entries = create_waiting_entries(session, players)
     service = create_matching_queue_service(session_factory)
+    expected_presence_thread_channel_ids: set[int] = set()
 
     for index, entry in enumerate(entries, start=1):
-        service.update_waiting_presence_thread_channel_id(entry.id, 650_000 + index)
+        presence_thread_channel_id = 650_000 + index
+        service.update_waiting_presence_thread_channel_id(entry.id, presence_thread_channel_id)
+        expected_presence_thread_channel_ids.add(presence_thread_channel_id)
 
     service.try_create_matches()
 
     outbox_events = get_outbox_events(session)
 
     assert outbox_events
-    assert {event.payload["destination"]["channel_id"] for event in outbox_events} == {
-        entry.notification_channel_id for entry in entries
+    assert {
+        event.payload["destination"]["channel_id"] for event in outbox_events
+    } == expected_presence_thread_channel_ids
+    expected_mention_discord_user_ids = {
+        entry.notification_mention_discord_user_id for entry in entries
     }
+    assert all(
+        event.payload["mention_discord_user_id"] in expected_mention_discord_user_ids
+        for event in outbox_events
+    )
 
 
 def test_process_presence_reminder_uses_channel_destination_even_if_dm_snapshot_exists(

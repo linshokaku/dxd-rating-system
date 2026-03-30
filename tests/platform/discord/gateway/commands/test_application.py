@@ -37,8 +37,8 @@ from dxd_rating.platform.db.models import (
     MatchQueueEntryStatus,
     MatchReport,
     MatchReportInputResult,
-    MatchState,
     MatchSpectator,
+    MatchState,
     PenaltyType,
     Player,
     PlayerAccessRestriction,
@@ -1806,9 +1806,7 @@ def test_match_operation_thread_approve_button_responds_ephemerally(
     participants = session.scalars(
         select(MatchParticipant).where(MatchParticipant.match_id == match_id)
     ).all()
-    participant_by_player_id = {
-        participant.player_id: participant for participant in participants
-    }
+    participant_by_player_id = {participant.player_id: participant for participant in participants}
     dissenting_player = next(
         player
         for player in players

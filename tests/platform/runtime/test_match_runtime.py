@@ -2554,6 +2554,119 @@ def test_discord_outbox_publisher_creates_match_operation_thread_for_match_creat
     assert created_thread.sent_views[2] is None
 
 
+def test_discord_outbox_publisher_links_presence_thread_to_match_operation_thread() -> None:
+    guild = FakeDiscordGuild(id=910_013_1)
+    presence_thread = FakeDiscordChannel(
+        id=900_213_001,
+        guild=guild,
+        parent=object(),
+    )
+    matchmaking_channel = FakeDiscordChannel(
+        id=900_113_1,
+        guild=guild,
+    )
+    client = FakeDiscordClient(
+        channels={
+            presence_thread.id: presence_thread,
+            matchmaking_channel.id: matchmaking_channel,
+        },
+        users={
+            81_110: FakeDiscordUser(id=81_110),
+            81_111: FakeDiscordUser(id=81_111),
+            81_112: FakeDiscordUser(id=81_112),
+            81_113: FakeDiscordUser(id=81_113),
+            81_114: FakeDiscordUser(id=81_114),
+            81_115: FakeDiscordUser(id=81_115),
+            89_011: FakeDiscordUser(id=89_011),
+        },
+    )
+    publisher = DiscordOutboxEventPublisher(
+        client=client,
+        admin_discord_user_ids=frozenset({89_011}),
+        match_operation_thread_interaction_handler=FakeMatchOperationThreadInteractionHandler(),
+    )
+
+    expected_presence_message = "\n".join(
+        [
+            "<@81110> マッチ成立です。",
+            "試合運営は <#9001131001> で行ってください。",
+        ]
+    )
+    expected_thread_messages = [
+        "\n".join(
+            [
+                MATCH_CREATED_NOTIFICATION_MESSAGE,
+                "試合形式: 3v3",
+                "試合階級: regular",
+                "Team A",
+                "    <@81110>",
+                "    <@81111>",
+                "    <@81112>",
+                "Team B",
+                "    <@81113>",
+                "    <@81114>",
+                "    <@81115>",
+                MATCH_OPERATION_THREAD_VOID_GUIDE_MESSAGE,
+            ]
+        ),
+        "\n".join(
+            [
+                "まず初めに、部屋立てと試合の進行を行う親を募集します。",
+                "親募集期間は5分です。",
+                "5分以内に立候補がない場合は Bot が参加メンバーからランダムに決定します。",
+            ]
+        ),
+        "\n".join(
+            [
+                "試合参加者はゲーム内のプレイヤー名を報告してください。",
+            ]
+        ),
+    ]
+
+    async def scenario() -> None:
+        await publish_with_bound_loop(
+            publisher,
+            PendingOutboxEvent(
+                id=6_1,
+                event_type=OutboxEventType.MATCH_CREATED,
+                dedupe_key="match_created:12:900213001",
+                payload={
+                    "match_id": 12,
+                    "match_format": "3v3",
+                    "queue_name": "regular",
+                    "destination": {
+                        "channel_id": presence_thread.id,
+                        "guild_id": guild.id,
+                    },
+                    "mention_discord_user_id": 81_110,
+                    "team_a_discord_user_ids": [81_110, 81_111, 81_112],
+                    "team_b_discord_user_ids": [81_113, 81_114, 81_115],
+                    "match_operation_thread_parent_channel_id": matchmaking_channel.id,
+                    "create_match_operation_thread": True,
+                },
+                created_at=datetime.now(timezone.utc),
+            ),
+        )
+
+    asyncio.run(scenario())
+
+    assert presence_thread.sent_messages == [expected_presence_message]
+    assert presence_thread.sent_views == [None]
+    assert len(matchmaking_channel.created_threads) == 1
+    created_thread = matchmaking_channel.created_threads[0]
+    assert created_thread.name == "試合-12"
+    assert created_thread.added_user_ids == [
+        81_110,
+        81_111,
+        81_112,
+        81_113,
+        81_114,
+        81_115,
+        89_011,
+    ]
+    assert created_thread.sent_messages == expected_thread_messages
+
+
 def test_discord_outbox_publisher_reuses_existing_match_operation_thread_for_same_match() -> None:
     guild = FakeDiscordGuild(id=910_014)
     announcement_channel = FakeDiscordChannel(
@@ -2795,8 +2908,7 @@ def test_discord_outbox_publisher_adds_approval_button_to_match_operation_thread
         f"{MATCH_OPERATION_THREAD_APPROVE_BUTTON_CUSTOM_ID_PREFIX}:41"
     ]
     assert [
-        getattr(getattr(child, "item", None), "style", None)
-        for child in approval_view.children
+        getattr(getattr(child, "item", None), "style", None) for child in approval_view.children
     ] == [discord.ButtonStyle.danger]
 
 
@@ -2979,8 +3091,7 @@ def test_discord_outbox_publisher_routes_report_opened_to_match_operation_thread
         f"{MATCH_OPERATION_THREAD_VOID_BUTTON_CUSTOM_ID_PREFIX}:21",
     ]
     assert [
-        getattr(getattr(child, "item", None), "style", None)
-        for child in report_view.children
+        getattr(getattr(child, "item", None), "style", None) for child in report_view.children
     ] == [
         discord.ButtonStyle.success,
         discord.ButtonStyle.primary,

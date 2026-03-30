@@ -206,19 +206,18 @@ class DiscordOutboxEventPublisher:
             )
             return
 
-        notification = await asyncio.to_thread(self._resolve_notification, event)
-        if isinstance(notification.destination, DirectMessageNotificationDestination):
+        destination = await asyncio.to_thread(self._require_destination, event.payload)
+        if isinstance(destination, DirectMessageNotificationDestination):
             await self._send_direct_message_notification(
                 event=event,
-                destination=notification.destination,
-                content=notification.content,
+                destination=destination,
+                content=self._render_content(event.event_type, event.payload),
             )
             return
 
         await self._send_channel_notification(
             event=event,
-            destination=notification.destination,
-            content=notification.content,
+            destination=destination,
         )
 
     def _resolve_notification(self, event: PendingOutboxEvent) -> ResolvedNotification:
@@ -266,7 +265,6 @@ class DiscordOutboxEventPublisher:
         *,
         event: PendingOutboxEvent,
         destination: ChannelNotificationDestination,
-        content: str,
     ) -> None:
         channel = await self._resolve_channel(destination.channel_id)
         self._log_channel_guild_mismatch(
@@ -274,6 +272,7 @@ class DiscordOutboxEventPublisher:
             channel=channel,
             event=event,
         )
+        content = await self._render_channel_content(event=event, channel=channel)
         view = self._build_channel_view(event=event, channel=channel)
         try:
             await channel.send(
@@ -742,6 +741,53 @@ class DiscordOutboxEventPublisher:
                 *indented_team_b_display_labels,
             ]
         )
+
+    async def _render_channel_content(
+        self,
+        *,
+        event: PendingOutboxEvent,
+        channel: DiscordSendableChannel,
+    ) -> str:
+        if (
+            event.event_type == OutboxEventType.MATCH_CREATED
+            and self._is_thread_like_channel(channel)
+            and "mention_discord_user_id" in event.payload
+            and "match_operation_thread_parent_channel_id" in event.payload
+        ):
+            return await self._render_presence_thread_match_created_content(event.payload)
+
+        return self._render_content(event.event_type, event.payload)
+
+    async def _render_presence_thread_match_created_content(
+        self,
+        payload: dict[str, object],
+    ) -> str:
+        mention_discord_user_id = self._require_payload_int(payload, "mention_discord_user_id")
+        match_operation_thread = await self._resolve_match_operation_thread_from_payload(payload)
+        return "\n".join(
+            [
+                f"{format_discord_user_mention(mention_discord_user_id)} "
+                f"{MATCH_CREATED_NOTIFICATION_MESSAGE}",
+                f"試合運営は <#{match_operation_thread.id}> で行ってください。",
+            ]
+        )
+
+    async def _resolve_match_operation_thread_from_payload(
+        self,
+        payload: dict[str, object],
+    ) -> DiscordPrivateThread:
+        context = self._build_match_operation_thread_routing_context(payload)
+        if context is None:
+            self._raise_publish_error(
+                "match_created payload for presence thread must include "
+                "'match_operation_thread_parent_channel_id'"
+            )
+
+        thread, _ = await self._resolve_or_create_match_operation_thread(
+            match_id=context.match_id,
+            parent_channel_id=context.parent_channel_id,
+        )
+        return thread
 
     def _render_channel_targeted_text_notification(
         self,

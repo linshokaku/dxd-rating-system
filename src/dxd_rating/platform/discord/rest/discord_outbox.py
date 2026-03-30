@@ -550,7 +550,7 @@ class DiscordOutboxEventPublisher:
         context: MatchOperationThreadContext,
     ) -> str:
         lines = [
-            f"{MATCH_CREATED_NOTIFICATION_MESSAGE} match_id={context.match_id}",
+            MATCH_CREATED_NOTIFICATION_MESSAGE,
             f"試合形式: {context.match_format}",
             f"試合階級: {context.queue_name}",
             "Team A",
@@ -658,7 +658,7 @@ class DiscordOutboxEventPublisher:
         )
 
     def _render_match_created_content(self, payload: dict[str, object]) -> str:
-        match_id = self._require_payload_int(payload, "match_id")
+        self._require_payload_int(payload, "match_id")
         team_a_player_display_names = payload.get("team_a_player_display_names")
         team_b_player_display_names = payload.get("team_b_player_display_names")
         if team_a_player_display_names is not None or team_b_player_display_names is not None:
@@ -690,7 +690,7 @@ class DiscordOutboxEventPublisher:
                 f"    {label}" for label in rendered_team_b_player_display_names
             ]
             lines = [
-                f"{MATCH_CREATED_NOTIFICATION_MESSAGE} match_id={match_id}",
+                MATCH_CREATED_NOTIFICATION_MESSAGE,
                 f"試合形式: {match_format}",
                 f"試合階級: {queue_name}",
                 "Team A",
@@ -727,7 +727,7 @@ class DiscordOutboxEventPublisher:
         indented_team_b_display_labels = [f"    {label}" for label in team_b_display_labels]
         return "\n".join(
             [
-                f"{MATCH_CREATED_NOTIFICATION_MESSAGE} match_id={match_id}",
+                MATCH_CREATED_NOTIFICATION_MESSAGE,
                 "Team A",
                 *indented_team_a_display_labels,
                 "Team B",
@@ -806,13 +806,13 @@ class DiscordOutboxEventPublisher:
         return cast(DiscordPrivateThread, channel)
 
     def _render_match_parent_assigned_content(self, payload: dict[str, object]) -> str:
-        match_id = self._require_payload_int(payload, "match_id")
+        self._require_payload_int(payload, "match_id")
         parent_discord_user_id = self._require_payload_int(payload, "parent_discord_user_id")
         report_open_at = self._require_payload_str(payload, "report_open_at")
         report_deadline_at = self._require_payload_str(payload, "report_deadline_at")
         return "\n".join(
             [
-                f"{MATCH_PARENT_ASSIGNED_NOTIFICATION_MESSAGE} match_id={match_id}",
+                MATCH_PARENT_ASSIGNED_NOTIFICATION_MESSAGE,
                 f"親: {format_discord_user_mention(parent_discord_user_id)}",
                 f"勝敗報告開始: {report_open_at}",
                 f"勝敗報告締切: {report_deadline_at}",
@@ -820,14 +820,14 @@ class DiscordOutboxEventPublisher:
         )
 
     def _render_match_approval_requested_content(self, payload: dict[str, object]) -> str:
-        match_id = self._require_payload_int(payload, "match_id")
+        self._require_payload_int(payload, "match_id")
         phase_started = self._require_payload_bool_with_default(payload, "phase_started", False)
         provisional_result = self._require_payload_str(payload, "provisional_result")
         approval_deadline_at = self._require_payload_str(payload, "approval_deadline_at")
         if phase_started:
             return "\n".join(
                 [
-                    f"{MATCH_APPROVAL_STARTED_NOTIFICATION_MESSAGE} match_id={match_id}",
+                    MATCH_APPROVAL_STARTED_NOTIFICATION_MESSAGE,
                     f"仮決定結果: {self._format_match_result_label(provisional_result)}",
                     f"承認締切: {approval_deadline_at}",
                 ]
@@ -850,9 +850,7 @@ class DiscordOutboxEventPublisher:
         else:
             mention_discord_user_id = self._require_payload_int(payload, "mention_discord_user_id")
             mention_text = format_discord_user_mention(mention_discord_user_id)
-        headline = (
-            f"{mention_text} {MATCH_APPROVAL_REQUESTED_NOTIFICATION_MESSAGE} match_id={match_id}"
-        )
+        headline = f"{mention_text} {MATCH_APPROVAL_REQUESTED_NOTIFICATION_MESSAGE}"
         return "\n".join(
             [
                 headline,
@@ -863,7 +861,7 @@ class DiscordOutboxEventPublisher:
         )
 
     def _render_match_finalized_content(self, payload: dict[str, object]) -> str:
-        match_id = self._require_payload_int(payload, "match_id")
+        self._require_payload_int(payload, "match_id")
         auto_penalty_applied = self._require_payload_bool_with_default(
             payload,
             "auto_penalty_applied",
@@ -877,8 +875,7 @@ class DiscordOutboxEventPublisher:
             mention_text = format_discord_user_mention(mention_discord_user_id)
             return "\n".join(
                 [
-                    f"{mention_text} {MATCH_AUTO_PENALTY_APPLIED_NOTIFICATION_MESSAGE} "
-                    f"match_id={match_id}",
+                    f"{mention_text} {MATCH_AUTO_PENALTY_APPLIED_NOTIFICATION_MESSAGE}",
                     f"結果: {self._format_match_result_label(final_result)}",
                     f"ペナルティ: {self._format_penalty_type_label(penalty_type)}",
                     f"現在の累積: {penalty_count}",
@@ -887,7 +884,7 @@ class DiscordOutboxEventPublisher:
 
         finalized_by_admin = self._require_payload_bool(payload, "finalized_by_admin")
         lines = [
-            f"{MATCH_FINALIZED_NOTIFICATION_MESSAGE} match_id={match_id}",
+            MATCH_FINALIZED_NOTIFICATION_MESSAGE,
             f"結果: {self._format_match_result_label(final_result)}",
         ]
         if finalized_by_admin:
@@ -899,7 +896,7 @@ class DiscordOutboxEventPublisher:
         return "\n".join(lines)
 
     def _render_match_admin_review_required_content(self, payload: dict[str, object]) -> str:
-        match_id = self._require_payload_int(payload, "match_id")
+        self._require_payload_int(payload, "match_id")
         final_result = self._require_payload_str(payload, "final_result")
         reasons = self._require_payload_str_list(payload, "admin_review_reasons")
         admin_discord_user_ids = self._require_payload_int_list(payload, "admin_discord_user_ids")
@@ -908,7 +905,7 @@ class DiscordOutboxEventPublisher:
             for discord_user_id in admin_discord_user_ids
         )
         body = [
-            f"{MATCH_ADMIN_REVIEW_REQUIRED_NOTIFICATION_MESSAGE} match_id={match_id}",
+            MATCH_ADMIN_REVIEW_REQUIRED_NOTIFICATION_MESSAGE,
             f"結果: {self._format_match_result_label(final_result)}",
         ]
         if reasons:

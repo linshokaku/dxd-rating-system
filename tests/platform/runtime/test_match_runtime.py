@@ -2182,7 +2182,7 @@ def test_discord_outbox_publisher_sends_split_match_created_events() -> None:
 
     expected_message = "\n".join(
         [
-            f"{MATCH_CREATED_NOTIFICATION_MESSAGE} match_id=1",
+            MATCH_CREATED_NOTIFICATION_MESSAGE,
             "Team A",
             f"    <@{team_a_discord_user_ids[0]}>",
             f"    <dummy_{team_a_discord_user_ids[1]}>",
@@ -2252,7 +2252,7 @@ def test_discord_outbox_publisher_renders_matchmaking_news_match_announcement() 
 
     expected_message = "\n".join(
         [
-            f"{MATCH_CREATED_NOTIFICATION_MESSAGE} match_id=1",
+            MATCH_CREATED_NOTIFICATION_MESSAGE,
             "試合形式: 3v3",
             "試合階級: beginner",
             "Team A",
@@ -2318,7 +2318,7 @@ def test_discord_outbox_publisher_adds_matchmaking_news_spectate_button_for_matc
 
     expected_message = "\n".join(
         [
-            f"{MATCH_CREATED_NOTIFICATION_MESSAGE} match_id=12",
+            MATCH_CREATED_NOTIFICATION_MESSAGE,
             "試合形式: 3v3",
             "試合階級: beginner",
             "Team A",
@@ -2410,7 +2410,7 @@ def test_discord_outbox_publisher_creates_match_operation_thread_for_match_creat
 
     expected_announcement_message = "\n".join(
         [
-            f"{MATCH_CREATED_NOTIFICATION_MESSAGE} match_id=2",
+            MATCH_CREATED_NOTIFICATION_MESSAGE,
             "試合形式: 3v3",
             "試合階級: regular",
             "Team A",
@@ -2426,7 +2426,7 @@ def test_discord_outbox_publisher_creates_match_operation_thread_for_match_creat
     expected_thread_messages = [
         "\n".join(
             [
-                f"{MATCH_CREATED_NOTIFICATION_MESSAGE} match_id=2",
+                MATCH_CREATED_NOTIFICATION_MESSAGE,
                 "試合形式: 3v3",
                 "試合階級: regular",
                 "Team A",
@@ -2577,7 +2577,7 @@ def test_discord_outbox_publisher_reuses_existing_match_operation_thread_for_sam
     assert matchmaking_channel.created_threads[0].sent_messages == [
         "\n".join(
             [
-                f"{MATCH_CREATED_NOTIFICATION_MESSAGE} match_id=3",
+                MATCH_CREATED_NOTIFICATION_MESSAGE,
                 "試合形式: 3v3",
                 "試合階級: master",
                 "Team A",
@@ -2651,7 +2651,7 @@ def test_discord_outbox_publisher_routes_approval_request_to_match_operation_thr
 
     expected_message = "\n".join(
         [
-            (f"<@83001> <@83002> {MATCH_APPROVAL_REQUESTED_NOTIFICATION_MESSAGE} match_id=21"),
+            f"<@83001> <@83002> {MATCH_APPROVAL_REQUESTED_NOTIFICATION_MESSAGE}",
             "仮決定結果: チーム B の勝ち",
             "承認締切: 2026-03-20T12:44:56+00:00",
             "承認できない場合は証拠を提示したうえで admin へ連絡してください。",
@@ -2729,7 +2729,7 @@ def test_discord_outbox_publisher_routes_match_notifications_to_existing_thread(
 
     expected_announcement_message = "\n".join(
         [
-            f"{MATCH_CREATED_NOTIFICATION_MESSAGE} match_id=22",
+            MATCH_CREATED_NOTIFICATION_MESSAGE,
             "試合形式: 3v3",
             "試合階級: expert",
             "Team A",
@@ -2744,7 +2744,7 @@ def test_discord_outbox_publisher_routes_match_notifications_to_existing_thread(
     )
     expected_parent_message = "\n".join(
         [
-            f"{MATCH_PARENT_ASSIGNED_NOTIFICATION_MESSAGE} match_id=22",
+            MATCH_PARENT_ASSIGNED_NOTIFICATION_MESSAGE,
             "親: <@84100>",
             "勝敗報告開始: 2026-03-20T12:00:00+00:00",
             "勝敗報告締切: 2026-03-20T12:20:00+00:00",
@@ -2752,20 +2752,20 @@ def test_discord_outbox_publisher_routes_match_notifications_to_existing_thread(
     )
     expected_phase_started_message = "\n".join(
         [
-            f"{MATCH_APPROVAL_STARTED_NOTIFICATION_MESSAGE} match_id=22",
+            MATCH_APPROVAL_STARTED_NOTIFICATION_MESSAGE,
             "仮決定結果: チーム A の勝ち",
             "承認締切: 2026-03-20T12:34:56+00:00",
         ]
     )
     expected_finalized_message = "\n".join(
         [
-            f"{MATCH_FINALIZED_NOTIFICATION_MESSAGE} match_id=22",
+            MATCH_FINALIZED_NOTIFICATION_MESSAGE,
             "結果: チーム A の勝ち",
         ]
     )
     expected_auto_penalty_message = "\n".join(
         [
-            f"<@84105> {MATCH_AUTO_PENALTY_APPLIED_NOTIFICATION_MESSAGE} match_id=22",
+            f"<@84105> {MATCH_AUTO_PENALTY_APPLIED_NOTIFICATION_MESSAGE}",
             "結果: チーム A の勝ち",
             "ペナルティ: 未報告",
             "現在の累積: 2",
@@ -2774,7 +2774,7 @@ def test_discord_outbox_publisher_routes_match_notifications_to_existing_thread(
     expected_admin_review_message = "\n".join(
         [
             "<@89004>",
-            f"{MATCH_ADMIN_REVIEW_REQUIRED_NOTIFICATION_MESSAGE} match_id=22",
+            MATCH_ADMIN_REVIEW_REQUIRED_NOTIFICATION_MESSAGE,
             "結果: チーム A の勝ち",
             "理由: 同票が解消できませんでした",
         ]
@@ -2944,7 +2944,7 @@ def test_discord_outbox_publisher_renders_match_approval_phase_started_message()
 
     expected_message = "\n".join(
         [
-            f"{MATCH_APPROVAL_STARTED_NOTIFICATION_MESSAGE} match_id=11",
+            MATCH_APPROVAL_STARTED_NOTIFICATION_MESSAGE,
             "仮決定結果: チーム A の勝ち",
             "承認締切: 2026-03-20T12:34:56+00:00",
         ]
@@ -2986,7 +2986,7 @@ def test_discord_outbox_publisher_renders_match_approval_request_message() -> No
 
     expected_message = "\n".join(
         [
-            f"<@80021> {MATCH_APPROVAL_REQUESTED_NOTIFICATION_MESSAGE} match_id=12",
+            f"<@80021> {MATCH_APPROVAL_REQUESTED_NOTIFICATION_MESSAGE}",
             "仮決定結果: チーム B の勝ち",
             "承認締切: 2026-03-20T12:44:56+00:00",
             "承認できない場合は証拠を提示したうえで admin へ連絡してください。",
@@ -3030,7 +3030,7 @@ def test_discord_outbox_publisher_renders_match_auto_penalty_message() -> None:
 
     expected_message = "\n".join(
         [
-            f"<@80022> {MATCH_AUTO_PENALTY_APPLIED_NOTIFICATION_MESSAGE} match_id=13",
+            f"<@80022> {MATCH_AUTO_PENALTY_APPLIED_NOTIFICATION_MESSAGE}",
             "結果: チーム A の勝ち",
             "ペナルティ: 誤報告",
             "現在の累積: 2",
@@ -3077,7 +3077,7 @@ def test_discord_outbox_publisher_renders_match_finalized_message_with_ratings()
 
     expected_message = "\n".join(
         [
-            f"{MATCH_FINALIZED_NOTIFICATION_MESSAGE} match_id=14",
+            MATCH_FINALIZED_NOTIFICATION_MESSAGE,
             "結果: 引き分け",
             "更新後レート",
             "Team A",

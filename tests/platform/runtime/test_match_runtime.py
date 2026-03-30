@@ -23,6 +23,7 @@ from dxd_rating.contexts.matches.application import (
     MATCH_AUTO_PENALTY_APPLIED_NOTIFICATION_MESSAGE,
     MATCH_FINALIZED_NOTIFICATION_MESSAGE,
     MATCH_PARENT_ASSIGNED_NOTIFICATION_MESSAGE,
+    MATCH_REPORT_OPENED_NOTIFICATION_MESSAGE,
     ActiveMatchTimerState,
     MatchApprovalResult,
     MatchFinalizationResult,
@@ -59,11 +60,17 @@ from dxd_rating.platform.db.models import (
 )
 from dxd_rating.platform.discord.rest import DiscordOutboxEventPublisher
 from dxd_rating.platform.discord.ui import (
+    MATCH_OPERATION_THREAD_DRAW_BUTTON_CUSTOM_ID_PREFIX,
+    MATCH_OPERATION_THREAD_DRAW_BUTTON_LABEL,
+    MATCH_OPERATION_THREAD_LOSE_BUTTON_CUSTOM_ID_PREFIX,
+    MATCH_OPERATION_THREAD_LOSE_BUTTON_LABEL,
     MATCH_OPERATION_THREAD_PARENT_BUTTON_CUSTOM_ID_PREFIX,
     MATCH_OPERATION_THREAD_PARENT_BUTTON_LABEL,
     MATCH_OPERATION_THREAD_VOID_BUTTON_CUSTOM_ID_PREFIX,
     MATCH_OPERATION_THREAD_VOID_BUTTON_LABEL,
     MATCH_OPERATION_THREAD_VOID_GUIDE_MESSAGE,
+    MATCH_OPERATION_THREAD_WIN_BUTTON_CUSTOM_ID_PREFIX,
+    MATCH_OPERATION_THREAD_WIN_BUTTON_LABEL,
     MATCHMAKING_NEWS_MATCH_ANNOUNCEMENT_SPECTATE_BUTTON_CUSTOM_ID_PREFIX,
     MATCHMAKING_NEWS_MATCH_ANNOUNCEMENT_SPECTATE_BUTTON_LABEL,
     MATCHMAKING_PRESENCE_THREAD_LEAVE_BUTTON_LABEL,
@@ -320,6 +327,27 @@ class FakeMatchmakingNewsMatchAnnouncementInteractionHandler:
 
 @dataclass
 class FakeMatchOperationThreadInteractionHandler:
+    async def win_from_match_operation_thread(
+        self,
+        interaction: discord.Interaction[discord.Client],
+        match_id: int,
+    ) -> None:
+        del interaction, match_id
+
+    async def draw_from_match_operation_thread(
+        self,
+        interaction: discord.Interaction[discord.Client],
+        match_id: int,
+    ) -> None:
+        del interaction, match_id
+
+    async def lose_from_match_operation_thread(
+        self,
+        interaction: discord.Interaction[discord.Client],
+        match_id: int,
+    ) -> None:
+        del interaction, match_id
+
     async def parent_from_match_operation_thread(
         self,
         interaction: discord.Interaction[discord.Client],
@@ -2685,11 +2713,233 @@ def test_discord_outbox_publisher_routes_approval_request_to_match_operation_thr
 
     asyncio.run(scenario())
 
-    assert match_channel.sent_messages == []
+    assert match_channel.sent_messages == [
+        "\n".join(
+            [
+                MATCH_CREATED_NOTIFICATION_MESSAGE,
+                "試合形式: 3v3",
+                "試合階級: regular",
+                "Team A",
+                "    A",
+                "    B",
+                "    C",
+                "Team B",
+                "    D",
+                "    E",
+                "    F",
+            ]
+        )
+    ]
     assert len(matchmaking_channel.created_threads) == 1
     created_thread = matchmaking_channel.created_threads[0]
     assert created_thread.added_user_ids == [83_001, 83_002, 89_003]
     assert created_thread.sent_messages == [expected_message]
+
+
+def test_discord_outbox_publisher_routes_report_opened_to_match_operation_thread() -> None:
+    guild = FakeDiscordGuild(id=910_015_1)
+    match_channel = FakeDiscordChannel(
+        id=900_015_1,
+        guild=guild,
+    )
+    matchmaking_channel = FakeDiscordChannel(
+        id=900_115_1,
+        guild=guild,
+    )
+    client = FakeDiscordClient(
+        channels={
+            match_channel.id: match_channel,
+            matchmaking_channel.id: matchmaking_channel,
+        },
+        users={
+            83_101: FakeDiscordUser(id=83_101),
+            83_102: FakeDiscordUser(id=83_102),
+            83_103: FakeDiscordUser(id=83_103),
+            83_104: FakeDiscordUser(id=83_104),
+            83_105: FakeDiscordUser(id=83_105),
+            83_106: FakeDiscordUser(id=83_106),
+        },
+    )
+    publisher = DiscordOutboxEventPublisher(
+        client=client,
+        match_operation_thread_interaction_handler=FakeMatchOperationThreadInteractionHandler(),
+    )
+
+    expected_message = "\n".join(
+        [
+            MATCH_REPORT_OPENED_NOTIFICATION_MESSAGE,
+            "自分視点で「勝ち」「引き分け」「負け」を選んでください。",
+            "無効試合にすべき場合は「無効試合申請」を押してください。",
+            "勝敗報告締切: 2026-03-20T12:20:00+00:00",
+        ]
+    )
+
+    async def scenario() -> None:
+        await publish_with_bound_loop(
+            publisher,
+            PendingOutboxEvent(
+                id=9_1,
+                event_type=OutboxEventType.MATCH_CREATED,
+                dedupe_key="match_created:21:thread-init",
+                payload={
+                    "match_id": 21,
+                    "match_format": "3v3",
+                    "queue_name": "regular",
+                    "destination": {
+                        "channel_id": match_channel.id,
+                        "guild_id": guild.id,
+                    },
+                    "team_a_discord_user_ids": [83_101, 83_102, 83_103],
+                    "team_b_discord_user_ids": [83_104, 83_105, 83_106],
+                    "team_a_player_display_names": ["A", "B", "C"],
+                    "team_b_player_display_names": ["D", "E", "F"],
+                    "match_operation_thread_parent_channel_id": matchmaking_channel.id,
+                    "create_match_operation_thread": True,
+                },
+                created_at=datetime.now(timezone.utc),
+            ),
+        )
+        await publish_with_bound_loop(
+            publisher,
+            PendingOutboxEvent(
+                id=9_2,
+                event_type=OutboxEventType.MATCH_REPORT_OPENED,
+                dedupe_key="match_report_opened:21:thread",
+                payload={
+                    "match_id": 21,
+                    "report_deadline_at": "2026-03-20T12:20:00+00:00",
+                    "destination": {
+                        "channel_id": match_channel.id,
+                        "guild_id": guild.id,
+                    },
+                    "team_a_discord_user_ids": [83_101, 83_102, 83_103],
+                    "team_b_discord_user_ids": [83_104, 83_105, 83_106],
+                    "match_operation_thread_parent_channel_id": matchmaking_channel.id,
+                },
+                created_at=datetime.now(timezone.utc),
+            ),
+        )
+
+    asyncio.run(scenario())
+
+    assert match_channel.sent_messages == [
+        "\n".join(
+            [
+                MATCH_CREATED_NOTIFICATION_MESSAGE,
+                "試合形式: 3v3",
+                "試合階級: regular",
+                "Team A",
+                "    A",
+                "    B",
+                "    C",
+                "Team B",
+                "    D",
+                "    E",
+                "    F",
+            ]
+        )
+    ]
+    assert len(matchmaking_channel.created_threads) == 1
+    created_thread = matchmaking_channel.created_threads[0]
+    assert created_thread.sent_messages[3] == expected_message
+    report_view = created_thread.sent_views[3]
+    assert report_view is not None
+    assert [getattr(child, "label", None) for child in report_view.children] == [
+        MATCH_OPERATION_THREAD_WIN_BUTTON_LABEL,
+        MATCH_OPERATION_THREAD_DRAW_BUTTON_LABEL,
+        MATCH_OPERATION_THREAD_LOSE_BUTTON_LABEL,
+        MATCH_OPERATION_THREAD_VOID_BUTTON_LABEL,
+    ]
+    assert [getattr(child, "custom_id", None) for child in report_view.children] == [
+        f"{MATCH_OPERATION_THREAD_WIN_BUTTON_CUSTOM_ID_PREFIX}:21",
+        f"{MATCH_OPERATION_THREAD_DRAW_BUTTON_CUSTOM_ID_PREFIX}:21",
+        f"{MATCH_OPERATION_THREAD_LOSE_BUTTON_CUSTOM_ID_PREFIX}:21",
+        f"{MATCH_OPERATION_THREAD_VOID_BUTTON_CUSTOM_ID_PREFIX}:21",
+    ]
+    assert [
+        getattr(getattr(child, "item", None), "style", None)
+        for child in report_view.children
+    ] == [
+        discord.ButtonStyle.success,
+        discord.ButtonStyle.primary,
+        discord.ButtonStyle.secondary,
+        discord.ButtonStyle.danger,
+    ]
+
+
+def test_discord_outbox_publisher_reuses_existing_thread_for_report_opened_after_fetch() -> None:
+    guild = FakeDiscordGuild(id=910_015_2)
+    match_channel = FakeDiscordChannel(
+        id=900_015_2,
+        guild=guild,
+    )
+    matchmaking_channel = FakeDiscordChannel(
+        id=900_115_2,
+        guild=guild,
+    )
+    existing_thread = FakeDiscordThread(
+        id=900_115_2001,
+        name="試合-31",
+        guild=guild,
+        parent=matchmaking_channel,
+    )
+    object.__setattr__(guild, "threads", [existing_thread])
+    client = FakeDiscordClient(
+        channels={
+            match_channel.id: match_channel,
+            matchmaking_channel.id: matchmaking_channel,
+        },
+        uncached_channel_ids={matchmaking_channel.id},
+    )
+    publisher = DiscordOutboxEventPublisher(
+        client=client,
+        match_operation_thread_interaction_handler=FakeMatchOperationThreadInteractionHandler(),
+    )
+
+    async def scenario() -> None:
+        await publish_with_bound_loop(
+            publisher,
+            PendingOutboxEvent(
+                id=9_3,
+                event_type=OutboxEventType.MATCH_REPORT_OPENED,
+                dedupe_key="match_report_opened:31:thread",
+                payload={
+                    "match_id": 31,
+                    "report_deadline_at": "2026-03-20T12:45:00+00:00",
+                    "destination": {
+                        "channel_id": match_channel.id,
+                        "guild_id": guild.id,
+                    },
+                    "team_a_discord_user_ids": [93_101, 93_102, 93_103],
+                    "team_b_discord_user_ids": [93_104, 93_105, 93_106],
+                    "match_operation_thread_parent_channel_id": matchmaking_channel.id,
+                },
+                created_at=datetime.now(timezone.utc),
+            ),
+        )
+
+    asyncio.run(scenario())
+
+    assert client.fetched_channel_ids == [matchmaking_channel.id]
+    assert matchmaking_channel.created_threads == []
+    assert existing_thread.sent_messages == [
+        "\n".join(
+            [
+                MATCH_REPORT_OPENED_NOTIFICATION_MESSAGE,
+                "自分視点で「勝ち」「引き分け」「負け」を選んでください。",
+                "無効試合にすべき場合は「無効試合申請」を押してください。",
+                "勝敗報告締切: 2026-03-20T12:45:00+00:00",
+            ]
+        )
+    ]
+    report_view = existing_thread.sent_views[0]
+    assert report_view is not None
+    assert [getattr(child, "label", None) for child in report_view.children] == [
+        MATCH_OPERATION_THREAD_WIN_BUTTON_LABEL,
+        MATCH_OPERATION_THREAD_DRAW_BUTTON_LABEL,
+        MATCH_OPERATION_THREAD_LOSE_BUTTON_LABEL,
+        MATCH_OPERATION_THREAD_VOID_BUTTON_LABEL,
+    ]
 
 
 def test_discord_outbox_publisher_routes_match_notifications_to_existing_thread() -> None:

@@ -1,8 +1,8 @@
 """initial commit
 
-Revision ID: 9f9398a38f38
+Revision ID: 36e1433ee194
 Revises: 
-Create Date: 2026-03-29 17:59:39.340070
+Create Date: 2026-03-31 00:05:51.282385
 """
 
 from collections.abc import Sequence
@@ -13,7 +13,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = '9f9398a38f38'
+revision: str = '36e1433ee194'
 down_revision: str | None = None
 branch_labels: Sequence[str] | None = None
 depends_on: Sequence[str] | None = None
@@ -35,7 +35,7 @@ def upgrade() -> None:
     op.create_index(op.f('ix_managed_ui_channels_ui_type'), 'managed_ui_channels', ['ui_type'], unique=False)
     op.create_table('outbox_events',
     sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
-    sa.Column('event_type', sa.Enum('presence_reminder', 'queue_expired', 'match_created', 'match_parent_assigned', 'match_approval_requested', 'match_finalized', 'match_admin_review_required', name='outbox_event_type', native_enum=False, create_constraint=True), nullable=False),
+    sa.Column('event_type', sa.Enum('presence_reminder', 'queue_expired', 'match_created', 'match_parent_assigned', 'match_report_opened', 'match_approval_requested', 'match_finalized', 'match_admin_review_required', name='outbox_event_type', native_enum=False, create_constraint=True), nullable=False),
     sa.Column('dedupe_key', sa.String(length=255), nullable=False),
     sa.Column('payload', sa.JSON(), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),

@@ -804,6 +804,22 @@ class BotCommandHandlers:
             failure_message=MATCH_ACTION_FAILED_MESSAGE,
         )
 
+    async def win_from_match_operation_thread(
+        self,
+        interaction: discord.Interaction[Any],
+        match_id: int,
+    ) -> None:
+        await self._sync_requesting_user_identity(interaction)
+        await self._run_match_report(
+            interaction=interaction,
+            match_id=match_id,
+            executor_discord_user_id=interaction.user.id,
+            input_result=MatchReportInputResult.WIN,
+            success_message=MATCH_REPORT_SUCCESS_MESSAGE,
+            failure_message=MATCH_ACTION_FAILED_MESSAGE,
+            ephemeral=True,
+        )
+
     async def match_lose(self, interaction: discord.Interaction[Any], match_id: int) -> None:
         await self._sync_requesting_user_identity(interaction)
         await self._run_match_report(
@@ -815,6 +831,22 @@ class BotCommandHandlers:
             failure_message=MATCH_ACTION_FAILED_MESSAGE,
         )
 
+    async def lose_from_match_operation_thread(
+        self,
+        interaction: discord.Interaction[Any],
+        match_id: int,
+    ) -> None:
+        await self._sync_requesting_user_identity(interaction)
+        await self._run_match_report(
+            interaction=interaction,
+            match_id=match_id,
+            executor_discord_user_id=interaction.user.id,
+            input_result=MatchReportInputResult.LOSE,
+            success_message=MATCH_REPORT_SUCCESS_MESSAGE,
+            failure_message=MATCH_ACTION_FAILED_MESSAGE,
+            ephemeral=True,
+        )
+
     async def match_draw(self, interaction: discord.Interaction[Any], match_id: int) -> None:
         await self._sync_requesting_user_identity(interaction)
         await self._run_match_report(
@@ -824,6 +856,22 @@ class BotCommandHandlers:
             input_result=MatchReportInputResult.DRAW,
             success_message=MATCH_REPORT_SUCCESS_MESSAGE,
             failure_message=MATCH_ACTION_FAILED_MESSAGE,
+        )
+
+    async def draw_from_match_operation_thread(
+        self,
+        interaction: discord.Interaction[Any],
+        match_id: int,
+    ) -> None:
+        await self._sync_requesting_user_identity(interaction)
+        await self._run_match_report(
+            interaction=interaction,
+            match_id=match_id,
+            executor_discord_user_id=interaction.user.id,
+            input_result=MatchReportInputResult.DRAW,
+            success_message=MATCH_REPORT_SUCCESS_MESSAGE,
+            failure_message=MATCH_ACTION_FAILED_MESSAGE,
+            ephemeral=True,
         )
 
     async def match_void(self, interaction: discord.Interaction[Any], match_id: int) -> None:

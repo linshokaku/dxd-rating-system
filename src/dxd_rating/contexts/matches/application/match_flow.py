@@ -102,6 +102,9 @@ from dxd_rating.shared.constants import (
 )
 
 MATCH_PARENT_ASSIGNED_NOTIFICATION_MESSAGE = "親が決定しました。"
+MATCH_REPORT_OPENED_NOTIFICATION_MESSAGE = (
+    "試合が終わったら参加者全員試合結果を報告してください。"
+)
 MATCH_APPROVAL_STARTED_NOTIFICATION_MESSAGE = "承認フェーズに移行しました。"
 MATCH_APPROVAL_REQUESTED_NOTIFICATION_MESSAGE = "仮決定結果の承認が必要です。"
 MATCH_FINALIZED_NOTIFICATION_MESSAGE = "試合結果が確定しました。"
@@ -543,7 +546,27 @@ class MatchFlowService:
                 ):
                     return False
 
+                report_deadline_at = active_state.report_deadline_at
+                if report_deadline_at is None:
+                    raise MatchFlowError("勝敗報告締切が設定されていません。")
+
                 active_state.reporting_opened_at = active_state.report_open_at
+                participants = self._get_match_participants(session, match_id)
+                report_opened_payload = self._build_match_operation_thread_payload(
+                    session,
+                    participants=participants,
+                    event_type=OutboxEventType.MATCH_REPORT_OPENED,
+                    extra_payload={
+                        "match_id": active_state.match_id,
+                        "report_deadline_at": report_deadline_at.isoformat(),
+                    },
+                )
+                self._enqueue_outbox_event(
+                    session,
+                    event_type=OutboxEventType.MATCH_REPORT_OPENED,
+                    dedupe_key=f"match_report_opened:{active_state.match_id}:thread",
+                    payload=report_opened_payload,
+                )
                 return True
         except Exception as exc:
             self._raise_retryable_task_error(exc, operation="opening match reporting")

@@ -15,6 +15,7 @@ from dxd_rating.contexts.matches.application import (
     MATCH_AUTO_PENALTY_APPLIED_NOTIFICATION_MESSAGE,
     MATCH_FINALIZED_NOTIFICATION_MESSAGE,
     MATCH_PARENT_ASSIGNED_NOTIFICATION_MESSAGE,
+    MATCH_REPORT_OPENED_NOTIFICATION_MESSAGE,
 )
 from dxd_rating.contexts.matchmaking.application import (
     MATCH_CREATED_NOTIFICATION_MESSAGE,
@@ -30,6 +31,7 @@ from dxd_rating.platform.discord.ui import (
     MatchOperationThreadInteractionHandler,
     create_match_operation_thread_initial_view,
     create_match_operation_thread_parent_recruitment_view,
+    create_match_operation_thread_report_view,
     create_matchmaking_news_match_announcement_view,
     create_matchmaking_presence_thread_view,
 )
@@ -199,6 +201,7 @@ class DiscordOutboxEventPublisher:
             await match_operation_thread.send(
                 self._render_content(event.event_type, event.payload),
                 allowed_mentions=self._allowed_mentions,
+                view=self._build_match_operation_thread_event_view(event),
             )
             return
 
@@ -357,6 +360,7 @@ class DiscordOutboxEventPublisher:
     ) -> DiscordPrivateThread | None:
         if event.event_type not in {
             OutboxEventType.MATCH_PARENT_ASSIGNED,
+            OutboxEventType.MATCH_REPORT_OPENED,
             OutboxEventType.MATCH_APPROVAL_REQUESTED,
             OutboxEventType.MATCH_FINALIZED,
             OutboxEventType.MATCH_ADMIN_REVIEW_REQUIRED,
@@ -634,6 +638,9 @@ class DiscordOutboxEventPublisher:
         if event_type == OutboxEventType.MATCH_PARENT_ASSIGNED:
             return self._render_match_parent_assigned_content(payload)
 
+        if event_type == OutboxEventType.MATCH_REPORT_OPENED:
+            return self._render_match_report_opened_content(payload)
+
         if event_type == OutboxEventType.MATCH_APPROVAL_REQUESTED:
             return self._render_match_approval_requested_content(payload)
 
@@ -817,6 +824,33 @@ class DiscordOutboxEventPublisher:
                 f"勝敗報告開始: {report_open_at}",
                 f"勝敗報告締切: {report_deadline_at}",
             ]
+        )
+
+    def _render_match_report_opened_content(self, payload: dict[str, object]) -> str:
+        self._require_payload_int(payload, "match_id")
+        report_deadline_at = self._require_payload_str(payload, "report_deadline_at")
+        return "\n".join(
+            [
+                MATCH_REPORT_OPENED_NOTIFICATION_MESSAGE,
+                "自分視点で「勝ち」「引き分け」「負け」を選んでください。",
+                "無効試合にすべき場合は「無効試合申請」を押してください。",
+                f"勝敗報告締切: {report_deadline_at}",
+            ]
+        )
+
+    def _build_match_operation_thread_event_view(
+        self,
+        event: PendingOutboxEvent,
+    ) -> discord.ui.View | None:
+        if (
+            event.event_type != OutboxEventType.MATCH_REPORT_OPENED
+            or self.match_operation_thread_interaction_handler is None
+        ):
+            return None
+
+        return create_match_operation_thread_report_view(
+            match_id=self._require_payload_int(event.payload, "match_id"),
+            interaction_handler=self.match_operation_thread_interaction_handler,
         )
 
     def _render_match_approval_requested_content(self, payload: dict[str, object]) -> str:

@@ -1655,6 +1655,78 @@ def test_match_operation_thread_void_button_responds_ephemerally(
     )
 
 
+@pytest.mark.parametrize(
+    ("handler_name", "reported_input_result"),
+    [
+        ("win_from_match_operation_thread", MatchReportInputResult.WIN),
+        ("draw_from_match_operation_thread", MatchReportInputResult.DRAW),
+        ("lose_from_match_operation_thread", MatchReportInputResult.LOSE),
+    ],
+)
+def test_match_operation_thread_report_buttons_respond_ephemerally(
+    session: Session,
+    session_factory: sessionmaker[Session],
+    handler_name: str,
+    reported_input_result: MatchReportInputResult,
+) -> None:
+    match_id, players = create_match(
+        session,
+        session_factory,
+        start_discord_user_id=123_456_789_012_345_718,
+        channel_id=13_014_1,
+        guild_id=14_014_1,
+    )
+    handlers = create_handlers(
+        session_factory,
+        matching_queue_service=MatchingQueueService(session_factory),
+    )
+    setup_matchmaking_managed_ui_channel(handlers, 13_014_1)
+    match_service = MatchFlowService(session_factory)
+    match_service.volunteer_parent(match_id, players[0].id)
+
+    session.expire_all()
+    active_state = session.scalar(
+        select(ActiveMatchState).where(ActiveMatchState.match_id == match_id)
+    )
+    assert active_state is not None
+    now = datetime.now(timezone.utc)
+    active_state.report_open_at = now - timedelta(minutes=1)
+    active_state.report_deadline_at = now + timedelta(minutes=10)
+    session.commit()
+    assert match_service.process_report_open(match_id) is True
+
+    interaction = FakeInteraction(
+        user=FakeUser(id=players[0].discord_user_id),
+        channel_id=13_114_1,
+        guild_id=14_014_1,
+    )
+
+    asyncio.run(
+        getattr(handlers, handler_name)(
+            as_interaction(interaction),
+            match_id,
+        )
+    )
+
+    latest_report = session.scalar(
+        select(MatchReport)
+        .where(
+            MatchReport.match_id == match_id,
+            MatchReport.player_id == players[0].id,
+            MatchReport.is_latest.is_(True),
+        )
+        .order_by(MatchReport.id.desc())
+    )
+
+    assert latest_report is not None
+    assert latest_report.reported_input_result == reported_input_result
+    assert_response(
+        interaction,
+        ["勝敗報告を受け付けました。"],
+        ephemeral=True,
+    )
+
+
 def test_match_operation_thread_parent_button_responds_ephemerally(
     session: Session,
     session_factory: sessionmaker[Session],

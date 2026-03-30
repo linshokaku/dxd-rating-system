@@ -1105,6 +1105,58 @@ def test_match_flow_uses_match_operation_thread_payloads_for_parent_and_approval
     )
 
 
+def test_process_report_open_enqueues_match_report_opened_event_once(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    matchmaking_channel = ensure_matchmaking_channel(session)
+    match_id, participants = create_first_match_for_format(
+        session,
+        session_factory,
+        match_format=MatchFormat.THREE_VS_THREE,
+        start_discord_user_id=60_500_1,
+        channel_id=91_005_10,
+        guild_id=92_005_10,
+    )
+    match_service = MatchFlowService(session_factory)
+
+    match_service.volunteer_parent(match_id, participants[0].player_id)
+    set_report_window_open(session, match_id)
+
+    assert match_service.process_report_open(match_id) is True
+    assert match_service.process_report_open(match_id) is False
+
+    session.expire_all()
+    active_state = session.get(ActiveMatchState, match_id)
+    report_opened_events = get_match_events(
+        session,
+        event_type=OutboxEventType.MATCH_REPORT_OPENED,
+        match_id=match_id,
+    )
+
+    assert active_state is not None
+    assert active_state.reporting_opened_at == active_state.report_open_at
+    assert len(report_opened_events) == 1
+    assert report_opened_events[0].dedupe_key == f"match_report_opened:{match_id}:thread"
+    assert report_opened_events[0].payload["report_deadline_at"] == (
+        active_state.report_deadline_at.isoformat()
+    )
+    assert (
+        report_opened_events[0].payload["match_operation_thread_parent_channel_id"]
+        == matchmaking_channel.channel_id
+    )
+    assert report_opened_events[0].payload["team_a_discord_user_ids"] == [
+        participant.notification_mention_discord_user_id or participant.player.discord_user_id
+        for participant in participants
+        if participant.team == MatchParticipantTeam.TEAM_A
+    ]
+    assert report_opened_events[0].payload["team_b_discord_user_ids"] == [
+        participant.notification_mention_discord_user_id or participant.player.discord_user_id
+        for participant in participants
+        if participant.team == MatchParticipantTeam.TEAM_B
+    ]
+
+
 @pytest.mark.parametrize(
     ("match_format", "start_discord_user_id", "channel_id", "guild_id"),
     [

@@ -84,6 +84,8 @@ from dxd_rating.platform.db.session import session_scope
 from dxd_rating.platform.discord.ui import (
     build_info_thread_initial_message,
     build_managed_ui_channel_overwrites,
+    create_info_thread_leaderboard_initial_view,
+    create_info_thread_leaderboard_next_page_view,
     create_matchmaking_presence_thread_view,
     is_valid_managed_ui_channel_name,
     send_initial_managed_ui_message,
@@ -132,6 +134,10 @@ LEADERBOARD_SEASON_FAILED_MESSAGE = (
 INFO_THREAD_REQUIRED_MESSAGE = "先に /info_thread を実行してください。"
 INFO_THREAD_NOT_FOUND_MESSAGE = (
     "情報確認用スレッドが見つかりません。先に /info_thread を実行してください。"
+)
+INFO_THREAD_INACTIVE_MESSAGE = (
+    "このスレッドは現在の情報確認用スレッドではありません。"
+    "最新の情報確認用スレッドを利用してください。"
 )
 INFO_THREAD_SUCCESS_MESSAGE = "情報確認用スレッドを作成しました。"
 INFO_THREAD_CHANNEL_NOT_FOUND_MESSAGE = (
@@ -900,6 +906,34 @@ class BotCommandHandlers:
         match_format: str,
         page: int,
     ) -> None:
+        await self._run_current_leaderboard(
+            interaction,
+            match_format,
+            page,
+            require_active_thread_match=False,
+        )
+
+    async def leaderboard_from_info_thread(
+        self,
+        interaction: discord.Interaction[Any],
+        match_format: str,
+        page: int,
+    ) -> None:
+        await self._run_current_leaderboard(
+            interaction,
+            match_format,
+            page,
+            require_active_thread_match=True,
+        )
+
+    async def _run_current_leaderboard(
+        self,
+        interaction: discord.Interaction[Any],
+        match_format: str,
+        page: int,
+        *,
+        require_active_thread_match: bool,
+    ) -> None:
         await self._sync_requesting_user_identity(interaction)
         await self._defer_message_response(interaction, ephemeral=True)
         try:
@@ -908,11 +942,19 @@ class BotCommandHandlers:
                 self._get_latest_info_thread_channel_id,
                 player_id,
             )
-            if thread_channel_id is None:
+            if require_active_thread_match:
+                should_continue = await self._validate_active_info_thread_binding(
+                    interaction,
+                    thread_channel_id=thread_channel_id,
+                )
+                if not should_continue:
+                    return
+            elif thread_channel_id is None:
                 raise MissingInfoThreadBindingError(
                     f"info thread binding is missing for player_id={player_id}"
                 )
 
+            assert thread_channel_id is not None
             info_thread = await self._resolve_bound_info_thread(
                 interaction,
                 thread_channel_id=thread_channel_id,
@@ -925,6 +967,7 @@ class BotCommandHandlers:
             await self._send_info_thread_message(
                 info_thread,
                 self._format_leaderboard_message(leaderboard_page),
+                view=self._build_current_leaderboard_view(leaderboard_page),
             )
         except PlayerNotRegisteredError:
             await self._send_player_operation_message(
@@ -947,10 +990,12 @@ class BotCommandHandlers:
             return
         except Exception:
             self.logger.exception(
-                "Failed to execute /leaderboard command discord_user_id=%s match_format=%s page=%s",
+                "Failed to execute leaderboard interaction "
+                "discord_user_id=%s match_format=%s page=%s require_active_thread_match=%s",
                 interaction.user.id,
                 match_format,
                 page,
+                require_active_thread_match,
             )
             await self._send_player_operation_message(interaction, LEADERBOARD_FAILED_MESSAGE)
             return
@@ -3049,6 +3094,28 @@ class BotCommandHandlers:
         )
         return "\n".join(lines)
 
+    def _build_info_thread_initial_view(
+        self,
+        command_name: InfoThreadCommandName,
+    ) -> discord.ui.View | None:
+        if command_name is not InfoThreadCommandName.LEADERBOARD:
+            return None
+
+        return create_info_thread_leaderboard_initial_view(self)
+
+    def _build_current_leaderboard_view(
+        self,
+        leaderboard_page: CurrentLeaderboardPage,
+    ) -> discord.ui.View | None:
+        if not leaderboard_page.has_next_page:
+            return None
+
+        return create_info_thread_leaderboard_next_page_view(
+            match_format=leaderboard_page.match_format,
+            target_page=leaderboard_page.page + 1,
+            interaction_handler=self,
+        )
+
     def _format_season_leaderboard_message(
         self,
         leaderboard_page: SeasonLeaderboardPage,
@@ -3153,6 +3220,28 @@ class BotCommandHandlers:
             await self._send_player_operation_message(
                 interaction,
                 MATCHMAKING_PRESENCE_THREAD_MISMATCH_MESSAGE,
+            )
+            return False
+
+        return True
+
+    async def _validate_active_info_thread_binding(
+        self,
+        interaction: discord.Interaction[Any],
+        *,
+        thread_channel_id: int | None,
+    ) -> bool:
+        if interaction.channel_id is None:
+            await self._send_player_operation_message(
+                interaction,
+                INFO_THREAD_INACTIVE_MESSAGE,
+            )
+            return False
+
+        if thread_channel_id != interaction.channel_id:
+            await self._send_player_operation_message(
+                interaction,
+                INFO_THREAD_INACTIVE_MESSAGE,
             )
             return False
 
@@ -3506,7 +3595,10 @@ class BotCommandHandlers:
             for invitee in self._dedupe_discord_users(invitees):
                 await add_user(invitee)
 
-        await cast(Any, thread).send(build_info_thread_initial_message(command_name))
+        await cast(Any, thread).send(
+            build_info_thread_initial_message(command_name),
+            view=self._build_info_thread_initial_view(command_name),
+        )
         self._require_discord_channel_id(thread)
         return thread
 
@@ -4030,6 +4122,8 @@ class BotCommandHandlers:
         self,
         thread: object,
         message: str,
+        *,
+        view: discord.ui.View | None = None,
     ) -> None:
         send = getattr(thread, "send", None)
         if not callable(send):
@@ -4038,7 +4132,7 @@ class BotCommandHandlers:
             )
 
         try:
-            await send(message)
+            await send(message, view=view)
         except (discord.Forbidden, discord.NotFound) as exc:
             raise UnavailableInfoThreadError(
                 f"info thread channel_id={getattr(thread, 'id', None)} send failed"

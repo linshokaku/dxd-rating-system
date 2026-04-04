@@ -132,6 +132,7 @@ def test_get_current_leaderboard_page_returns_ranked_entries_with_rank_changes(
     assert result.match_format == MatchFormat.THREE_VS_THREE
     assert result.page == 1
     assert result.page_size == 20
+    assert result.has_next_page is False
     assert [
         (
             entry.rank,
@@ -183,9 +184,46 @@ def test_get_current_leaderboard_page_returns_page_two_with_fallback_display_nam
         current_time=current_time,
     )
 
+    assert result.has_next_page is False
     assert len(result.entries) == 1
     assert result.entries[0].rank == 21
     assert result.entries[0].display_name == str(players[20].discord_user_id)
+
+
+def test_get_current_leaderboard_page_marks_has_next_page_when_more_entries_exist(
+    session: Session,
+) -> None:
+    current_time = datetime(2026, 3, 22, 3, 15, 0, tzinfo=timezone.utc)
+    active_season, _ = create_active_and_upcoming_seasons(session, current_time=current_time)
+    players = create_players(
+        session,
+        display_names=tuple(f"Player {index}" for index in range(1, 22)),
+        start_discord_user_id=323_456_789_012_345_600,
+    )
+    session.add_all(
+        PlayerFormatStats(
+            player_id=player.id,
+            season_id=active_season.id,
+            match_format=MatchFormat.THREE_VS_THREE,
+            rating=2000 - index,
+            games_played=1,
+            wins=1,
+        )
+        for index, player in enumerate(players)
+    )
+    session.flush()
+
+    result = get_current_leaderboard_page(
+        session,
+        match_format=MatchFormat.THREE_VS_THREE,
+        page=1,
+        current_time=current_time,
+    )
+
+    assert result.has_next_page is True
+    assert len(result.entries) == 20
+    assert result.entries[0].rank == 1
+    assert result.entries[-1].rank == 20
 
 
 def test_get_current_leaderboard_page_rejects_invalid_page(session: Session) -> None:

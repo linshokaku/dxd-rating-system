@@ -13,9 +13,11 @@ from dxd_rating.platform.db.session import create_db_engine, create_session_fact
 from dxd_rating.platform.discord.gateway.commands import BotCommandHandlers, register_app_commands
 from dxd_rating.platform.discord.rest import DiscordOutboxEventPublisher
 from dxd_rating.platform.discord.ui import (
+    create_info_thread_leaderboard_initial_view,
     create_managed_ui_view,
     create_matchmaking_presence_thread_view,
     has_persistent_managed_ui_view,
+    register_info_thread_dynamic_items,
     register_match_operation_thread_dynamic_items,
     register_matchmaking_news_match_announcement_dynamic_items,
 )
@@ -93,7 +95,12 @@ class BotClient(discord.Client):
             self,
             self.command_handlers,
         )
+        register_info_thread_dynamic_items(
+            self,
+            self.command_handlers,
+        )
         self.add_view(create_matchmaking_presence_thread_view(self.command_handlers))
+        self.add_view(create_info_thread_leaderboard_initial_view(self.command_handlers))
 
         managed_ui_channels = await asyncio.to_thread(
             self.command_handlers.managed_ui_service.list_managed_ui_channels

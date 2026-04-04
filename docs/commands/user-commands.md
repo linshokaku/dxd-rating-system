@@ -353,6 +353,7 @@ last_played_at: -
 - thread に表示する項目は、現在順位、ユーザー名、小数点付きのレート値、`1日前` の順位差分、`3日前` の順位差分、`7日前` の順位差分とする。
 - thread に投稿するランキングメッセージには、次ページが存在する場合だけ末尾に `次のページ` button を付ける。
 - `次のページ` button を押したときは、同じ `match_format` の `/leaderboard <match_format> page:n+1` と同等の処理を行う。
+- `次のページ` button を押した時点で、押下元メッセージ上の button は disabled にする。
 - レスポンスは interaction 宛てに、実行ユーザーにだけ見えるプレーンテキストで返す。
 - 成功時のレスポンス:
   - `ランキングを表示しました。`
@@ -376,6 +377,7 @@ last_played_at: -
 
 - このコマンドは新しい private thread を作成せず、現在紐づいている thread を表示先として使う。
 - `次のページ` button は、slash command `/leaderboard` を直接実行して thread に投稿された結果にも、thread 内 UI から実行して投稿された結果にも同じ条件で付く。
+- `leaderboard` 用 info thread 初回メッセージの `ランキングを表示` button と、ランキング結果メッセージの `次のページ` button は、一度押すと押下元メッセージ上の component 全体が disabled になる。
 - ランキングの並び順と順位差分の計算ルールは [../leaderboard/ranking.md](../leaderboard/ranking.md) を参照する。
 - thread への表示形式は [../ui/info_thread.md](../ui/info_thread.md) を参照する。
 

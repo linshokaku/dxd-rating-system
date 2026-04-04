@@ -46,6 +46,7 @@
 - この仕様で定義する thread 内 button を押したときは、押下元 thread の `thread_id` と、実行ユーザーに現在紐づいている最新の `thread_id` を比較する。
 - `thread_id` が一致した場合だけ、その button 操作を正当な操作として扱い、対応するコマンド相当の処理を実行する。
 - `thread_id` が一致しない場合は、その thread は active でないものとして扱い、対応するコマンド相当の処理は実行しない。
+- この仕様で定義する button は、一度押した時点で押下元メッセージ上の component 全体を disabled にする。
 - active でない thread で button が押された場合は、押下したユーザーにだけ見えるメッセージで `このスレッドは現在の情報確認用スレッドではありません。最新の情報確認用スレッドを利用してください。` を返す。
 - この active / inactive 判定ルールは、`leaderboard` 用 button だけでなく、今後この仕様で定義する `/info_thread` 由来 private thread 内 button 全般に適用する。
 
@@ -76,6 +77,8 @@
 - 初回メッセージには、`match_format` pulldown と `ランキングを表示` button を表示する。
 - `match_format` pulldown の選択肢は `/leaderboard` と同じ `1v1`、`2v2`、`3v3` とする。
 - `ランキングを表示` button を押したときは、選択された `match_format` を使って `/leaderboard <match_format> page:1` と同等の処理を行う。
+- `ランキングを表示` button を押した時点で、その初回メッセージ上の pulldown と button はどちらも disabled にする。
+- `match_format` を選ばずに `ランキングを表示` button を押した場合は、ランキング表示は行わず、押下ユーザーに `試合形式を選択してください。再度操作するには /info_thread を実行して新しい情報確認用スレッドを作成してください。` を返す。
 - `leaderboard` 用の初期 UI には `page` pulldown は置かない。
 - 2 ページ目以降の表示は、ランキング結果メッセージ末尾に表示する `次のページ` button で行う。
 
@@ -166,6 +169,7 @@ last_played_at: -
 - 比較不能な順位差分は `-` で表示する。
 - ランキング結果メッセージの末尾には、そのページの次ページが存在する場合だけ `次のページ` button を付ける。
 - `次のページ` button を押したときは、表示中メッセージの `match_format` と `page` を引き継いで `/leaderboard <match_format> page:n+1` と同等の処理を行う。
+- `次のページ` button を押した時点で、押下元ランキングメッセージ上の button は disabled にする。
 - 次ページが存在しない最終ページでは `次のページ` button を表示しない。
 - この `次のページ` button は、thread 内の `ランキングを表示` button から表示したランキング結果だけでなく、slash command `/leaderboard <match_format> page:n` を直接実行して thread に投稿したランキング結果にも同様に付ける。
 

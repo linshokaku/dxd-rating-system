@@ -57,6 +57,7 @@ class CurrentLeaderboardPage:
     match_format: MatchFormat
     page: int
     page_size: int
+    has_next_page: bool
     entries: tuple[CurrentLeaderboardEntry, ...]
 
 
@@ -124,7 +125,7 @@ def get_current_leaderboard_page(
         session,
         current_time=resolved_current_time,
     ).active
-    page_offset, leaderboard_rows = _load_leaderboard_rows(
+    page_offset, leaderboard_rows, has_next_page = _load_current_leaderboard_rows(
         session,
         season_id=active_season.id,
         match_format=resolved_match_format,
@@ -180,6 +181,7 @@ def get_current_leaderboard_page(
         match_format=resolved_match_format,
         page=page,
         page_size=LEADERBOARD_PAGE_SIZE,
+        has_next_page=has_next_page,
         entries=entries,
     )
 
@@ -288,6 +290,47 @@ def _load_leaderboard_rows(
     if not leaderboard_rows:
         raise LeaderboardPageNotFoundError(LEADERBOARD_PAGE_NOT_FOUND_MESSAGE)
     return page_offset, leaderboard_rows
+
+
+def _load_current_leaderboard_rows(
+    session: Session,
+    *,
+    season_id: int,
+    match_format: MatchFormat,
+    page: int,
+) -> tuple[int, list[tuple[PlayerFormatStats, Player]], bool]:
+    if page < 1:
+        raise InvalidLeaderboardPageError(INVALID_LEADERBOARD_PAGE_MESSAGE)
+
+    page_offset = (page - 1) * LEADERBOARD_PAGE_SIZE
+    leaderboard_rows = list(
+        session.execute(
+            select(PlayerFormatStats, Player)
+            .join(Player, Player.id == PlayerFormatStats.player_id)
+            .where(
+                PlayerFormatStats.season_id == season_id,
+                PlayerFormatStats.match_format == match_format,
+                PlayerFormatStats.games_played > 0,
+            )
+            .order_by(
+                PlayerFormatStats.rating.desc(),
+                PlayerFormatStats.games_played.desc(),
+                PlayerFormatStats.player_id.asc(),
+            )
+            .offset(page_offset)
+            .limit(LEADERBOARD_PAGE_SIZE + 1)
+        )
+        .tuples()
+        .all()
+    )
+    if not leaderboard_rows:
+        raise LeaderboardPageNotFoundError(LEADERBOARD_PAGE_NOT_FOUND_MESSAGE)
+
+    has_next_page = len(leaderboard_rows) > LEADERBOARD_PAGE_SIZE
+    if has_next_page:
+        leaderboard_rows = leaderboard_rows[:LEADERBOARD_PAGE_SIZE]
+
+    return page_offset, leaderboard_rows, has_next_page
 
 
 def _resolve_display_name(player: Player) -> str:

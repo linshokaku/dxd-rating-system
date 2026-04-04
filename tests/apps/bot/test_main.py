@@ -14,6 +14,7 @@ from dxd_rating.platform.discord.ui import (
     INFO_CHANNEL_PLAYER_INFO_BUTTON_LABEL,
     INFO_CHANNEL_PLAYER_INFO_SEASON_BUTTON_LABEL,
     INFO_THREAD_LEADERBOARD_SHOW_BUTTON_LABEL,
+    INFO_THREAD_PLAYER_INFO_SHOW_BUTTON_LABEL,
     MATCHMAKING_PRESENCE_THREAD_LEAVE_BUTTON_LABEL,
     MATCHMAKING_PRESENCE_THREAD_PRESENT_BUTTON_LABEL,
     REGISTER_PANEL_BUTTON_LABEL,
@@ -98,6 +99,7 @@ def test_setup_hook_restores_persistent_register_panel_view(
         INFO_CHANNEL_PLAYER_INFO_BUTTON_LABEL,
         INFO_CHANNEL_PLAYER_INFO_SEASON_BUTTON_LABEL,
     ] in button_labels_by_view
+    assert [INFO_THREAD_PLAYER_INFO_SHOW_BUTTON_LABEL] in button_labels_by_view
     assert [None, INFO_THREAD_LEADERBOARD_SHOW_BUTTON_LABEL] in button_labels_by_view
     assert [None, None, INFO_THREAD_LEADERBOARD_SHOW_BUTTON_LABEL] in button_labels_by_view
     dynamic_item_classes = set(client._connection._view_store._dynamic_items.values())
@@ -144,6 +146,7 @@ def test_setup_hook_skips_managed_channels_without_persistent_view(
         MATCHMAKING_PRESENCE_THREAD_PRESENT_BUTTON_LABEL,
         MATCHMAKING_PRESENCE_THREAD_LEAVE_BUTTON_LABEL,
     ] in button_labels_by_view
+    assert [INFO_THREAD_PLAYER_INFO_SHOW_BUTTON_LABEL] in button_labels_by_view
     assert [None, INFO_THREAD_LEADERBOARD_SHOW_BUTTON_LABEL] in button_labels_by_view
     assert [None, None, INFO_THREAD_LEADERBOARD_SHOW_BUTTON_LABEL] in button_labels_by_view
     dynamic_item_classes = set(client._connection._view_store._dynamic_items.values())

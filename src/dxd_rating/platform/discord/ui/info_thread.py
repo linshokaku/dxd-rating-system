@@ -15,6 +15,11 @@ from dxd_rating.shared.constants import get_match_format_definitions
 INFO_THREAD_RETRY_INFO_THREAD_MESSAGE_SUFFIX = (
     "再度操作するには /info_thread を実行して新しい情報確認用スレッドを作成してください。"
 )
+INFO_THREAD_PLAYER_INFO_SHOW_BUTTON_LABEL = "プレイヤー情報を表示"
+INFO_THREAD_PLAYER_INFO_SHOW_BUTTON_CUSTOM_ID = "dxd_rating:info_thread:player_info:show"
+INFO_THREAD_PLAYER_INFO_FALLBACK_ERROR_MESSAGE = (
+    "プレイヤー情報の取得に失敗しました。管理者に確認してください。"
+)
 INFO_THREAD_LEADERBOARD_MATCH_FORMAT_PLACEHOLDER = "試合形式を選択"
 INFO_THREAD_LEADERBOARD_MATCH_FORMAT_SELECT_CUSTOM_ID = (
     "dxd_rating:info_thread:leaderboard:match_format"
@@ -68,10 +73,7 @@ INFO_THREAD_INITIAL_MESSAGES = {
     InfoThreadCommandName.PLAYER_INFO: "\n".join(
         [
             "このスレッドは現在シーズンのプレイヤー情報確認用です。",
-            (
-                "今後はこのスレッド内のボタンから /player_info "
-                "と同等の操作を行えるようにする予定です。"
-            ),
+            "「プレイヤー情報を表示」を押してください。",
         ]
     ),
     InfoThreadCommandName.PLAYER_INFO_SEASON: "\n".join(
@@ -99,6 +101,11 @@ INFO_THREAD_INITIAL_MESSAGES = {
 
 
 class InfoThreadLeaderboardInteractionHandler(Protocol):
+    async def player_info_from_info_thread(
+        self,
+        interaction: discord.Interaction[Any],
+    ) -> None: ...
+
     async def leaderboard_from_info_thread(
         self,
         interaction: discord.Interaction[Any],
@@ -149,14 +156,30 @@ async def _send_ephemeral_component_message(
     await interaction.response.send_message(message, ephemeral=True)
 
 
-async def _send_fallback_error_message(interaction: discord.Interaction[Any]) -> None:
+async def _send_component_error_message(
+    interaction: discord.Interaction[Any],
+    message: str,
+) -> None:
     try:
-        await _send_ephemeral_component_message(
-            interaction,
-            INFO_THREAD_LEADERBOARD_FALLBACK_ERROR_MESSAGE,
-        )
+        await _send_ephemeral_component_message(interaction, message)
     except Exception:
-        logger.exception("Failed to send info thread leaderboard fallback response")
+        logger.exception("Failed to send info thread component fallback response")
+
+
+async def _send_fallback_error_message(interaction: discord.Interaction[Any]) -> None:
+    await _send_component_error_message(
+        interaction,
+        INFO_THREAD_LEADERBOARD_FALLBACK_ERROR_MESSAGE,
+    )
+
+
+async def _send_player_info_fallback_error_message(
+    interaction: discord.Interaction[Any],
+) -> None:
+    await _send_component_error_message(
+        interaction,
+        INFO_THREAD_PLAYER_INFO_FALLBACK_ERROR_MESSAGE,
+    )
 
 
 def _clone_message_component_item(
@@ -238,6 +261,50 @@ class LeaderboardSelectionState:
 class LeaderboardSeasonSelectionState:
     season_id: int | None = None
     match_format: str | None = None
+
+
+class InfoThreadPlayerInfoShowButton(discord.ui.Button["InfoThreadPlayerInfoInitialView"]):
+    def __init__(self) -> None:
+        super().__init__(
+            label=INFO_THREAD_PLAYER_INFO_SHOW_BUTTON_LABEL,
+            style=discord.ButtonStyle.primary,
+            custom_id=INFO_THREAD_PLAYER_INFO_SHOW_BUTTON_CUSTOM_ID,
+            row=0,
+        )
+
+    async def callback(self, interaction: discord.Interaction[Any]) -> None:
+        view = self.view
+        if view is None:
+            raise RuntimeError("Info thread player_info view is not attached")
+
+        await view.show_player_info(interaction)
+
+
+class InfoThreadPlayerInfoInitialView(discord.ui.View):
+    def __init__(
+        self,
+        interaction_handler: InfoThreadLeaderboardInteractionHandler,
+    ) -> None:
+        super().__init__(timeout=None)
+        self._interaction_handler = interaction_handler
+        self.show_button = InfoThreadPlayerInfoShowButton()
+        self.add_item(self.show_button)
+
+    async def show_player_info(
+        self,
+        interaction: discord.Interaction[Any],
+    ) -> None:
+        await _disable_interaction_message_components(interaction)
+        await self._interaction_handler.player_info_from_info_thread(interaction)
+
+    async def on_error(
+        self,
+        interaction: discord.Interaction[Any],
+        error: Exception,
+        _: discord.ui.Item[discord.ui.View],
+    ) -> None:
+        logger.exception("Info thread player_info interaction failed", exc_info=error)
+        await _send_player_info_fallback_error_message(interaction)
 
 
 class InfoThreadLeaderboardMatchFormatSelect(
@@ -697,6 +764,12 @@ class InfoThreadLeaderboardSeasonNextPageView(discord.ui.View):
 
 def build_info_thread_initial_message(command_name: InfoThreadCommandName) -> str:
     return INFO_THREAD_INITIAL_MESSAGES[command_name]
+
+
+def create_info_thread_player_info_initial_view(
+    interaction_handler: InfoThreadLeaderboardInteractionHandler,
+) -> discord.ui.View:
+    return InfoThreadPlayerInfoInitialView(interaction_handler)
 
 
 def create_info_thread_leaderboard_initial_view(

@@ -29,22 +29,42 @@
 
 ## thread 作成ルール
 
+- `/info_thread` は必須引数 `command_name` として、`leaderboard`、`leaderboard_season`、`player_info`、`player_info_season` のいずれかを受け取る。
 - `/info_thread` の業務処理が成功した後に thread を作成する。
+- `/info_thread` 実行直後には、対応する `command_name` 本文を自動では投稿しない。
 - thread 作成後は、実行ユーザーの情報確認先として `thread_id` を保存する。
 - 実行ユーザーに既存の `thread_id` が保存されていても、毎回新しい thread を作成する。
 - 新しい thread を作成した場合は、古い thread を表示先として再利用しない。
 - 推奨 thread 名は `情報-<display_name>` とする。
 
-## 初回表示
+## 初回表示と予定 UI
 
 - thread 作成直後に、情報確認用 thread であることを案内するメッセージを送る。
-- 案内メッセージには、少なくとも以下を含める。
-  - この thread がプレイヤー情報とランキング確認専用であること。
-  - `/player_info` で現在シーズンのプレイヤー情報を表示できること。
-  - `/player_info_season season_id:<id>` でシーズン別プレイヤー情報を表示できること。
-  - `/leaderboard match_format:<format> page:<n>` で現在シーズンのランキングを表示できること。
-  - `/leaderboard_season season_id:<id> match_format:<format> page:<n>` でシーズン別ランキングを表示できること。
-  - `match_format` には `1v1`、`2v2`、`3v3` を指定できること。
+- 初回メッセージの文面と、その thread に将来設置する button / pulldown UI の種類は `command_name` に応じて変える。
+
+### `command_name=player_info`
+
+- 現在シーズンのプレイヤー情報確認用 thread として案内する。
+- 初回メッセージでは、将来この thread 内の button から `/player_info` と同等の操作を行えるようにすることを案内する。
+- 将来 UI は、`/player_info` と同等の処理を起動する button のみを置く。
+
+### `command_name=player_info_season`
+
+- シーズン別プレイヤー情報確認用 thread として案内する。
+- 初回メッセージでは、将来この thread 内の `season_id` pulldown と button から `/player_info_season` と同等の操作を行えるようにすることを案内する。
+- 将来 UI は、`season_id` pulldown と実行 button を置く。
+
+### `command_name=leaderboard`
+
+- 現在シーズンのランキング確認用 thread として案内する。
+- 初回メッセージでは、将来この thread 内の `match_format` pulldown、`page` pulldown、button から `/leaderboard` と同等の操作を行えるようにすることを案内する。
+- 将来 UI は、`match_format` pulldown、`page` pulldown、実行 button を置く。
+
+### `command_name=leaderboard_season`
+
+- シーズン別ランキング確認用 thread として案内する。
+- 初回メッセージでは、将来この thread 内の `season_id` pulldown、`match_format` pulldown、`page` pulldown、button から `/leaderboard_season` と同等の操作を行えるようにすることを案内する。
+- 将来 UI は、`season_id` pulldown、`match_format` pulldown、`page` pulldown、実行 button を置く。
 
 ## `/player_info` による表示
 
@@ -181,6 +201,7 @@ items: 21-40
 
 - thread 内のメッセージは、実行ユーザー、admin、Bot に見える。
 - 同じユーザーが `/player_info`、`/player_info_season`、`/leaderboard`、`/leaderboard_season` を繰り返し実行した場合、最新紐づけ先の同じ thread に結果を追記してよい。
+- `command_name` ごとの別 thread 管理は行わないため、`leaderboard` 用に作成した thread に後から `/player_info` の結果が表示されてもよい。
 - 同じユーザーが再度 `/info_thread` を実行して新しい thread を作成した後は、古い thread へ情報を表示しない。
 
 ## 関連仕様

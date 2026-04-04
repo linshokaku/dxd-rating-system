@@ -294,15 +294,25 @@ last_played_at: -
 
 #### 入力
 
-- なし。
+- `command_name` (必須): 作成したい情報確認 thread の用途。
+
+現在の選択肢:
+
+- `leaderboard`
+- `leaderboard_season`
+- `player_info`
+- `player_info_season`
 
 #### 正常時の挙動
 
 - `レート戦情報` チャンネル配下に、情報確認用の private thread を 1 つ作成する。
 - private thread の親チャンネルは、このコマンドをどのチャンネルで実行したかには依存しない。
 - 作成した thread には、少なくとも実行ユーザー、admin、Bot を参加させる。
+- `command_name` は、作成直後の案内文と、その thread に将来設置する操作 UI の種類を決める。
+- `/info_thread` 実行直後には、指定した `command_name` 相当の本文データを自動では表示しない。
 - Bot は、作成した `thread_id` を実行ユーザーの最新の情報確認 thread として一時的に紐づける。
 - 実行ユーザーに既存の紐づけがあっても、新しい thread を作成して最新紐づけを上書きする。
+- `command_name` ごとの別管理は行わず、実行ユーザーごとに最新 1 件だけを保持する。
 - レスポンスは interaction 宛てに、実行ユーザーにだけ見えるプレーンテキストで返す。
 - 成功時のレスポンス:
   - `情報確認用スレッドを作成しました。`

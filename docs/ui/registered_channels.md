@@ -105,7 +105,8 @@
 
 - 推奨チャンネル名は `レート戦情報` とする。
 - このチャンネルには、情報確認導線を示す常設メッセージを 1 つ以上設置する。
-- 常設メッセージには、関連コマンドと同等の操作が行えるボタン UI を含める。
+- 常設メッセージには、`/info_thread command_name:<literal>` と同等の操作が行えるボタン UI を含める。
+- 常設ボタンは、少なくとも `leaderboard`、`leaderboard_season`、`player_info`、`player_info_season` の 4 種類の info thread 作成導線を持つ。
 - 登録済みユーザーは、このチャンネルを閲覧できる。
 - 一般ユーザーはこのチャンネルへ通常メッセージを送らない。
 - 一般ユーザーは public thread を作成しない。
@@ -113,6 +114,7 @@
 - `/info_thread` が成功した場合、Bot はこのチャンネル配下に情報確認用の private thread を作成する。
 - 情報確認 thread は、実行ユーザー本人、admin、Bot が閲覧できる。
 - `/player_info`、`/player_info_season`、`/leaderboard`、`/leaderboard_season` の結果は、このチャンネル配下の情報確認 thread に集約する。
+- public 側の常設ボタンは thread 作成導線として扱い、private thread 側の button / pulldown UI は情報取得導線として扱う。
 - 情報確認 thread の詳細仕様は [info_thread.md](info_thread.md) を参照する。
 
 ### `system_announcements_channel`

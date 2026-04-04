@@ -67,7 +67,7 @@
 - 作成したチャンネルには、指定した `ui_type` に対応する初期 UI を 1 つ設置する。
 - `ui_type=register_panel` の場合は、[register.md](register.md) で定義した登録 UI を設置する。
 - `ui_type=matchmaking_channel` の場合は、[matchmaking_channel.md](matchmaking_channel.md) で定義したマッチング UI を設置する。
-- `ui_type=info_channel` の場合は、情報確認導線を案内する初期メッセージと関連操作用 UI を設置する。
+- `ui_type=info_channel` の場合は、情報確認導線を案内する初期メッセージと、用途別 info thread を作成するための UI を設置する。
 - チャンネル作成と UI 設置に成功したら、対応する UI 管理情報を保存する。
 - 成功時のレスポンス文言は以下とする。
   - `UI 設置チャンネルを作成しました。`
@@ -113,13 +113,13 @@
 - 一般ユーザーには、public thread 作成を許可しない。
 - 一般ユーザーには、private thread 作成を許可しない。
 - チャンネル内には、用途説明用の初期メッセージを 1 つ設置する。
-- 初期メッセージには、関連コマンドと同等の操作が行えるボタン UI を含める。
+- 初期メッセージには、4 種類の `/info_thread command_name:<literal>` と同等の操作が行えるボタン UI を含める。
 - 初期メッセージ上の UI から、少なくとも以下と同等の操作を行えるようにする。
-  - 情報確認用 thread の作成
-  - 現在シーズンのプレイヤー情報表示
-  - シーズン別プレイヤー情報表示
-  - 現在シーズンのランキング表示
-  - シーズン別ランキング表示
+  - `/info_thread command_name:player_info`
+  - `/info_thread command_name:player_info_season`
+  - `/info_thread command_name:leaderboard`
+  - `/info_thread command_name:leaderboard_season`
+- この公開チャンネル上の UI は info thread 作成導線であり、作成後の private thread 内に将来置く command-specific な button / pulldown UI とは別物として扱う。
 - Bot は、運用上必要な private thread 作成と thread 内メッセージ送信を行える前提とする。
 
 ### `system_announcements_channel` のチャンネル作成ルール

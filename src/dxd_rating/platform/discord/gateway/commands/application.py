@@ -109,9 +109,14 @@ MATCHMAKING_PRESENCE_THREAD_MISMATCH_MESSAGE = (
 JOIN_FAILED_MESSAGE = "キュー参加に失敗しました。管理者に確認してください。"
 PRESENT_FAILED_MESSAGE = "在席更新に失敗しました。管理者に確認してください。"
 LEAVE_FAILED_MESSAGE = "キュー退出に失敗しました。管理者に確認してください。"
+PLAYER_INFO_SUCCESS_MESSAGE = "プレイヤー情報を表示しました。"
 PLAYER_INFO_FAILED_MESSAGE = "プレイヤー情報の取得に失敗しました。管理者に確認してください。"
 PLAYER_SEASON_INFO_FAILED_MESSAGE = (
     "シーズン別プレイヤー情報の取得に失敗しました。管理者に確認してください。"
+)
+INFO_THREAD_REQUIRED_MESSAGE = "先に /info_thread を実行してください。"
+INFO_THREAD_NOT_FOUND_MESSAGE = (
+    "情報確認用スレッドが見つかりません。先に /info_thread を実行してください。"
 )
 INFO_THREAD_SUCCESS_MESSAGE = "情報確認用スレッドを作成しました。"
 INFO_THREAD_CHANNEL_NOT_FOUND_MESSAGE = (
@@ -262,6 +267,14 @@ class RequiredManagedUiChannelUnavailableError(RuntimeError):
         self.ui_type = ui_type
         self.reason = reason
         self.channel_id = channel_id
+
+
+class MissingInfoThreadBindingError(RuntimeError):
+    pass
+
+
+class UnavailableInfoThreadError(RuntimeError):
+    pass
 
 
 def is_super_admin(user_id: int, settings: BotSettings) -> bool:
@@ -692,16 +705,41 @@ class BotCommandHandlers:
 
     async def player_info(self, interaction: discord.Interaction[Any]) -> None:
         await self._sync_requesting_user_identity(interaction)
+        await self._defer_message_response(interaction, ephemeral=True)
         try:
+            player_id = await asyncio.to_thread(self._lookup_player_id, interaction.user.id)
+            thread_channel_id = await asyncio.to_thread(
+                self._get_latest_info_thread_channel_id,
+                player_id,
+            )
+            if thread_channel_id is None:
+                raise MissingInfoThreadBindingError(
+                    f"info thread binding is missing for player_id={player_id}"
+                )
+
+            info_thread = await self._resolve_bound_info_thread(
+                interaction,
+                thread_channel_id=thread_channel_id,
+            )
             player_info = await asyncio.to_thread(
                 self._lookup_player_info,
                 interaction.user.id,
+            )
+            await self._send_info_thread_message(
+                info_thread,
+                self._format_player_info_message(player_info),
             )
         except PlayerNotRegisteredError:
             await self._send_player_operation_message(
                 interaction,
                 PLAYER_REGISTRATION_REQUIRED_MESSAGE,
             )
+            return
+        except MissingInfoThreadBindingError:
+            await self._send_player_operation_message(interaction, INFO_THREAD_REQUIRED_MESSAGE)
+            return
+        except (RequiredManagedUiChannelUnavailableError, UnavailableInfoThreadError):
+            await self._send_player_operation_message(interaction, INFO_THREAD_NOT_FOUND_MESSAGE)
             return
         except Exception:
             self.logger.exception(
@@ -711,10 +749,7 @@ class BotCommandHandlers:
             await self._send_player_operation_message(interaction, PLAYER_INFO_FAILED_MESSAGE)
             return
 
-        await self._send_player_operation_message(
-            interaction,
-            self._format_player_info_message(player_info),
-        )
+        await self._send_player_operation_message(interaction, PLAYER_INFO_SUCCESS_MESSAGE)
 
     async def info_thread(
         self,
@@ -2531,6 +2566,9 @@ class BotCommandHandlers:
             season_id,
         )
 
+    def _get_latest_info_thread_channel_id(self, player_id: int) -> int | None:
+        return self.info_thread_binding_service.get_latest_thread_channel_id(player_id)
+
     def _upsert_latest_info_thread_channel_id(
         self,
         player_id: int,
@@ -3466,6 +3504,82 @@ class BotCommandHandlers:
 
         return channel
 
+    async def _resolve_bound_info_thread(
+        self,
+        interaction: discord.Interaction[Any],
+        *,
+        thread_channel_id: int,
+    ) -> object:
+        parent_channel = await self._resolve_required_info_thread_parent_channel(interaction)
+        guild = self._require_guild(interaction)
+
+        for getter_name in ("get_channel_or_thread", "get_thread", "get_channel"):
+            getter = getattr(guild, getter_name, None)
+            if not callable(getter):
+                continue
+
+            candidate = getter(thread_channel_id)
+            if candidate is None:
+                continue
+            if self._is_thread_under_parent_channel(candidate, parent_channel):
+                return candidate
+
+        candidate = self._find_info_thread_candidate(
+            parent_channel,
+            thread_channel_id=thread_channel_id,
+        )
+        if candidate is None:
+            raise UnavailableInfoThreadError(
+                f"info thread channel_id={thread_channel_id} is unavailable"
+            )
+        return candidate
+
+    def _find_info_thread_candidate(
+        self,
+        parent_channel: discord.abc.GuildChannel,
+        *,
+        thread_channel_id: int,
+    ) -> object | None:
+        for candidate in self._iter_info_thread_candidates(parent_channel):
+            if getattr(candidate, "id", None) != thread_channel_id:
+                continue
+            if not self._is_thread_under_parent_channel(candidate, parent_channel):
+                continue
+            return candidate
+
+        return None
+
+    def _iter_info_thread_candidates(
+        self,
+        parent_channel: discord.abc.GuildChannel,
+    ) -> Iterable[object]:
+        for attribute_name in ("created_threads", "threads"):
+            candidates = getattr(parent_channel, attribute_name, None)
+            if isinstance(candidates, list | tuple):
+                yield from candidates
+
+        guild = getattr(parent_channel, "guild", None)
+        guild_threads = getattr(guild, "threads", None)
+        if isinstance(guild_threads, list | tuple):
+            yield from guild_threads
+
+    def _is_thread_under_parent_channel(
+        self,
+        candidate: object,
+        parent_channel: discord.abc.GuildChannel,
+    ) -> bool:
+        if candidate is parent_channel:
+            return False
+
+        candidate_parent = getattr(candidate, "parent", None)
+        candidate_parent_id = getattr(candidate_parent, "id", None)
+        parent_channel_id = getattr(parent_channel, "id", None)
+
+        if isinstance(candidate_parent_id, int) and isinstance(parent_channel_id, int):
+            return candidate_parent_id == parent_channel_id
+
+        return candidate_parent is parent_channel
+
     async def _resolve_presence_thread_target_user(
         self,
         interaction: discord.Interaction[Any],
@@ -3661,6 +3775,24 @@ class BotCommandHandlers:
             return
 
         await response.send_message(message, ephemeral=ephemeral)
+
+    async def _send_info_thread_message(
+        self,
+        thread: object,
+        message: str,
+    ) -> None:
+        send = getattr(thread, "send", None)
+        if not callable(send):
+            raise UnavailableInfoThreadError(
+                f"info thread channel_id={getattr(thread, 'id', None)} is not sendable"
+            )
+
+        try:
+            await send(message)
+        except (discord.Forbidden, discord.NotFound) as exc:
+            raise UnavailableInfoThreadError(
+                f"info thread channel_id={getattr(thread, 'id', None)} send failed"
+            ) from exc
 
     async def _defer_message_response(
         self,

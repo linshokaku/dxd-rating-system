@@ -62,14 +62,24 @@
 ### `command_name=player_info`
 
 - 現在シーズンのプレイヤー情報確認用 thread として案内する。
-- 初回メッセージでは、将来この thread 内の button から `/player_info` と同等の操作を行えるようにすることを案内する。
-- 将来 UI は、`/player_info` と同等の処理を起動する button のみを置く想定とする。
+- 初回メッセージには、`プレイヤー情報を表示` button を表示する。
+- `プレイヤー情報を表示` button を押したときは `/player_info` と同等の処理を行う。
+- `プレイヤー情報を表示` button を押した時点で、押下元メッセージ上の component 全体を disabled にする。
+- `player_info` 用の初期 UI には、選択 UI やページ送り UI は置かない。
+- `player_info` の結果メッセージには追加 button は付けない。
 
 ### `command_name=player_info_season`
 
 - シーズン別プレイヤー情報確認用 thread として案内する。
-- 初回メッセージでは、将来この thread 内の `season_id` pulldown と button から `/player_info_season` と同等の操作を行えるようにすることを案内する。
-- 将来 UI は、`season_id` pulldown と実行 button を置く想定とする。
+- 初回メッセージには、`season_id` pulldown と `プレイヤー情報を表示` button を表示する。
+- `season_id` pulldown には、`start_at <= now()` を満たす開始済みシーズンのうち、最新 25 件だけを表示する。
+- `season_id` pulldown の並び順は、`start_at` の新しい順、同値なら `season_id` の大きい順とする。
+- `season_id` pulldown の各選択肢は、`label=season_name`、`description=season_id: <id>`、`value=season_id` とする。
+- `プレイヤー情報を表示` button を押したときは、選択された `season_id` を使って `/player_info_season <season_id>` と同等の処理を行う。
+- `プレイヤー情報を表示` button を押した時点で、押下元メッセージ上の component 全体を disabled にする。
+- `season_id` を選ばずに `プレイヤー情報を表示` button を押した場合は、情報表示は行わず、押下ユーザーに `シーズンを選択してください。再度操作するには /info_thread を実行して新しい情報確認用スレッドを作成してください。` を返す。
+- `player_info_season` 用の初期 UI には、追加の選択 UI やページ送り UI は置かない。
+- `player_info_season` の結果メッセージには追加 button は付けない。
 
 ### `command_name=leaderboard`
 

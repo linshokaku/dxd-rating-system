@@ -231,6 +231,9 @@ last_played_at: -
 
 - `last_played_at` は未対戦なら `-`、値がある場合は ISO 8601 形式で表示する。
 - 現在はシーズン名や表示名ではなく、フォーマットごとの成績を返す。
+- `player_info` 用 info thread 初回メッセージには `プレイヤー情報を表示` button が 1 個だけ表示され、その button は `/player_info` と同等の処理を行う。
+- `player_info` 用 info thread 初回メッセージの `プレイヤー情報を表示` button は、一度押すと押下元メッセージ上の component 全体が disabled になる。
+- `player_info` の結果メッセージには追加 button は付かず、slash command `/player_info` を直接実行した場合も thread に投稿されるのは本文のみとする。
 - thread への表示形式は [../ui/info_thread.md](../ui/info_thread.md) を参照する。
 
 ### `/player_info_season`
@@ -284,6 +287,11 @@ last_played_at: -
 
 #### 備考
 
+- `player_info_season` 用 info thread 初回メッセージには `season_id` pulldown と `プレイヤー情報を表示` button が表示され、その button は `/player_info_season <season_id>` と同等の処理を行う。
+- `player_info_season` 用 info thread 初回メッセージの `season_id` pulldown には、開始済みシーズンの最新 25 件が `season_name` 表示で並ぶ。
+- `player_info_season` 用 info thread 初回メッセージの `プレイヤー情報を表示` button は、一度押すと押下元メッセージ上の component 全体が disabled になる。
+- `player_info_season` の結果メッセージには追加 button は付かず、slash command `/player_info_season` を直接実行した場合も thread に投稿されるのは本文のみとする。
+- info thread UI の `season_id` pulldown は開始済みシーズンのみを対象にするが、slash command `/player_info_season` 自体の引数仕様は変えない。
 - thread への表示形式は [../ui/info_thread.md](../ui/info_thread.md) を参照する。
 
 ### `/info_thread`

@@ -7,8 +7,13 @@ from dxd_rating.contexts.common.application import (
     InvalidLeaderboardPageError,
     InvalidMatchFormatError,
     LeaderboardPageNotFoundError,
+    SeasonNotFoundError,
+    SeasonStateError,
 )
-from dxd_rating.contexts.leaderboard.application import get_current_leaderboard_page
+from dxd_rating.contexts.leaderboard.application import (
+    get_current_leaderboard_page,
+    get_season_leaderboard_page,
+)
 from dxd_rating.platform.db.models import (
     LeaderboardSnapshot,
     MatchFormat,
@@ -233,6 +238,240 @@ def test_get_current_leaderboard_page_raises_when_page_has_no_entries(
             session,
             match_format=MatchFormat.THREE_VS_THREE,
             page=2,
+            current_time=current_time,
+        )
+
+
+def test_get_season_leaderboard_page_returns_ranked_entries_for_started_season(
+    session: Session,
+) -> None:
+    current_time = datetime(2026, 3, 22, 3, 15, 0, tzinfo=timezone.utc)
+    season = Season(
+        name="202602delta",
+        start_at=current_time - timedelta(days=40),
+        end_at=current_time - timedelta(days=10),
+        completed=True,
+        completed_at=current_time - timedelta(days=10),
+    )
+    session.add(season)
+    session.flush()
+    players = create_players(
+        session,
+        display_names=("Alice", "Bob", None, "Dave"),
+        start_discord_user_id=423_456_789_012_345_600,
+    )
+    session.add_all(
+        (
+            PlayerFormatStats(
+                player_id=players[0].id,
+                season_id=season.id,
+                match_format=MatchFormat.THREE_VS_THREE,
+                rating=1600,
+                games_played=2,
+                wins=2,
+            ),
+            PlayerFormatStats(
+                player_id=players[1].id,
+                season_id=season.id,
+                match_format=MatchFormat.THREE_VS_THREE,
+                rating=1610,
+                games_played=5,
+                wins=4,
+                losses=1,
+            ),
+            PlayerFormatStats(
+                player_id=players[2].id,
+                season_id=season.id,
+                match_format=MatchFormat.THREE_VS_THREE,
+                rating=1600,
+                games_played=5,
+                wins=3,
+                losses=2,
+            ),
+            PlayerFormatStats(
+                player_id=players[3].id,
+                season_id=season.id,
+                match_format=MatchFormat.THREE_VS_THREE,
+                rating=1700,
+                games_played=0,
+            ),
+        )
+    )
+    session.flush()
+
+    result = get_season_leaderboard_page(
+        session,
+        season_id=season.id,
+        match_format=MatchFormat.THREE_VS_THREE,
+        page=1,
+        current_time=current_time,
+    )
+
+    assert result.season_id == season.id
+    assert result.season_name == season.name
+    assert result.match_format == MatchFormat.THREE_VS_THREE
+    assert result.page == 1
+    assert result.page_size == 20
+    assert [
+        (
+            entry.rank,
+            entry.display_name,
+            entry.rating,
+            entry.games_played,
+            entry.wins,
+            entry.losses,
+            entry.draws,
+        )
+        for entry in result.entries
+    ] == [
+        (1, "Bob", 1610, 5, 4, 1, 0),
+        (2, str(players[2].discord_user_id), 1600, 5, 3, 2, 0),
+        (3, "Alice", 1600, 2, 2, 0, 0),
+    ]
+
+
+def test_get_season_leaderboard_page_returns_page_two_with_rank_21(
+    session: Session,
+) -> None:
+    current_time = datetime(2026, 3, 22, 3, 15, 0, tzinfo=timezone.utc)
+    season = Season(
+        name="202601delta",
+        start_at=current_time - timedelta(days=70),
+        end_at=current_time - timedelta(days=40),
+        completed=True,
+        completed_at=current_time - timedelta(days=40),
+    )
+    session.add(season)
+    session.flush()
+    players = create_players(
+        session,
+        display_names=tuple(f"Player {index}" for index in range(1, 21)) + (None,),
+        start_discord_user_id=523_456_789_012_345_600,
+    )
+    session.add_all(
+        PlayerFormatStats(
+            player_id=player.id,
+            season_id=season.id,
+            match_format=MatchFormat.THREE_VS_THREE,
+            rating=2000 - index,
+            games_played=1,
+            wins=1,
+        )
+        for index, player in enumerate(players)
+    )
+    session.flush()
+
+    result = get_season_leaderboard_page(
+        session,
+        season_id=season.id,
+        match_format=MatchFormat.THREE_VS_THREE,
+        page=2,
+        current_time=current_time,
+    )
+
+    assert len(result.entries) == 1
+    assert result.entries[0].rank == 21
+    assert result.entries[0].display_name == str(players[20].discord_user_id)
+
+
+def test_get_season_leaderboard_page_rejects_upcoming_season(session: Session) -> None:
+    current_time = datetime(2026, 3, 22, 3, 15, 0, tzinfo=timezone.utc)
+    season = Season(
+        name="202604delta",
+        start_at=current_time + timedelta(days=1),
+        end_at=current_time + timedelta(days=31),
+        completed=False,
+        completed_at=None,
+    )
+    session.add(season)
+    session.flush()
+
+    with pytest.raises(SeasonStateError, match="指定したシーズンはまだ開始していません。"):
+        get_season_leaderboard_page(
+            session,
+            season_id=season.id,
+            match_format=MatchFormat.THREE_VS_THREE,
+            page=1,
+            current_time=current_time,
+        )
+
+
+def test_get_season_leaderboard_page_rejects_missing_season(session: Session) -> None:
+    with pytest.raises(SeasonNotFoundError, match="指定したシーズンが見つかりません。"):
+        get_season_leaderboard_page(
+            session,
+            season_id=999_999,
+            match_format=MatchFormat.THREE_VS_THREE,
+            page=1,
+            current_time=datetime(2026, 3, 22, 3, 15, 0, tzinfo=timezone.utc),
+        )
+
+
+def test_get_season_leaderboard_page_rejects_invalid_page(session: Session) -> None:
+    season = Season(
+        name="202602delta",
+        start_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        end_at=datetime(2026, 2, 1, tzinfo=timezone.utc),
+        completed=True,
+        completed_at=datetime(2026, 2, 1, tzinfo=timezone.utc),
+    )
+    session.add(season)
+    session.flush()
+
+    with pytest.raises(InvalidLeaderboardPageError, match="page は 1 以上で指定してください。"):
+        get_season_leaderboard_page(
+            session,
+            season_id=season.id,
+            match_format=MatchFormat.THREE_VS_THREE,
+            page=0,
+            current_time=datetime(2026, 3, 22, 3, 15, 0, tzinfo=timezone.utc),
+        )
+
+
+def test_get_season_leaderboard_page_rejects_invalid_match_format(session: Session) -> None:
+    season = Season(
+        name="202602delta",
+        start_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        end_at=datetime(2026, 2, 1, tzinfo=timezone.utc),
+        completed=True,
+        completed_at=datetime(2026, 2, 1, tzinfo=timezone.utc),
+    )
+    session.add(season)
+    session.flush()
+
+    with pytest.raises(InvalidMatchFormatError, match="指定したフォーマットは存在しません。"):
+        get_season_leaderboard_page(
+            session,
+            season_id=season.id,
+            match_format="invalid",
+            page=1,
+            current_time=datetime(2026, 3, 22, 3, 15, 0, tzinfo=timezone.utc),
+        )
+
+
+def test_get_season_leaderboard_page_raises_when_page_has_no_entries(
+    session: Session,
+) -> None:
+    current_time = datetime(2026, 3, 22, 3, 15, 0, tzinfo=timezone.utc)
+    season = Season(
+        name="202602delta",
+        start_at=current_time - timedelta(days=40),
+        end_at=current_time - timedelta(days=10),
+        completed=True,
+        completed_at=current_time - timedelta(days=10),
+    )
+    session.add(season)
+    session.flush()
+
+    with pytest.raises(
+        LeaderboardPageNotFoundError,
+        match="指定したページにはランキングがありません。",
+    ):
+        get_season_leaderboard_page(
+            session,
+            season_id=season.id,
+            match_format=MatchFormat.THREE_VS_THREE,
+            page=1,
             current_time=current_time,
         )
 

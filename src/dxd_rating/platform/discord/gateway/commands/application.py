@@ -31,10 +31,12 @@ from dxd_rating.contexts.common.application import (
     QueueNotJoinedError,
     SeasonAlreadyExistsError,
     SeasonNotFoundError,
+    SeasonStateError,
 )
 from dxd_rating.contexts.leaderboard.application import (
     CurrentLeaderboardPage,
     LeaderboardService,
+    SeasonLeaderboardPage,
 )
 from dxd_rating.contexts.matches.application import (
     MatchReportSubmissionResult,
@@ -124,6 +126,9 @@ PLAYER_SEASON_INFO_FAILED_MESSAGE = (
 )
 LEADERBOARD_SUCCESS_MESSAGE = "ランキングを表示しました。"
 LEADERBOARD_FAILED_MESSAGE = "ランキングの取得に失敗しました。管理者に確認してください。"
+LEADERBOARD_SEASON_FAILED_MESSAGE = (
+    "シーズン別ランキングの取得に失敗しました。管理者に確認してください。"
+)
 INFO_THREAD_REQUIRED_MESSAGE = "先に /info_thread を実行してください。"
 INFO_THREAD_NOT_FOUND_MESSAGE = (
     "情報確認用スレッドが見つかりません。先に /info_thread を実行してください。"
@@ -941,6 +946,78 @@ class BotCommandHandlers:
                 page,
             )
             await self._send_player_operation_message(interaction, LEADERBOARD_FAILED_MESSAGE)
+            return
+
+        await self._send_player_operation_message(interaction, LEADERBOARD_SUCCESS_MESSAGE)
+
+    async def leaderboard_season(
+        self,
+        interaction: discord.Interaction[Any],
+        season_id: int,
+        match_format: str,
+        page: int,
+    ) -> None:
+        await self._sync_requesting_user_identity(interaction)
+        await self._defer_message_response(interaction, ephemeral=True)
+        try:
+            player_id = await asyncio.to_thread(self._lookup_player_id, interaction.user.id)
+            thread_channel_id = await asyncio.to_thread(
+                self._get_latest_info_thread_channel_id,
+                player_id,
+            )
+            if thread_channel_id is None:
+                raise MissingInfoThreadBindingError(
+                    f"info thread binding is missing for player_id={player_id}"
+                )
+
+            info_thread = await self._resolve_bound_info_thread(
+                interaction,
+                thread_channel_id=thread_channel_id,
+            )
+            leaderboard_page = await asyncio.to_thread(
+                self._lookup_season_leaderboard,
+                season_id,
+                match_format,
+                page,
+            )
+            await self._send_info_thread_message(
+                info_thread,
+                self._format_season_leaderboard_message(leaderboard_page),
+            )
+        except PlayerNotRegisteredError:
+            await self._send_player_operation_message(
+                interaction,
+                PLAYER_REGISTRATION_REQUIRED_MESSAGE,
+            )
+            return
+        except (
+            SeasonNotFoundError,
+            SeasonStateError,
+            InvalidMatchFormatError,
+            InvalidLeaderboardPageError,
+            LeaderboardPageNotFoundError,
+        ) as exc:
+            await self._send_player_operation_message(interaction, str(exc))
+            return
+        except MissingInfoThreadBindingError:
+            await self._send_player_operation_message(interaction, INFO_THREAD_REQUIRED_MESSAGE)
+            return
+        except (RequiredManagedUiChannelUnavailableError, UnavailableInfoThreadError):
+            await self._send_player_operation_message(interaction, INFO_THREAD_NOT_FOUND_MESSAGE)
+            return
+        except Exception:
+            self.logger.exception(
+                "Failed to execute /leaderboard_season command "
+                "discord_user_id=%s season_id=%s match_format=%s page=%s",
+                interaction.user.id,
+                season_id,
+                match_format,
+                page,
+            )
+            await self._send_player_operation_message(
+                interaction,
+                LEADERBOARD_SEASON_FAILED_MESSAGE,
+            )
             return
 
         await self._send_player_operation_message(interaction, LEADERBOARD_SUCCESS_MESSAGE)
@@ -2670,6 +2747,18 @@ class BotCommandHandlers:
     ) -> CurrentLeaderboardPage:
         return self.leaderboard_service.get_current_leaderboard_page(match_format, page)
 
+    def _lookup_season_leaderboard(
+        self,
+        season_id: int,
+        match_format: MatchFormat | str,
+        page: int,
+    ) -> SeasonLeaderboardPage:
+        return self.leaderboard_service.get_season_leaderboard_page(
+            season_id,
+            match_format,
+            page,
+        )
+
     def _get_latest_info_thread_channel_id(self, player_id: int) -> int | None:
         return self.info_thread_binding_service.get_latest_thread_channel_id(player_id)
 
@@ -2949,6 +3038,27 @@ class BotCommandHandlers:
                 f"{self._format_leaderboard_rank_change(entry.rank_change_3d)} / "
                 f"{self._format_leaderboard_rank_change(entry.rank_change_7d)}"
             )
+            for entry in leaderboard_page.entries
+        )
+        return "\n".join(lines)
+
+    def _format_season_leaderboard_message(
+        self,
+        leaderboard_page: SeasonLeaderboardPage,
+    ) -> str:
+        first_rank = leaderboard_page.entries[0].rank
+        last_rank = leaderboard_page.entries[-1].rank
+        lines = [
+            "ランキング",
+            f"season_id: {leaderboard_page.season_id}",
+            f"season_name: {leaderboard_page.season_name}",
+            f"match_format: {leaderboard_page.match_format.value}",
+            f"page: {leaderboard_page.page}",
+            f"items: {first_rank}-{last_rank}",
+            "",
+        ]
+        lines.extend(
+            f"{entry.rank} / {entry.display_name} / {entry.rating:.2f}"
             for entry in leaderboard_page.entries
         )
         return "\n".join(lines)
@@ -4051,6 +4161,24 @@ def register_app_commands(
         page: int,
     ) -> None:
         await handlers.leaderboard(interaction, match_format, page)
+
+    @tree.command(
+        name="leaderboard_season",
+        description="指定したシーズンのランキングを表示します",
+    )
+    @app_commands.describe(
+        season_id="対象の season_id",
+        match_format="対象のフォーマット",
+        page="表示したいページ番号",
+    )
+    @app_commands.choices(match_format=match_format_choices)
+    async def leaderboard_season_command(
+        interaction: discord.Interaction[Any],
+        season_id: int,
+        match_format: str,
+        page: int,
+    ) -> None:
+        await handlers.leaderboard_season(interaction, season_id, match_format, page)
 
     @tree.command(name="match_parent", description="試合の親に立候補します")
     @app_commands.describe(match_id="対象の match_id")

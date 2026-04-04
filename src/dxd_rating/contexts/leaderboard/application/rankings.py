@@ -10,6 +10,8 @@ from dxd_rating.contexts.common.application import (
     InvalidLeaderboardPageError,
     InvalidMatchFormatError,
     LeaderboardPageNotFoundError,
+    SeasonNotFoundError,
+    SeasonStateError,
 )
 from dxd_rating.contexts.leaderboard.application.snapshots import resolve_snapshot_date
 from dxd_rating.contexts.players.domain import format_player_display_name
@@ -22,6 +24,7 @@ from dxd_rating.platform.db.models import (
     MatchFormat,
     Player,
     PlayerFormatStats,
+    Season,
 )
 from dxd_rating.platform.db.session import session_scope
 
@@ -29,6 +32,7 @@ LEADERBOARD_PAGE_SIZE = 20
 INVALID_MATCH_FORMAT_MESSAGE = "指定したフォーマットは存在しません。"
 INVALID_LEADERBOARD_PAGE_MESSAGE = "page は 1 以上で指定してください。"
 LEADERBOARD_PAGE_NOT_FOUND_MESSAGE = "指定したページにはランキングがありません。"
+SEASON_NOT_STARTED_MESSAGE = "指定したシーズンはまだ開始していません。"
 RANK_CHANGE_SNAPSHOT_DAY_OFFSETS = (1, 3, 7)
 
 
@@ -56,6 +60,27 @@ class CurrentLeaderboardPage:
     entries: tuple[CurrentLeaderboardEntry, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class SeasonLeaderboardEntry:
+    rank: int
+    display_name: str
+    rating: float
+    games_played: int
+    wins: int
+    losses: int
+    draws: int
+
+
+@dataclass(frozen=True, slots=True)
+class SeasonLeaderboardPage:
+    season_id: int
+    season_name: str
+    match_format: MatchFormat
+    page: int
+    page_size: int
+    entries: tuple[SeasonLeaderboardEntry, ...]
+
+
 class LeaderboardService:
     def __init__(self, session_factory: sessionmaker[Session]) -> None:
         self.session_factory = session_factory
@@ -68,6 +93,20 @@ class LeaderboardService:
         with session_scope(self.session_factory) as session:
             return get_current_leaderboard_page(session, match_format=match_format, page=page)
 
+    def get_season_leaderboard_page(
+        self,
+        season_id: int,
+        match_format: MatchFormat | str,
+        page: int,
+    ) -> SeasonLeaderboardPage:
+        with session_scope(self.session_factory) as session:
+            return get_season_leaderboard_page(
+                session,
+                season_id=season_id,
+                match_format=match_format,
+                page=page,
+            )
+
 
 def get_current_leaderboard_page(
     session: Session,
@@ -79,33 +118,18 @@ def get_current_leaderboard_page(
     if page < 1:
         raise InvalidLeaderboardPageError(INVALID_LEADERBOARD_PAGE_MESSAGE)
 
-    resolved_match_format = _resolve_match_format(match_format)
     resolved_current_time = get_database_now(session) if current_time is None else current_time
+    resolved_match_format = _resolve_match_format(match_format)
     active_season = get_active_and_upcoming_seasons(
         session,
         current_time=resolved_current_time,
     ).active
-    page_offset = (page - 1) * LEADERBOARD_PAGE_SIZE
-
-    leaderboard_rows = session.execute(
-        select(PlayerFormatStats, Player)
-        .join(Player, Player.id == PlayerFormatStats.player_id)
-        .where(
-            PlayerFormatStats.season_id == active_season.id,
-            PlayerFormatStats.match_format == resolved_match_format,
-            PlayerFormatStats.games_played > 0,
-        )
-        .order_by(
-            PlayerFormatStats.rating.desc(),
-            PlayerFormatStats.games_played.desc(),
-            PlayerFormatStats.player_id.asc(),
-        )
-        .offset(page_offset)
-        .limit(LEADERBOARD_PAGE_SIZE)
-    ).all()
-
-    if not leaderboard_rows:
-        raise LeaderboardPageNotFoundError(LEADERBOARD_PAGE_NOT_FOUND_MESSAGE)
+    page_offset, leaderboard_rows = _load_leaderboard_rows(
+        session,
+        season_id=active_season.id,
+        match_format=resolved_match_format,
+        page=page,
+    )
 
     player_ids = tuple(format_stats.player_id for format_stats, _ in leaderboard_rows)
     snapshot_ranks_by_key = _load_snapshot_ranks_by_key(
@@ -160,6 +184,53 @@ def get_current_leaderboard_page(
     )
 
 
+def get_season_leaderboard_page(
+    session: Session,
+    *,
+    season_id: int,
+    match_format: MatchFormat | str,
+    page: int,
+    current_time: datetime | None = None,
+) -> SeasonLeaderboardPage:
+    if page < 1:
+        raise InvalidLeaderboardPageError(INVALID_LEADERBOARD_PAGE_MESSAGE)
+
+    resolved_current_time = get_database_now(session) if current_time is None else current_time
+    resolved_match_format = _resolve_match_format(match_format)
+    season = _resolve_started_season(
+        session,
+        season_id=season_id,
+        current_time=resolved_current_time,
+    )
+    page_offset, leaderboard_rows = _load_leaderboard_rows(
+        session,
+        season_id=season.id,
+        match_format=resolved_match_format,
+        page=page,
+    )
+
+    entries = tuple(
+        SeasonLeaderboardEntry(
+            rank=page_offset + index,
+            display_name=_resolve_display_name(player),
+            rating=format_stats.rating,
+            games_played=format_stats.games_played,
+            wins=format_stats.wins,
+            losses=format_stats.losses,
+            draws=format_stats.draws,
+        )
+        for index, (format_stats, player) in enumerate(leaderboard_rows, start=1)
+    )
+    return SeasonLeaderboardPage(
+        season_id=season.id,
+        season_name=season.name,
+        match_format=resolved_match_format,
+        page=page,
+        page_size=LEADERBOARD_PAGE_SIZE,
+        entries=entries,
+    )
+
+
 def _resolve_match_format(match_format: MatchFormat | str) -> MatchFormat:
     try:
         if isinstance(match_format, MatchFormat):
@@ -167,6 +238,63 @@ def _resolve_match_format(match_format: MatchFormat | str) -> MatchFormat:
         return MatchFormat(match_format)
     except ValueError as exc:
         raise InvalidMatchFormatError(INVALID_MATCH_FORMAT_MESSAGE) from exc
+
+
+def _resolve_started_season(
+    session: Session,
+    *,
+    season_id: int,
+    current_time: datetime,
+) -> Season:
+    season = session.get(Season, season_id)
+    if season is None:
+        raise SeasonNotFoundError("指定したシーズンが見つかりません。")
+    if season.start_at > current_time:
+        raise SeasonStateError(SEASON_NOT_STARTED_MESSAGE)
+    return season
+
+
+def _load_leaderboard_rows(
+    session: Session,
+    *,
+    season_id: int,
+    match_format: MatchFormat,
+    page: int,
+) -> tuple[int, list[tuple[PlayerFormatStats, Player]]]:
+    if page < 1:
+        raise InvalidLeaderboardPageError(INVALID_LEADERBOARD_PAGE_MESSAGE)
+
+    page_offset = (page - 1) * LEADERBOARD_PAGE_SIZE
+    leaderboard_rows = list(
+        session.execute(
+            select(PlayerFormatStats, Player)
+            .join(Player, Player.id == PlayerFormatStats.player_id)
+            .where(
+                PlayerFormatStats.season_id == season_id,
+                PlayerFormatStats.match_format == match_format,
+                PlayerFormatStats.games_played > 0,
+            )
+            .order_by(
+                PlayerFormatStats.rating.desc(),
+                PlayerFormatStats.games_played.desc(),
+                PlayerFormatStats.player_id.asc(),
+            )
+            .offset(page_offset)
+            .limit(LEADERBOARD_PAGE_SIZE)
+        )
+        .tuples()
+        .all()
+    )
+    if not leaderboard_rows:
+        raise LeaderboardPageNotFoundError(LEADERBOARD_PAGE_NOT_FOUND_MESSAGE)
+    return page_offset, leaderboard_rows
+
+
+def _resolve_display_name(player: Player) -> str:
+    return format_player_display_name(
+        discord_user_id=player.discord_user_id,
+        display_name=player.display_name,
+    )
 
 
 def _load_snapshot_ranks_by_key(

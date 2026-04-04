@@ -9,6 +9,10 @@ from dxd_rating.apps.bot.main import create_client, initialize_seasons
 from dxd_rating.platform.config.bot import BotSettings
 from dxd_rating.platform.db.models import ManagedUiChannel, ManagedUiType, Season
 from dxd_rating.platform.discord.ui import (
+    INFO_CHANNEL_LEADERBOARD_BUTTON_LABEL,
+    INFO_CHANNEL_LEADERBOARD_SEASON_BUTTON_LABEL,
+    INFO_CHANNEL_PLAYER_INFO_BUTTON_LABEL,
+    INFO_CHANNEL_PLAYER_INFO_SEASON_BUTTON_LABEL,
     MATCHMAKING_PRESENCE_THREAD_LEAVE_BUTTON_LABEL,
     MATCHMAKING_PRESENCE_THREAD_PRESENT_BUTTON_LABEL,
     REGISTER_PANEL_BUTTON_LABEL,
@@ -62,6 +66,14 @@ def test_setup_hook_restores_persistent_register_panel_view(
             created_by_discord_user_id=3001,
         )
     )
+    session.add(
+        ManagedUiChannel(
+            ui_type=ManagedUiType.INFO_CHANNEL,
+            channel_id=1002,
+            message_id=2002,
+            created_by_discord_user_id=3002,
+        )
+    )
     session.commit()
 
     client = create_client(settings, session_factory)
@@ -76,6 +88,12 @@ def test_setup_hook_restores_persistent_register_panel_view(
         MATCHMAKING_PRESENCE_THREAD_LEAVE_BUTTON_LABEL,
     ] in button_labels_by_view
     assert [REGISTER_PANEL_BUTTON_LABEL] in button_labels_by_view
+    assert [
+        INFO_CHANNEL_LEADERBOARD_BUTTON_LABEL,
+        INFO_CHANNEL_LEADERBOARD_SEASON_BUTTON_LABEL,
+        INFO_CHANNEL_PLAYER_INFO_BUTTON_LABEL,
+        INFO_CHANNEL_PLAYER_INFO_SEASON_BUTTON_LABEL,
+    ] in button_labels_by_view
     dynamic_item_classes = set(client._connection._view_store._dynamic_items.values())
     assert MatchOperationThreadWinButton in dynamic_item_classes
     assert MatchOperationThreadDrawButton in dynamic_item_classes
@@ -102,14 +120,6 @@ def test_setup_hook_skips_managed_channels_without_persistent_view(
             channel_id=1002,
             message_id=2002,
             created_by_discord_user_id=3002,
-        )
-    )
-    session.add(
-        ManagedUiChannel(
-            ui_type=ManagedUiType.INFO_CHANNEL,
-            channel_id=1003,
-            message_id=2003,
-            created_by_discord_user_id=3003,
         )
     )
     session.commit()

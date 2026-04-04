@@ -827,6 +827,13 @@ class BotCommandHandlers:
 
         await self._send_player_operation_message(interaction, INFO_THREAD_SUCCESS_MESSAGE)
 
+    async def info_thread_from_ui(
+        self,
+        interaction: discord.Interaction[Any],
+        command_name: InfoThreadCommandName,
+    ) -> None:
+        await self.info_thread(interaction, command_name.value)
+
     async def player_info_season(
         self,
         interaction: discord.Interaction[Any],

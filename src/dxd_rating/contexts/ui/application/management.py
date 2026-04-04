@@ -53,7 +53,7 @@ MANAGED_UI_DEFINITIONS = {
         recommended_channel_name=INFO_CHANNEL_RECOMMENDED_CHANNEL_NAME,
         singleton=True,
         requires_registered_player_role=True,
-        installs_persistent_view=False,
+        installs_persistent_view=True,
     ),
     ManagedUiType.SYSTEM_ANNOUNCEMENTS_CHANNEL: ManagedUiDefinition(
         ui_type=ManagedUiType.SYSTEM_ANNOUNCEMENTS_CHANNEL,

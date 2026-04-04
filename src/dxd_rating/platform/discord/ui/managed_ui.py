@@ -7,7 +7,11 @@ from typing import Any, Protocol
 
 import discord
 
-from dxd_rating.contexts.ui.application import ManagedUiType
+from dxd_rating.contexts.ui.application import (
+    InfoThreadCommandName,
+    ManagedUiType,
+    get_managed_ui_definition,
+)
 from dxd_rating.platform.db.models import MatchFormat
 from dxd_rating.shared.constants import (
     get_match_format_definitions,
@@ -49,15 +53,30 @@ MATCHMAKING_NEWS_CHANNEL_MESSAGE = "\n".join(
 INFO_CHANNEL_MESSAGE = "\n".join(
     [
         "このチャンネルはレート戦の情報確認用です。",
-        "今後、プレイヤー情報やランキング確認を行うボタン UI をここに設置予定です。",
-        "準備が整うまで、このチャンネルは案内用として運用します。",
+        "使いたい項目のボタンを押すと、自分用の情報確認スレッドを作成できます。",
+        "スレッド作成直後にランキングやプレイヤー情報は自動表示されません。",
     ]
+)
+INFO_CHANNEL_LEADERBOARD_BUTTON_LABEL = "現在シーズンのランキング"
+INFO_CHANNEL_LEADERBOARD_BUTTON_CUSTOM_ID = "dxd_rating:info_channel:leaderboard"
+INFO_CHANNEL_LEADERBOARD_SEASON_BUTTON_LABEL = "シーズン別ランキング"
+INFO_CHANNEL_LEADERBOARD_SEASON_BUTTON_CUSTOM_ID = (
+    "dxd_rating:info_channel:leaderboard_season"
+)
+INFO_CHANNEL_PLAYER_INFO_BUTTON_LABEL = "現在シーズンのプレイヤー情報"
+INFO_CHANNEL_PLAYER_INFO_BUTTON_CUSTOM_ID = "dxd_rating:info_channel:player_info"
+INFO_CHANNEL_PLAYER_INFO_SEASON_BUTTON_LABEL = "シーズン別プレイヤー情報"
+INFO_CHANNEL_PLAYER_INFO_SEASON_BUTTON_CUSTOM_ID = (
+    "dxd_rating:info_channel:player_info_season"
 )
 SYSTEM_ANNOUNCEMENTS_CHANNEL_MESSAGE = "このチャンネルは運営からのシステムアナウンス専用です。"
 ADMIN_CONTACT_CHANNEL_MESSAGE = "運営への連絡やフィードバックはこちらへどうぞ。"
 MAX_MANAGED_UI_CHANNEL_NAME_LENGTH = 100
 REGISTER_PANEL_FALLBACK_ERROR_MESSAGE = "登録に失敗しました。管理者に確認してください。"
 MATCHMAKING_CHANNEL_FALLBACK_ERROR_MESSAGE = "操作に失敗しました。管理者に確認してください。"
+INFO_CHANNEL_FALLBACK_ERROR_MESSAGE = (
+    "情報確認用スレッドの作成に失敗しました。管理者に確認してください。"
+)
 
 logger = logging.getLogger(__name__)
 
@@ -75,9 +94,18 @@ class MatchmakingPanelInteractionHandler(Protocol):
     ) -> None: ...
 
 
+class InfoChannelInteractionHandler(Protocol):
+    async def info_thread_from_ui(
+        self,
+        interaction: discord.Interaction[Any],
+        command_name: InfoThreadCommandName,
+    ) -> None: ...
+
+
 class ManagedUiInteractionHandler(
     RegisterPanelInteractionHandler,
     MatchmakingPanelInteractionHandler,
+    InfoChannelInteractionHandler,
     Protocol,
 ):
     pass
@@ -322,20 +350,110 @@ class MatchmakingPanelView(discord.ui.View):
             logger.exception("Failed to send matchmaking panel fallback error response")
 
 
+class InfoChannelView(discord.ui.View):
+    def __init__(self, interaction_handler: InfoChannelInteractionHandler) -> None:
+        super().__init__(timeout=None)
+        self._interaction_handler = interaction_handler
+
+    @discord.ui.button(
+        label=INFO_CHANNEL_LEADERBOARD_BUTTON_LABEL,
+        style=discord.ButtonStyle.primary,
+        custom_id=INFO_CHANNEL_LEADERBOARD_BUTTON_CUSTOM_ID,
+        row=0,
+    )
+    async def leaderboard_button(
+        self,
+        interaction: discord.Interaction[Any],
+        _: discord.ui.Button[discord.ui.View],
+    ) -> None:
+        await self._interaction_handler.info_thread_from_ui(
+            interaction,
+            InfoThreadCommandName.LEADERBOARD,
+        )
+
+    @discord.ui.button(
+        label=INFO_CHANNEL_LEADERBOARD_SEASON_BUTTON_LABEL,
+        style=discord.ButtonStyle.primary,
+        custom_id=INFO_CHANNEL_LEADERBOARD_SEASON_BUTTON_CUSTOM_ID,
+        row=0,
+    )
+    async def leaderboard_season_button(
+        self,
+        interaction: discord.Interaction[Any],
+        _: discord.ui.Button[discord.ui.View],
+    ) -> None:
+        await self._interaction_handler.info_thread_from_ui(
+            interaction,
+            InfoThreadCommandName.LEADERBOARD_SEASON,
+        )
+
+    @discord.ui.button(
+        label=INFO_CHANNEL_PLAYER_INFO_BUTTON_LABEL,
+        style=discord.ButtonStyle.primary,
+        custom_id=INFO_CHANNEL_PLAYER_INFO_BUTTON_CUSTOM_ID,
+        row=1,
+    )
+    async def player_info_button(
+        self,
+        interaction: discord.Interaction[Any],
+        _: discord.ui.Button[discord.ui.View],
+    ) -> None:
+        await self._interaction_handler.info_thread_from_ui(
+            interaction,
+            InfoThreadCommandName.PLAYER_INFO,
+        )
+
+    @discord.ui.button(
+        label=INFO_CHANNEL_PLAYER_INFO_SEASON_BUTTON_LABEL,
+        style=discord.ButtonStyle.primary,
+        custom_id=INFO_CHANNEL_PLAYER_INFO_SEASON_BUTTON_CUSTOM_ID,
+        row=1,
+    )
+    async def player_info_season_button(
+        self,
+        interaction: discord.Interaction[Any],
+        _: discord.ui.Button[discord.ui.View],
+    ) -> None:
+        await self._interaction_handler.info_thread_from_ui(
+            interaction,
+            InfoThreadCommandName.PLAYER_INFO_SEASON,
+        )
+
+    async def on_error(
+        self,
+        interaction: discord.Interaction[Any],
+        error: Exception,
+        _: discord.ui.Item[discord.ui.View],
+    ) -> None:
+        logger.exception("Info channel interaction failed", exc_info=error)
+
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(
+                    INFO_CHANNEL_FALLBACK_ERROR_MESSAGE,
+                    ephemeral=True,
+                )
+            else:
+                await interaction.response.send_message(
+                    INFO_CHANNEL_FALLBACK_ERROR_MESSAGE,
+                    ephemeral=True,
+                )
+        except Exception:
+            logger.exception("Failed to send info channel fallback error response")
+
+
 def create_persistent_views(
     interaction_handler: ManagedUiInteractionHandler,
 ) -> tuple[discord.ui.View, ...]:
     return (
         RegisterPanelView(interaction_handler),
         MatchmakingPanelView(interaction_handler),
+        InfoChannelView(interaction_handler),
     )
 
 
 def has_persistent_managed_ui_view(ui_type: ManagedUiType) -> bool:
-    return ui_type in (
-        ManagedUiType.REGISTER_PANEL,
-        ManagedUiType.MATCHMAKING_CHANNEL,
-    )
+    return get_managed_ui_definition(ui_type).installs_persistent_view
 
 
 def create_managed_ui_view(
@@ -346,6 +464,8 @@ def create_managed_ui_view(
         return RegisterPanelView(interaction_handler)
     if ui_type is ManagedUiType.MATCHMAKING_CHANNEL:
         return MatchmakingPanelView(interaction_handler)
+    if ui_type is ManagedUiType.INFO_CHANNEL:
+        return InfoChannelView(interaction_handler)
 
     raise ValueError(f"Unsupported ui_type: {ui_type}")
 
@@ -490,7 +610,10 @@ async def send_initial_managed_ui_message(
     if ui_type is ManagedUiType.MATCHMAKING_NEWS_CHANNEL:
         return await channel.send(content=MATCHMAKING_NEWS_CHANNEL_MESSAGE)
     if ui_type is ManagedUiType.INFO_CHANNEL:
-        return await channel.send(content=INFO_CHANNEL_MESSAGE)
+        return await channel.send(
+            content=INFO_CHANNEL_MESSAGE,
+            view=InfoChannelView(interaction_handler),
+        )
     if ui_type is ManagedUiType.SYSTEM_ANNOUNCEMENTS_CHANNEL:
         return await channel.send(content=SYSTEM_ANNOUNCEMENTS_CHANNEL_MESSAGE)
     if ui_type is ManagedUiType.ADMIN_CONTACT_CHANNEL:

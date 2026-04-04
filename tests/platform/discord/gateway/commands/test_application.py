@@ -59,7 +59,15 @@ from dxd_rating.platform.db.models import (
 from dxd_rating.platform.discord.gateway.commands import BotCommandHandlers, register_app_commands
 from dxd_rating.platform.discord.ui import (
     ADMIN_CONTACT_CHANNEL_MESSAGE,
+    INFO_CHANNEL_LEADERBOARD_BUTTON_CUSTOM_ID,
+    INFO_CHANNEL_LEADERBOARD_BUTTON_LABEL,
+    INFO_CHANNEL_LEADERBOARD_SEASON_BUTTON_CUSTOM_ID,
+    INFO_CHANNEL_LEADERBOARD_SEASON_BUTTON_LABEL,
     INFO_CHANNEL_MESSAGE,
+    INFO_CHANNEL_PLAYER_INFO_BUTTON_CUSTOM_ID,
+    INFO_CHANNEL_PLAYER_INFO_BUTTON_LABEL,
+    INFO_CHANNEL_PLAYER_INFO_SEASON_BUTTON_CUSTOM_ID,
+    INFO_CHANNEL_PLAYER_INFO_SEASON_BUTTON_LABEL,
     MATCHMAKING_CHANNEL_JOIN_BUTTON_LABEL,
     MATCHMAKING_CHANNEL_MATCH_FORMAT_PLACEHOLDER,
     MATCHMAKING_CHANNEL_MESSAGE,
@@ -4544,7 +4552,7 @@ def test_admin_setup_custom_ui_channel_creates_register_panel_and_button_registe
     assert persisted_player is not None
 
 
-def test_admin_setup_custom_ui_channel_creates_info_channel_placeholder_message(
+def test_admin_setup_custom_ui_channel_creates_info_channel_buttons(
     session: Session,
     session_factory: sessionmaker[Session],
 ) -> None:
@@ -4585,7 +4593,130 @@ def test_admin_setup_custom_ui_channel_creates_info_channel_placeholder_message(
     assert persisted_channel.overwrites[registered_role].view_channel is True
     assert persisted_channel.overwrites[registered_role].send_messages is False
     assert persisted_message.content == INFO_CHANNEL_MESSAGE
-    assert persisted_message.view is None
+    assert persisted_message.view is not None
+    info_buttons = [
+        cast(discord.ui.Button[Any], child) for child in persisted_message.view.children
+    ]
+    assert [(button.label, button.custom_id) for button in info_buttons] == [
+        (
+            INFO_CHANNEL_LEADERBOARD_BUTTON_LABEL,
+            INFO_CHANNEL_LEADERBOARD_BUTTON_CUSTOM_ID,
+        ),
+        (
+            INFO_CHANNEL_LEADERBOARD_SEASON_BUTTON_LABEL,
+            INFO_CHANNEL_LEADERBOARD_SEASON_BUTTON_CUSTOM_ID,
+        ),
+        (
+            INFO_CHANNEL_PLAYER_INFO_BUTTON_LABEL,
+            INFO_CHANNEL_PLAYER_INFO_BUTTON_CUSTOM_ID,
+        ),
+        (
+            INFO_CHANNEL_PLAYER_INFO_SEASON_BUTTON_LABEL,
+            INFO_CHANNEL_PLAYER_INFO_SEASON_BUTTON_CUSTOM_ID,
+        ),
+    ]
+    assert all(button.style is discord.ButtonStyle.primary for button in info_buttons)
+
+
+def test_info_channel_button_creates_info_thread_via_existing_command_flow(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    executor_discord_user_id = 10
+    target_discord_user_id = 123_456_789_012_345_802
+    player = create_player(session, target_discord_user_id)
+    registered_role = FakeRole(id=55_012, name=REGISTERED_PLAYER_ROLE_NAME)
+    guild = FakeGuild(
+        id=2_108_1,
+        roles=[registered_role],
+        members={executor_discord_user_id: FakeMember(id=executor_discord_user_id)},
+    )
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({executor_discord_user_id}),
+    )
+    interaction = FakeInteraction(
+        user=FakeUser(id=executor_discord_user_id),
+        guild_id=guild.id,
+        guild=guild,
+    )
+
+    asyncio.run(
+        handlers.admin_setup_custom_ui_channel(
+            as_interaction(interaction),
+            ManagedUiType.INFO_CHANNEL.value,
+            "レート戦情報",
+        )
+    )
+
+    persisted_channel = guild.channels[0]
+    persisted_message = persisted_channel.sent_messages[0]
+    leaderboard_button = cast(discord.ui.Button[Any], persisted_message.view.children[0])
+    button_interaction = FakeInteraction(
+        user=FakeUser(id=target_discord_user_id, nick="info-button"),
+        channel_id=persisted_channel.id,
+        guild_id=guild.id,
+        guild=guild,
+    )
+
+    asyncio.run(leaderboard_button.callback(as_interaction(button_interaction)))
+
+    session.expire_all()
+    binding = session.get(PlayerInfoThreadBinding, player.id)
+
+    assert_response(button_interaction, ["情報確認用スレッドを作成しました。"], ephemeral=True)
+    assert len(persisted_channel.created_threads) == 1
+    created_thread = persisted_channel.created_threads[0]
+    assert created_thread.added_user_ids == [target_discord_user_id, executor_discord_user_id]
+    assert [message.content for message in created_thread.sent_messages] == [
+        build_info_thread_initial_message(InfoThreadCommandName.LEADERBOARD)
+    ]
+    assert binding is not None
+    assert binding.thread_channel_id == created_thread.id
+
+
+def test_info_channel_button_returns_registration_required_for_unregistered_user(
+    session_factory: sessionmaker[Session],
+) -> None:
+    executor_discord_user_id = 10
+    registered_role = FakeRole(id=55_013, name=REGISTERED_PLAYER_ROLE_NAME)
+    guild = FakeGuild(id=2_108_2, roles=[registered_role])
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({executor_discord_user_id}),
+    )
+    interaction = FakeInteraction(
+        user=FakeUser(id=executor_discord_user_id),
+        guild_id=guild.id,
+        guild=guild,
+    )
+
+    asyncio.run(
+        handlers.admin_setup_custom_ui_channel(
+            as_interaction(interaction),
+            ManagedUiType.INFO_CHANNEL.value,
+            "レート戦情報",
+        )
+    )
+
+    persisted_channel = guild.channels[0]
+    persisted_message = persisted_channel.sent_messages[0]
+    player_info_button = cast(discord.ui.Button[Any], persisted_message.view.children[2])
+    button_interaction = FakeInteraction(
+        user=FakeUser(id=123_456_789_012_345_803),
+        channel_id=persisted_channel.id,
+        guild_id=guild.id,
+        guild=guild,
+    )
+
+    asyncio.run(player_info_button.callback(as_interaction(button_interaction)))
+
+    assert_response(
+        button_interaction,
+        ["プレイヤー登録が必要です。先に /register を実行してください。"],
+        ephemeral=True,
+    )
+    assert persisted_channel.created_threads == []
 
 
 def test_register_command_assigns_registered_role_when_present(
@@ -4709,6 +4840,7 @@ def test_admin_setup_custom_ui_channel_creates_info_channel_without_thread_permi
 
     assert_response(interaction, ["UI 設置チャンネルを作成しました。"], ephemeral=True)
     assert guild.channels[0].sent_messages[0].content == INFO_CHANNEL_MESSAGE
+    assert guild.channels[0].sent_messages[0].view is not None
     assert session.scalar(select(ManagedUiChannel)) is not None
 
 
@@ -4878,7 +5010,30 @@ def test_admin_setup_ui_channels_creates_registered_channel_set(
     assert info_channel.overwrites[registered_role].view_channel is True
     assert info_channel.overwrites[registered_role].send_messages is False
     assert info_channel.sent_messages[0].content == INFO_CHANNEL_MESSAGE
-    assert info_channel.sent_messages[0].view is None
+    assert info_channel.sent_messages[0].view is not None
+    info_buttons = [
+        cast(discord.ui.Button[Any], child)
+        for child in info_channel.sent_messages[0].view.children
+    ]
+    assert [(button.label, button.custom_id) for button in info_buttons] == [
+        (
+            INFO_CHANNEL_LEADERBOARD_BUTTON_LABEL,
+            INFO_CHANNEL_LEADERBOARD_BUTTON_CUSTOM_ID,
+        ),
+        (
+            INFO_CHANNEL_LEADERBOARD_SEASON_BUTTON_LABEL,
+            INFO_CHANNEL_LEADERBOARD_SEASON_BUTTON_CUSTOM_ID,
+        ),
+        (
+            INFO_CHANNEL_PLAYER_INFO_BUTTON_LABEL,
+            INFO_CHANNEL_PLAYER_INFO_BUTTON_CUSTOM_ID,
+        ),
+        (
+            INFO_CHANNEL_PLAYER_INFO_SEASON_BUTTON_LABEL,
+            INFO_CHANNEL_PLAYER_INFO_SEASON_BUTTON_CUSTOM_ID,
+        ),
+    ]
+    assert all(button.style is discord.ButtonStyle.primary for button in info_buttons)
 
     system_announcements_channel = find_channel_by_name(guild, "レート戦アナウンス")
     assert system_announcements_channel.overwrites[guild.default_role].view_channel is False

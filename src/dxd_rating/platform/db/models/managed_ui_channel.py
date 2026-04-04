@@ -16,6 +16,7 @@ class ManagedUiType(StrEnum):
     REGISTER_PANEL = "register_panel"
     MATCHMAKING_CHANNEL = "matchmaking_channel"
     MATCHMAKING_NEWS_CHANNEL = "matchmaking_news_channel"
+    INFO_CHANNEL = "info_channel"
     SYSTEM_ANNOUNCEMENTS_CHANNEL = "system_announcements_channel"
     ADMIN_CONTACT_CHANNEL = "admin_contact_channel"
 

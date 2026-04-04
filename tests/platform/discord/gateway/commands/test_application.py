@@ -52,6 +52,7 @@ from dxd_rating.platform.db.models import (
 from dxd_rating.platform.discord.gateway.commands import BotCommandHandlers, register_app_commands
 from dxd_rating.platform.discord.ui import (
     ADMIN_CONTACT_CHANNEL_MESSAGE,
+    INFO_CHANNEL_MESSAGE,
     MATCHMAKING_CHANNEL_JOIN_BUTTON_LABEL,
     MATCHMAKING_CHANNEL_MATCH_FORMAT_PLACEHOLDER,
     MATCHMAKING_CHANNEL_MESSAGE,
@@ -2782,6 +2783,50 @@ def test_admin_setup_custom_ui_channel_creates_register_panel_and_button_registe
     assert persisted_player is not None
 
 
+def test_admin_setup_custom_ui_channel_creates_info_channel_placeholder_message(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    executor_discord_user_id = 10
+    registered_role = FakeRole(id=55_010, name=REGISTERED_PLAYER_ROLE_NAME)
+    guild = FakeGuild(id=2_108, roles=[registered_role])
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({executor_discord_user_id}),
+    )
+    interaction = FakeInteraction(
+        user=FakeUser(id=executor_discord_user_id),
+        guild_id=guild.id,
+        guild=guild,
+    )
+
+    asyncio.run(
+        handlers.admin_setup_custom_ui_channel(
+            as_interaction(interaction),
+            ManagedUiType.INFO_CHANNEL.value,
+            "レート戦情報",
+        )
+    )
+
+    session.expire_all()
+    managed_ui_channel = session.scalar(select(ManagedUiChannel))
+    persisted_channel = guild.channels[0]
+    persisted_message = persisted_channel.sent_messages[0]
+
+    assert_response(interaction, ["UI 設置チャンネルを作成しました。"], ephemeral=True)
+    assert managed_ui_channel is not None
+    assert managed_ui_channel.ui_type == ManagedUiType.INFO_CHANNEL
+    assert managed_ui_channel.channel_id == persisted_channel.id
+    assert managed_ui_channel.message_id == persisted_message.id
+    assert managed_ui_channel.created_by_discord_user_id == executor_discord_user_id
+    assert persisted_channel.overwrites[guild.default_role].view_channel is False
+    assert persisted_channel.overwrites[guild.default_role].send_messages is False
+    assert persisted_channel.overwrites[registered_role].view_channel is True
+    assert persisted_channel.overwrites[registered_role].send_messages is False
+    assert persisted_message.content == INFO_CHANNEL_MESSAGE
+    assert persisted_message.view is None
+
+
 def test_register_command_assigns_registered_role_when_present(
     session: Session,
     session_factory: sessionmaker[Session],
@@ -2870,6 +2915,40 @@ def test_admin_setup_custom_ui_channel_reports_missing_permissions(
     )
     assert guild.channels == []
     assert session.scalar(select(ManagedUiChannel)) is None
+
+
+def test_admin_setup_custom_ui_channel_creates_info_channel_without_thread_permissions(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    registered_role = FakeRole(id=55_011, name=REGISTERED_PLAYER_ROLE_NAME)
+    guild = FakeGuild(
+        id=2_101_55,
+        roles=[registered_role],
+        me=FakeGuildMember(
+            id=999_999,
+            guild_permissions=discord.Permissions(manage_channels=True),
+        ),
+    )
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({10}),
+    )
+    interaction = FakeInteraction(user=FakeUser(id=10), guild_id=guild.id, guild=guild)
+
+    asyncio.run(
+        handlers.admin_setup_custom_ui_channel(
+            as_interaction(interaction),
+            ManagedUiType.INFO_CHANNEL.value,
+            "レート戦情報",
+        )
+    )
+
+    session.expire_all()
+
+    assert_response(interaction, ["UI 設置チャンネルを作成しました。"], ephemeral=True)
+    assert guild.channels[0].sent_messages[0].content == INFO_CHANNEL_MESSAGE
+    assert session.scalar(select(ManagedUiChannel)) is not None
 
 
 def test_admin_setup_custom_ui_channel_reports_discord_forbidden_detail(
@@ -3033,6 +3112,13 @@ def test_admin_setup_ui_channels_creates_registered_channel_set(
     assert matchmaking_news_channel.sent_messages[0].content == MATCHMAKING_NEWS_CHANNEL_MESSAGE
     assert matchmaking_news_channel.sent_messages[0].view is None
 
+    info_channel = find_channel_by_name(guild, "レート戦情報")
+    assert info_channel.overwrites[guild.default_role].view_channel is False
+    assert info_channel.overwrites[registered_role].view_channel is True
+    assert info_channel.overwrites[registered_role].send_messages is False
+    assert info_channel.sent_messages[0].content == INFO_CHANNEL_MESSAGE
+    assert info_channel.sent_messages[0].view is None
+
     system_announcements_channel = find_channel_by_name(guild, "レート戦アナウンス")
     assert system_announcements_channel.overwrites[guild.default_role].view_channel is False
     assert system_announcements_channel.overwrites[registered_role].view_channel is True
@@ -3089,6 +3175,11 @@ def test_admin_setup_ui_channels_creates_private_channels_in_development_mode(
     assert matchmaking_channel.overwrites[registered_role].view_channel is True
     assert matchmaking_channel.overwrites[guild.me].create_private_threads is True
     assert matchmaking_channel.overwrites[guild.me].send_messages_in_threads is True
+
+    info_channel = find_channel_by_name(guild, "レート戦情報")
+    assert info_channel.overwrites[interaction.user].view_channel is True
+    assert info_channel.overwrites[interaction.user].send_messages is False
+    assert info_channel.overwrites[registered_role].view_channel is True
 
     admin_contact_channel = find_channel_by_name(guild, "運営連絡・フィードバック")
     assert admin_contact_channel.overwrites[interaction.user].view_channel is True
@@ -3681,6 +3772,9 @@ def test_admin_managed_ui_commands_are_registered_with_expected_parameters() -> 
     assert [parameter.name for parameter in setup_custom_command.parameters] == [
         "ui_type",
         "channel_name",
+    ]
+    assert [choice.value for choice in setup_custom_command.parameters[0].choices] == [
+        definition.ui_type.value for definition in get_required_managed_ui_definitions()
     ]
     assert [parameter.name for parameter in setup_all_command.parameters] == []
     assert [parameter.name for parameter in cleanup_command.parameters] == ["confirm"]

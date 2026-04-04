@@ -11,6 +11,7 @@ from dxd_rating.platform.db.session import session_scope
 REGISTER_PANEL_RECOMMENDED_CHANNEL_NAME = "レート戦はこちらから"
 MATCHMAKING_CHANNEL_RECOMMENDED_CHANNEL_NAME = "レート戦マッチング"
 MATCHMAKING_NEWS_CHANNEL_RECOMMENDED_CHANNEL_NAME = "レート戦マッチ速報"
+INFO_CHANNEL_RECOMMENDED_CHANNEL_NAME = "レート戦情報"
 SYSTEM_ANNOUNCEMENTS_CHANNEL_RECOMMENDED_CHANNEL_NAME = "レート戦アナウンス"
 ADMIN_CONTACT_CHANNEL_RECOMMENDED_CHANNEL_NAME = "運営連絡・フィードバック"
 REGISTERED_PLAYER_ROLE_NAME = "レート戦参加者"
@@ -47,6 +48,13 @@ MANAGED_UI_DEFINITIONS = {
         requires_registered_player_role=True,
         installs_persistent_view=False,
     ),
+    ManagedUiType.INFO_CHANNEL: ManagedUiDefinition(
+        ui_type=ManagedUiType.INFO_CHANNEL,
+        recommended_channel_name=INFO_CHANNEL_RECOMMENDED_CHANNEL_NAME,
+        singleton=True,
+        requires_registered_player_role=True,
+        installs_persistent_view=False,
+    ),
     ManagedUiType.SYSTEM_ANNOUNCEMENTS_CHANNEL: ManagedUiDefinition(
         ui_type=ManagedUiType.SYSTEM_ANNOUNCEMENTS_CHANNEL,
         recommended_channel_name=SYSTEM_ANNOUNCEMENTS_CHANNEL_RECOMMENDED_CHANNEL_NAME,
@@ -66,6 +74,7 @@ REQUIRED_MANAGED_UI_TYPES = (
     ManagedUiType.REGISTER_PANEL,
     ManagedUiType.MATCHMAKING_CHANNEL,
     ManagedUiType.MATCHMAKING_NEWS_CHANNEL,
+    ManagedUiType.INFO_CHANNEL,
     ManagedUiType.SYSTEM_ANNOUNCEMENTS_CHANNEL,
     ManagedUiType.ADMIN_CONTACT_CHANNEL,
 )

@@ -104,6 +104,14 @@ def test_setup_hook_skips_managed_channels_without_persistent_view(
             created_by_discord_user_id=3002,
         )
     )
+    session.add(
+        ManagedUiChannel(
+            ui_type=ManagedUiType.INFO_CHANNEL,
+            channel_id=1003,
+            message_id=2003,
+            created_by_discord_user_id=3003,
+        )
+    )
     session.commit()
 
     client = create_client(settings, session_factory)

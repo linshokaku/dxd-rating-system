@@ -46,6 +46,13 @@ MATCHMAKING_NEWS_CHANNEL_MESSAGE = "\n".join(
         "観戦ボタンもこのチャンネルのアナウンスメッセージに表示されます。",
     ]
 )
+INFO_CHANNEL_MESSAGE = "\n".join(
+    [
+        "このチャンネルはレート戦の情報確認用です。",
+        "今後、プレイヤー情報やランキング確認を行うボタン UI をここに設置予定です。",
+        "準備が整うまで、このチャンネルは案内用として運用します。",
+    ]
+)
 SYSTEM_ANNOUNCEMENTS_CHANNEL_MESSAGE = "このチャンネルは運営からのシステムアナウンス専用です。"
 ADMIN_CONTACT_CHANNEL_MESSAGE = "運営への連絡やフィードバックはこちらへどうぞ。"
 MAX_MANAGED_UI_CHANNEL_NAME_LENGTH = 100
@@ -375,6 +382,7 @@ def build_managed_ui_channel_overwrites(
     elif ui_type in (
         ManagedUiType.MATCHMAKING_CHANNEL,
         ManagedUiType.MATCHMAKING_NEWS_CHANNEL,
+        ManagedUiType.INFO_CHANNEL,
         ManagedUiType.SYSTEM_ANNOUNCEMENTS_CHANNEL,
     ):
         overwrites = {
@@ -447,6 +455,7 @@ def _build_private_visible_overwrite(ui_type: ManagedUiType) -> discord.Permissi
         ManagedUiType.REGISTER_PANEL,
         ManagedUiType.MATCHMAKING_CHANNEL,
         ManagedUiType.MATCHMAKING_NEWS_CHANNEL,
+        ManagedUiType.INFO_CHANNEL,
         ManagedUiType.SYSTEM_ANNOUNCEMENTS_CHANNEL,
     ):
         return discord.PermissionOverwrite(
@@ -480,6 +489,8 @@ async def send_initial_managed_ui_message(
         )
     if ui_type is ManagedUiType.MATCHMAKING_NEWS_CHANNEL:
         return await channel.send(content=MATCHMAKING_NEWS_CHANNEL_MESSAGE)
+    if ui_type is ManagedUiType.INFO_CHANNEL:
+        return await channel.send(content=INFO_CHANNEL_MESSAGE)
     if ui_type is ManagedUiType.SYSTEM_ANNOUNCEMENTS_CHANNEL:
         return await channel.send(content=SYSTEM_ANNOUNCEMENTS_CHANNEL_MESSAGE)
     if ui_type is ManagedUiType.ADMIN_CONTACT_CHANNEL:

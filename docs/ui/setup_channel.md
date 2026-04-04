@@ -57,7 +57,7 @@
 - `register_panel`
 - `matchmaking_channel`
 - `matchmaking_news_channel`
-- `leaderboard_channel`
+- `info_channel`
 - `system_announcements_channel`
 - `admin_contact_channel`
 
@@ -67,7 +67,7 @@
 - 作成したチャンネルには、指定した `ui_type` に対応する初期 UI を 1 つ設置する。
 - `ui_type=register_panel` の場合は、[register.md](register.md) で定義した登録 UI を設置する。
 - `ui_type=matchmaking_channel` の場合は、[matchmaking_channel.md](matchmaking_channel.md) で定義したマッチング UI を設置する。
-- `ui_type=leaderboard_channel` の場合は、ランキング確認導線を案内する初期メッセージを設置する。
+- `ui_type=info_channel` の場合は、情報確認導線を案内する初期メッセージを設置する。
 - チャンネル作成と UI 設置に成功したら、対応する UI 管理情報を保存する。
 - 成功時のレスポンス文言は以下とする。
   - `UI 設置チャンネルを作成しました。`
@@ -104,16 +104,16 @@
 - 一般ユーザーには、private thread 作成を許可しない。
 - チャンネル内には、用途説明用の初期メッセージを 1 つ設置する。
 
-### `leaderboard_channel` のチャンネル作成ルール
+### `info_channel` のチャンネル作成ルール
 
 - 公開テキストチャンネルとして作成する。
-- 推奨チャンネル名は `レート戦ランキング` とする。
+- 推奨チャンネル名は `レート戦情報` とする。
 - 登録済みユーザー向け role を持つユーザーだけが閲覧できる。
 - 一般ユーザーには、新規メッセージ送信を許可しない。
 - 一般ユーザーには、public thread 作成を許可しない。
 - 一般ユーザーには、private thread 作成を許可しない。
 - チャンネル内には、用途説明用の初期メッセージを 1 つ設置する。
-- 初期メッセージには、`/leaderboard_thread` でランキング確認用 thread を作成し、`/leaderboard match_format:<format> page:<n>` と `/leaderboard_season season_id:<id> match_format:<format> page:<n>` で表示することを案内する。
+- 初期メッセージには、`/info_thread` で情報確認用 thread を作成し、`/player_info`、`/player_info_season season_id:<id>`、`/leaderboard match_format:<format> page:<n>`、`/leaderboard_season season_id:<id> match_format:<format> page:<n>` で表示することを案内する。
 - Bot は、運用上必要な private thread 作成と thread 内メッセージ送信を行える前提とする。
 
 ### `system_announcements_channel` のチャンネル作成ルール
@@ -189,7 +189,7 @@
   - `register_panel`: `レート戦はこちらから`
   - `matchmaking_channel`: `レート戦マッチング`
   - `matchmaking_news_channel`: `レート戦マッチ速報`
-  - `leaderboard_channel`: `レート戦ランキング`
+  - `info_channel`: `レート戦情報`
   - `system_announcements_channel`: `レート戦アナウンス`
   - `admin_contact_channel`: `運営連絡・フィードバック`
 - 将来、運用開始時に必須となる UI が増えた場合は、この作成対象一覧に追加する。
@@ -390,5 +390,5 @@
   - 単一設置か複数設置可能か
 - 一括作成コマンドは、運用開始時に必要な `ui_type` と推奨チャンネル名の一覧を参照して作成対象を決定できるようにする。
 - 新しい UI を追加する場合は、作成コマンドの `ui_type` の選択肢を拡張し、対応するチャンネル作成ルールと初期 UI 配置処理を追加する。
-- `matchmaking_channel`、`matchmaking_news_channel`、`leaderboard_channel` のような追加 UI を定義した場合も、このコマンド群で管理対象に取り込めるようにする。
+- `matchmaking_channel`、`matchmaking_news_channel`、`info_channel` のような追加 UI を定義した場合も、このコマンド群で管理対象に取り込めるようにする。
 - 将来 UI 種別が増えても、管理対象として登録されている UI チャンネルであれば撤収コマンドでまとめて撤収できるようにする。

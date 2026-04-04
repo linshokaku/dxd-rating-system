@@ -1,16 +1,16 @@
-# ランキング確認 thread UI 仕様
+# 情報確認 thread UI 仕様
 
 ## UI 識別子
 
-- `ui_type`: `leaderboard_thread`
+- `ui_type`: `info_thread`
 
 ## 目的
 
-指定したフォーマットの現在シーズンランキングまたは指定シーズンランキングを、各ユーザー専用の private thread に集約して表示する。
+プレイヤー情報とランキング確認の結果を、各ユーザー専用の private thread に集約して表示する。
 
 ## 対象外
 
-- `/leaderboard_thread`、`/leaderboard`、`/leaderboard_season` の slash command 入出力仕様。
+- `/info_thread`、`/player_info`、`/player_info_season`、`/leaderboard`、`/leaderboard_season` の slash command 入出力仕様。
   - [../commands/user-commands.md](../commands/user-commands.md)
 - ランキングの並び順、順位差分、比較不能時の計算ルール。
   - [../leaderboard/ranking.md](../leaderboard/ranking.md)
@@ -19,30 +19,90 @@
 
 ## 前提
 
-- `/leaderboard_thread` が成功したとき、Bot は `レート戦ランキング` チャンネル配下に private thread を 1 つ作成する。
-- `/leaderboard_thread`、`/leaderboard`、`/leaderboard_season` では、コマンドの実行チャンネルに関わらず同じ `レート戦ランキング` チャンネル配下を使う。
-- Bot は、ランキング確認用 thread に実行ユーザーと admin を参加させる。
+- `/info_thread` が成功したとき、Bot は `レート戦情報` チャンネル配下に private thread を 1 つ作成する。
+- `/info_thread`、`/player_info`、`/player_info_season`、`/leaderboard`、`/leaderboard_season` では、コマンドの実行チャンネルに関わらず同じ `レート戦情報` チャンネル配下を使う。
+- Bot は、情報確認用 thread に実行ユーザーと admin を参加させる。
 - thread の閲覧対象は、少なくとも実行ユーザー、admin、Bot とする。
-- 各ユーザーに対して、最新 1 件のランキング確認 thread 紐づけだけを持つ。
-- `/leaderboard` と `/leaderboard_season` は、新しい thread を作成せず、保存済みの `thread_id` を表示先として使う。
+- 各ユーザーに対して、最新 1 件の情報確認 thread 紐づけだけを持つ。
+- `/player_info`、`/player_info_season`、`/leaderboard`、`/leaderboard_season` は、新しい thread を作成せず、保存済みの `thread_id` を表示先として使う。
 - Bot が親チャンネルで private thread を作成でき、thread 内へメッセージ投稿できることを前提とする。
 
 ## thread 作成ルール
 
-- `/leaderboard_thread` の業務処理が成功した後に thread を作成する。
-- thread 作成後は、実行ユーザーのランキング確認先として `thread_id` を保存する。
+- `/info_thread` の業務処理が成功した後に thread を作成する。
+- thread 作成後は、実行ユーザーの情報確認先として `thread_id` を保存する。
 - 実行ユーザーに既存の `thread_id` が保存されていても、毎回新しい thread を作成する。
 - 新しい thread を作成した場合は、古い thread を表示先として再利用しない。
-- 推奨 thread 名は `ランキング-<display_name>` とする。
+- 推奨 thread 名は `情報-<display_name>` とする。
 
 ## 初回表示
 
-- thread 作成直後に、ランキング確認用 thread であることを案内するメッセージを送る。
+- thread 作成直後に、情報確認用 thread であることを案内するメッセージを送る。
 - 案内メッセージには、少なくとも以下を含める。
-  - この thread がランキング確認専用であること。
-  - `/leaderboard match_format:<format> page:<n>` で表示できること。
+  - この thread がプレイヤー情報とランキング確認専用であること。
+  - `/player_info` で現在シーズンのプレイヤー情報を表示できること。
+  - `/player_info_season season_id:<id>` でシーズン別プレイヤー情報を表示できること。
+  - `/leaderboard match_format:<format> page:<n>` で現在シーズンのランキングを表示できること。
   - `/leaderboard_season season_id:<id> match_format:<format> page:<n>` でシーズン別ランキングを表示できること。
   - `match_format` には `1v1`、`2v2`、`3v3` を指定できること。
+
+## `/player_info` による表示
+
+### 参照対象
+
+- 表示対象は、現在シーズンにおける実行ユーザー自身のプレイヤー情報とする。
+
+### 表示形式
+
+- thread には、既存の `player_info` 本文をそのまま投稿する。
+- 本文には、各 `match_format` ごとに `rating`、`games_played`、`wins`、`losses`、`draws`、`last_played_at` を含める。
+
+表示例:
+
+```text
+プレイヤー情報
+1v1
+rating: 1500.00
+games_played: 0
+wins: 0
+losses: 0
+draws: 0
+last_played_at: -
+2v2
+...
+3v3
+...
+```
+
+## `/player_info_season` による表示
+
+### 参照対象
+
+- 表示対象は、指定 `season_id` における実行ユーザー自身のプレイヤー情報とする。
+
+### 表示形式
+
+- thread には、既存の `player_info_season` 本文をそのまま投稿する。
+- 本文には、`season_id`、`season_name`、各 `match_format` ごとの `rating`、`games_played`、`wins`、`losses`、`draws`、`last_played_at` を含める。
+
+表示例:
+
+```text
+プレイヤー情報
+season_id: 1
+season_name: season 1
+1v1
+rating: 1500.00
+games_played: 0
+wins: 0
+losses: 0
+draws: 0
+last_played_at: -
+2v2
+...
+3v3
+...
+```
 
 ## `/leaderboard` によるランキング表示
 
@@ -117,15 +177,14 @@ items: 21-40
 23 / Carol / 1609.10
 ```
 
-### 可視性と運用
+## 可視性と運用
 
 - thread 内のメッセージは、実行ユーザー、admin、Bot に見える。
-- 同じユーザーが `/leaderboard` を繰り返し実行した場合、最新紐づけ先の同じ thread に結果を追記してよい。
-- 同じユーザーが `/leaderboard_season` を繰り返し実行した場合も、最新紐づけ先の同じ thread に結果を追記してよい。
-- 同じユーザーが再度 `/leaderboard_thread` を実行して新しい thread を作成した後は、古い thread へランキングを表示しない。
+- 同じユーザーが `/player_info`、`/player_info_season`、`/leaderboard`、`/leaderboard_season` を繰り返し実行した場合、最新紐づけ先の同じ thread に結果を追記してよい。
+- 同じユーザーが再度 `/info_thread` を実行して新しい thread を作成した後は、古い thread へ情報を表示しない。
 
 ## 関連仕様
 
-- ランキング表示用チャンネルの用途と権限は [registered_channels.md](registered_channels.md) を参照する。
+- 情報確認用チャンネルの用途と権限は [registered_channels.md](registered_channels.md) を参照する。
 - コマンド入出力仕様は [../commands/user-commands.md](../commands/user-commands.md) を参照する。
 - ランキング計算仕様は [../leaderboard/ranking.md](../leaderboard/ranking.md) を参照する。

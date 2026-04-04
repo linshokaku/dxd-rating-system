@@ -404,6 +404,9 @@ last_played_at: -
 - 表示内容は、実行ユーザーに現在紐づいている情報確認用 private thread に送る。
 - thread に表示する項目は、現在順位、ユーザー名、小数点付きのレート値とする。
 - `1日前`、`3日前`、`7日前` の順位差分は表示しない。
+- thread に投稿するランキングメッセージには、次ページが存在する場合だけ末尾に `次のページ` button を付ける。
+- `次のページ` button を押したときは、同じ `season_id` と `match_format` の `/leaderboard_season <season_id> <match_format> page:n+1` と同等の処理を行う。
+- `次のページ` button を押した時点で、押下元メッセージ上の button は disabled にする。
 - レスポンスは interaction 宛てに、実行ユーザーにだけ見えるプレーンテキストで返す。
 - 成功時のレスポンス:
   - `ランキングを表示しました。`
@@ -431,6 +434,8 @@ last_played_at: -
 
 - このコマンドは新しい private thread を作成せず、現在紐づいている thread を表示先として使う。
 - 表示対象のシーズンが現在シーズンであっても、順位差分は表示しない。
+- `次のページ` button は、slash command `/leaderboard_season` を直接実行して thread に投稿された結果にも、thread 内 UI から実行して投稿された結果にも同じ条件で付く。
+- `leaderboard_season` 用 info thread 初回メッセージの `ランキングを表示` button と、ランキング結果メッセージの `次のページ` button は、一度押すと押下元メッセージ上の component 全体が disabled になる。
 - ランキングの並び順とシーズン別参照ルールは [../leaderboard/ranking.md](../leaderboard/ranking.md) を参照する。
 - thread への表示形式は [../ui/info_thread.md](../ui/info_thread.md) を参照する。
 

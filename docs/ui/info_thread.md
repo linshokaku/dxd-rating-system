@@ -85,8 +85,18 @@
 ### `command_name=leaderboard_season`
 
 - シーズン別ランキング確認用 thread として案内する。
-- 初回メッセージでは、将来この thread 内の `season_id` pulldown、`match_format` pulldown、`page` pulldown、button から `/leaderboard_season` と同等の操作を行えるようにすることを案内する。
-- 将来 UI は、`season_id` pulldown、`match_format` pulldown、`page` pulldown、実行 button を置く想定とする。
+- 初回メッセージには、`season_id` pulldown、`match_format` pulldown、`ランキングを表示` button を表示する。
+- `season_id` pulldown には、`start_at <= now()` を満たす開始済みシーズンだけを表示する。
+- `season_id` pulldown の並び順は、`start_at` の新しい順、同値なら `season_id` の大きい順とする。
+- `season_id` pulldown の各選択肢は、`label=season_name`、`description=season_id: <id>`、`value=season_id` とする。
+- `match_format` pulldown の選択肢は `/leaderboard_season` と同じ `1v1`、`2v2`、`3v3` とする。
+- `ランキングを表示` button を押したときは、選択された `season_id` と `match_format` を使って `/leaderboard_season <season_id> <match_format> page:1` と同等の処理を行う。
+- `ランキングを表示` button を押した時点で、その初回メッセージ上の pulldown と button はすべて disabled にする。
+- `season_id` を選ばずに `ランキングを表示` button を押した場合は、ランキング表示は行わず、押下ユーザーに `シーズンを選択してください。再度操作するには /info_thread を実行して新しい情報確認用スレッドを作成してください。` を返す。
+- `match_format` を選ばずに `ランキングを表示` button を押した場合は、ランキング表示は行わず、押下ユーザーに `試合形式を選択してください。再度操作するには /info_thread を実行して新しい情報確認用スレッドを作成してください。` を返す。
+- `season_id` と `match_format` の両方を選ばずに `ランキングを表示` button を押した場合は、ランキング表示は行わず、押下ユーザーに `シーズンと試合形式を選択してください。再度操作するには /info_thread を実行して新しい情報確認用スレッドを作成してください。` を返す。
+- `leaderboard_season` 用の初期 UI には `page` pulldown は置かない。
+- 2 ページ目以降の表示は、ランキング結果メッセージ末尾に表示する `次のページ` button で行う。
 
 ## `/player_info` による表示
 
@@ -208,6 +218,11 @@ items: 21-40
 - 各行の表示順は、`順位 / ユーザー名 / rating` とする。
 - `rating` は小数点以下 2 桁で表示してよい。
 - `1d`、`3d`、`7d` の順位差分列は表示しない。
+- ランキング結果メッセージの末尾には、そのページの次ページが存在する場合だけ `次のページ` button を付ける。
+- `次のページ` button を押したときは、表示中メッセージの `season_id`、`match_format`、`page` を引き継いで `/leaderboard_season <season_id> <match_format> page:n+1` と同等の処理を行う。
+- `次のページ` button を押した時点で、押下元ランキングメッセージ上の button は disabled にする。
+- 次ページが存在しない最終ページでは `次のページ` button を表示しない。
+- この `次のページ` button は、thread 内の `ランキングを表示` button から表示したランキング結果だけでなく、slash command `/leaderboard_season <season_id> <match_format> page:n` を直接実行して thread に投稿したランキング結果にも同様に付ける。
 
 表示例:
 

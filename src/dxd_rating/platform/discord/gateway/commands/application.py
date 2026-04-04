@@ -12,11 +12,13 @@ from discord import app_commands
 from sqlalchemy.orm import Session, sessionmaker
 
 from dxd_rating.contexts.common.application import (
+    InvalidLeaderboardPageError,
     InvalidMatchFormatError,
     InvalidPlayerAccessRestrictionDurationError,
     InvalidPlayerAccessRestrictionTypeError,
     InvalidQueueNameError,
     InvalidSeasonNameError,
+    LeaderboardPageNotFoundError,
     MatchFlowError,
     MatchSpectatingRestrictedError,
     PlayerAccessRestrictionAlreadyExistsError,
@@ -29,6 +31,10 @@ from dxd_rating.contexts.common.application import (
     QueueNotJoinedError,
     SeasonAlreadyExistsError,
     SeasonNotFoundError,
+)
+from dxd_rating.contexts.leaderboard.application import (
+    CurrentLeaderboardPage,
+    LeaderboardService,
 )
 from dxd_rating.contexts.matches.application import (
     MatchReportSubmissionResult,
@@ -93,6 +99,7 @@ REGISTER_FAILED_MESSAGE = "登録に失敗しました。管理者に確認し�
 PLAYER_REGISTRATION_REQUIRED_MESSAGE = (
     "プレイヤー登録が必要です。先に /register を実行してください。"
 )
+INVALID_MATCH_FORMAT_MESSAGE = "指定したフォーマットは存在しません。"
 INVALID_QUEUE_NAME_MESSAGE = "指定したキューは存在しません。"
 QUEUE_JOIN_NOT_ALLOWED_MESSAGE = "現在のレーティングではそのキューに参加できません。"
 QUEUE_JOIN_RESTRICTED_MESSAGE = "現在キュー参加を制限されています。"
@@ -115,6 +122,8 @@ PLAYER_SEASON_INFO_SUCCESS_MESSAGE = "シーズン別プレイヤー情報を表
 PLAYER_SEASON_INFO_FAILED_MESSAGE = (
     "シーズン別プレイヤー情報の取得に失敗しました。管理者に確認してください。"
 )
+LEADERBOARD_SUCCESS_MESSAGE = "ランキングを表示しました。"
+LEADERBOARD_FAILED_MESSAGE = "ランキングの取得に失敗しました。管理者に確認してください。"
 INFO_THREAD_REQUIRED_MESSAGE = "先に /info_thread を実行してください。"
 INFO_THREAD_NOT_FOUND_MESSAGE = (
     "情報確認用スレッドが見つかりません。先に /info_thread を実行してください。"
@@ -402,6 +411,7 @@ class BotCommandHandlers:
         player_access_restriction_service: PlayerAccessRestrictionCommandService | None = None,
         player_lookup_service: PlayerLookupService | None = None,
         player_identity_service: PlayerIdentityService | None = None,
+        leaderboard_service: LeaderboardService | None = None,
         season_service: SeasonService | None = None,
         logger: logging.Logger | None = None,
     ) -> None:
@@ -427,6 +437,7 @@ class BotCommandHandlers:
         ):
             self._match_service = cast(MatchCommandService, matching_queue_service)
         self.player_lookup_service = player_lookup_service or PlayerLookupService(session_factory)
+        self.leaderboard_service = leaderboard_service or LeaderboardService(session_factory)
         self.managed_ui_service = ManagedUiService(session_factory)
         self.info_thread_binding_service = InfoThreadBindingService(session_factory)
 
@@ -566,7 +577,7 @@ class BotCommandHandlers:
         except InvalidMatchFormatError:
             await self._send_player_operation_message(
                 interaction,
-                "指定したフォーマットは存在しません。",
+                INVALID_MATCH_FORMAT_MESSAGE,
             )
             return
         except InvalidQueueNameError:
@@ -870,6 +881,69 @@ class BotCommandHandlers:
             return
 
         await self._send_player_operation_message(interaction, PLAYER_SEASON_INFO_SUCCESS_MESSAGE)
+
+    async def leaderboard(
+        self,
+        interaction: discord.Interaction[Any],
+        match_format: str,
+        page: int,
+    ) -> None:
+        await self._sync_requesting_user_identity(interaction)
+        await self._defer_message_response(interaction, ephemeral=True)
+        try:
+            player_id = await asyncio.to_thread(self._lookup_player_id, interaction.user.id)
+            thread_channel_id = await asyncio.to_thread(
+                self._get_latest_info_thread_channel_id,
+                player_id,
+            )
+            if thread_channel_id is None:
+                raise MissingInfoThreadBindingError(
+                    f"info thread binding is missing for player_id={player_id}"
+                )
+
+            info_thread = await self._resolve_bound_info_thread(
+                interaction,
+                thread_channel_id=thread_channel_id,
+            )
+            leaderboard_page = await asyncio.to_thread(
+                self._lookup_current_leaderboard,
+                match_format,
+                page,
+            )
+            await self._send_info_thread_message(
+                info_thread,
+                self._format_leaderboard_message(leaderboard_page),
+            )
+        except PlayerNotRegisteredError:
+            await self._send_player_operation_message(
+                interaction,
+                PLAYER_REGISTRATION_REQUIRED_MESSAGE,
+            )
+            return
+        except (
+            InvalidMatchFormatError,
+            InvalidLeaderboardPageError,
+            LeaderboardPageNotFoundError,
+        ) as exc:
+            await self._send_player_operation_message(interaction, str(exc))
+            return
+        except MissingInfoThreadBindingError:
+            await self._send_player_operation_message(interaction, INFO_THREAD_REQUIRED_MESSAGE)
+            return
+        except (RequiredManagedUiChannelUnavailableError, UnavailableInfoThreadError):
+            await self._send_player_operation_message(interaction, INFO_THREAD_NOT_FOUND_MESSAGE)
+            return
+        except Exception:
+            self.logger.exception(
+                "Failed to execute /leaderboard command discord_user_id=%s match_format=%s page=%s",
+                interaction.user.id,
+                match_format,
+                page,
+            )
+            await self._send_player_operation_message(interaction, LEADERBOARD_FAILED_MESSAGE)
+            return
+
+        await self._send_player_operation_message(interaction, LEADERBOARD_SUCCESS_MESSAGE)
 
     async def match_parent(self, interaction: discord.Interaction[Any], match_id: int) -> None:
         await self._sync_requesting_user_identity(interaction)
@@ -1958,7 +2032,7 @@ class BotCommandHandlers:
             await self._send_message(interaction, INVALID_DISCORD_USER_ID_MESSAGE)
             return
         except InvalidMatchFormatError:
-            await self._send_message(interaction, "指定したフォーマットは存在しません。")
+            await self._send_message(interaction, INVALID_MATCH_FORMAT_MESSAGE)
             return
         except InvalidQueueNameError:
             await self._send_message(interaction, DEV_INVALID_QUEUE_NAME_MESSAGE)
@@ -2589,6 +2663,13 @@ class BotCommandHandlers:
             season_id,
         )
 
+    def _lookup_current_leaderboard(
+        self,
+        match_format: MatchFormat | str,
+        page: int,
+    ) -> CurrentLeaderboardPage:
+        return self.leaderboard_service.get_current_leaderboard_page(match_format, page)
+
     def _get_latest_info_thread_channel_id(self, player_id: int) -> int | None:
         return self.info_thread_binding_service.get_latest_thread_channel_id(player_id)
 
@@ -2849,6 +2930,35 @@ class BotCommandHandlers:
                 ]
             )
         return "\n".join(lines)
+
+    def _format_leaderboard_message(self, leaderboard_page: CurrentLeaderboardPage) -> str:
+        first_rank = leaderboard_page.entries[0].rank
+        last_rank = leaderboard_page.entries[-1].rank
+        lines = [
+            "ランキング",
+            f"season: {leaderboard_page.season_name}",
+            f"match_format: {leaderboard_page.match_format.value}",
+            f"page: {leaderboard_page.page}",
+            f"items: {first_rank}-{last_rank}",
+            "",
+        ]
+        lines.extend(
+            (
+                f"{entry.rank} / {entry.display_name} / {entry.rating:.2f} / "
+                f"{self._format_leaderboard_rank_change(entry.rank_change_1d)} / "
+                f"{self._format_leaderboard_rank_change(entry.rank_change_3d)} / "
+                f"{self._format_leaderboard_rank_change(entry.rank_change_7d)}"
+            )
+            for entry in leaderboard_page.entries
+        )
+        return "\n".join(lines)
+
+    def _format_leaderboard_rank_change(self, rank_change: int | None) -> str:
+        if rank_change is None:
+            return "-"
+        if rank_change > 0:
+            return f"+{rank_change}"
+        return str(rank_change)
 
     def _build_matchmaking_presence_thread_name(
         self,
@@ -3931,6 +4041,16 @@ def register_app_commands(
         season_id: int,
     ) -> None:
         await handlers.player_info_season(interaction, season_id)
+
+    @tree.command(name="leaderboard", description="現在シーズンのランキングを表示します")
+    @app_commands.describe(match_format="対象のフォーマット", page="表示したいページ番号")
+    @app_commands.choices(match_format=match_format_choices)
+    async def leaderboard_command(
+        interaction: discord.Interaction[Any],
+        match_format: str,
+        page: int,
+    ) -> None:
+        await handlers.leaderboard(interaction, match_format, page)
 
     @tree.command(name="match_parent", description="試合の親に立候補します")
     @app_commands.describe(match_id="対象の match_id")

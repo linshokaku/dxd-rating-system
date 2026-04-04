@@ -42,6 +42,18 @@ class RetryableTaskError(Exception):
     pass
 
 
+class LeaderboardError(Exception):
+    pass
+
+
+class InvalidLeaderboardPageError(LeaderboardError):
+    pass
+
+
+class LeaderboardPageNotFoundError(LeaderboardError):
+    pass
+
+
 class MatchFlowError(Exception):
     pass
 

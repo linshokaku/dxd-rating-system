@@ -161,7 +161,7 @@ PRESENCE_REMINDER_LEAD_TIME = timedelta(minutes=1)
 # MATCH_REPORT_DEADLINE_DELAY = timedelta(minutes=27)
 # MATCH_APPROVAL_WINDOW = timedelta(minutes=5)
 MATCH_PARENT_SELECTION_WINDOW = timedelta(minutes=1)
-MATCH_REPORT_OPEN_DELAY = timedelta(minutes=1)
+MATCH_REPORT_OPEN_DELAY = timedelta(minutes=0)
 MATCH_REPORT_DEADLINE_DELAY = timedelta(minutes=4)
 MATCH_APPROVAL_WINDOW = timedelta(minutes=1)
 

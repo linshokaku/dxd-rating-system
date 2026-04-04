@@ -10,6 +10,7 @@ import pytest
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from dxd_rating.contexts.leaderboard.application import resolve_snapshot_date
 from dxd_rating.contexts.matches.application import MatchFlowService
 from dxd_rating.contexts.matchmaking.application import (
     MatchingQueueNotificationContext,
@@ -20,7 +21,10 @@ from dxd_rating.contexts.restrictions.application import (
     PlayerAccessRestrictionDuration,
     PlayerAccessRestrictionService,
 )
-from dxd_rating.contexts.seasons.application import ensure_active_and_upcoming_seasons
+from dxd_rating.contexts.seasons.application import (
+    ensure_active_and_upcoming_seasons,
+    get_database_now,
+)
 from dxd_rating.contexts.ui.application import (
     REGISTERED_PLAYER_ROLE_NAME,
     InfoThreadCommandName,
@@ -29,6 +33,7 @@ from dxd_rating.contexts.ui.application import (
 from dxd_rating.platform.config.bot import BotSettings
 from dxd_rating.platform.db.models import (
     ActiveMatchState,
+    LeaderboardSnapshot,
     ManagedUiChannel,
     ManagedUiType,
     MatchFormat,
@@ -71,6 +76,7 @@ from dxd_rating.platform.discord.ui import (
     build_info_thread_initial_message,
 )
 from dxd_rating.platform.runtime import MatchRuntime
+from dxd_rating.shared.constants import MATCH_FORMAT_CHOICES
 
 DEFAULT_MATCH_FORMAT = MatchFormat.THREE_VS_THREE
 DEFAULT_QUEUE_NAME = "beginner"
@@ -600,6 +606,43 @@ def format_player_info_message(
             ]
         )
     return "\n".join(lines)
+
+
+def format_leaderboard_message(
+    *,
+    season_name: str,
+    match_format: MatchFormat,
+    page: int,
+    entries: list[tuple[int, str, float, int | None, int | None, int | None]],
+) -> str:
+    first_rank = entries[0][0]
+    last_rank = entries[-1][0]
+    lines = [
+        "ランキング",
+        f"season: {season_name}",
+        f"match_format: {match_format.value}",
+        f"page: {page}",
+        f"items: {first_rank}-{last_rank}",
+        "",
+    ]
+    lines.extend(
+        (
+            f"{rank} / {display_name} / {rating:.2f} / "
+            f"{format_rank_change(rank_change_1d)} / "
+            f"{format_rank_change(rank_change_3d)} / "
+            f"{format_rank_change(rank_change_7d)}"
+        )
+        for rank, display_name, rating, rank_change_1d, rank_change_3d, rank_change_7d in entries
+    )
+    return "\n".join(lines)
+
+
+def format_rank_change(rank_change: int | None) -> str:
+    if rank_change is None:
+        return "-"
+    if rank_change > 0:
+        return f"+{rank_change}"
+    return str(rank_change)
 
 
 def get_queue_entry(session: Session, player_id: int) -> MatchQueueEntry:
@@ -1903,6 +1946,407 @@ def test_player_info_season_command_requires_registered_player(
         ["プレイヤー登録が必要です。先に /register を実行してください。"],
         ephemeral=True,
     )
+
+
+def test_leaderboard_command_posts_current_leaderboard_to_active_info_thread(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    requesting_discord_user_id = 123_456_789_012_345_620
+    bob_discord_user_id = 123_456_789_012_345_621
+    carol_discord_user_id = 123_456_789_012_345_622
+    alice = create_player(session, requesting_discord_user_id)
+    bob = create_player(session, bob_discord_user_id)
+    carol = create_player(session, carol_discord_user_id)
+    season_pair = ensure_active_and_upcoming_seasons(session)
+
+    alice_stats = get_player_format_stats(session, alice.id)
+    bob_stats = get_player_format_stats(session, bob.id)
+    carol_stats = get_player_format_stats(session, carol.id)
+    alice_stats.rating = 1600
+    alice_stats.games_played = 2
+    alice_stats.wins = 2
+    bob_stats.rating = 1600
+    bob_stats.games_played = 5
+    bob_stats.wins = 4
+    bob_stats.losses = 1
+    carol_stats.rating = 1600
+    carol_stats.games_played = 5
+    carol_stats.wins = 3
+    carol_stats.losses = 2
+    alice.display_name = "Alice"
+    bob.display_name = "Bob"
+    carol.display_name = "Carol"
+    current_snapshot_date = resolve_snapshot_date(get_database_now(session))
+    session.add_all(
+        (
+            LeaderboardSnapshot(
+                snapshot_date=current_snapshot_date - timedelta(days=1),
+                season_id=season_pair.active.id,
+                match_format=MatchFormat.THREE_VS_THREE,
+                player_id=bob.id,
+                rank=2,
+                rating=1590,
+                games_played=4,
+            ),
+            LeaderboardSnapshot(
+                snapshot_date=current_snapshot_date - timedelta(days=1),
+                season_id=season_pair.active.id,
+                match_format=MatchFormat.THREE_VS_THREE,
+                player_id=carol.id,
+                rank=1,
+                rating=1610,
+                games_played=4,
+            ),
+            LeaderboardSnapshot(
+                snapshot_date=current_snapshot_date - timedelta(days=3),
+                season_id=season_pair.active.id,
+                match_format=MatchFormat.THREE_VS_THREE,
+                player_id=alice.id,
+                rank=1,
+                rating=1650,
+                games_played=1,
+            ),
+            LeaderboardSnapshot(
+                snapshot_date=current_snapshot_date - timedelta(days=3),
+                season_id=season_pair.active.id,
+                match_format=MatchFormat.THREE_VS_THREE,
+                player_id=bob.id,
+                rank=3,
+                rating=1580,
+                games_played=3,
+            ),
+        )
+    )
+    session.commit()
+    handlers = create_handlers(session_factory)
+    guild = FakeGuild(id=14_099_7)
+    info_channel = FakeTextChannel(id=13_099_7, name="レート戦情報", guild=guild)
+    guild.channels.append(info_channel)
+    setup_info_managed_ui_channel(handlers, info_channel.id)
+    created_thread = create_active_info_thread(
+        handlers,
+        discord_user_id=requesting_discord_user_id,
+        guild=guild,
+        info_channel=info_channel,
+        command_name=InfoThreadCommandName.LEADERBOARD,
+        interaction_channel_id=13_198_7,
+        user_name="Alice",
+    )
+    interaction = FakeInteraction(
+        user=FakeUser(id=requesting_discord_user_id, name="Alice"),
+        channel_id=13_197_7,
+        guild_id=guild.id,
+        guild=guild,
+    )
+
+    asyncio.run(
+        handlers.leaderboard(
+            as_interaction(interaction),
+            MatchFormat.THREE_VS_THREE.value,
+            1,
+        )
+    )
+
+    assert_response(
+        interaction,
+        ["ランキングを表示しました。"],
+        ephemeral=True,
+    )
+    assert [message.content for message in created_thread.sent_messages] == [
+        build_info_thread_initial_message(InfoThreadCommandName.LEADERBOARD),
+        format_leaderboard_message(
+            season_name=season_pair.active.name,
+            match_format=MatchFormat.THREE_VS_THREE,
+            page=1,
+            entries=[
+                (1, "Bob", 1600.0, 1, 2, None),
+                (2, "Carol", 1600.0, -1, None, None),
+                (3, "Alice", 1600.0, None, -2, None),
+            ],
+        ),
+    ]
+
+
+def test_leaderboard_command_requires_registered_player(
+    session_factory: sessionmaker[Session],
+) -> None:
+    handlers = create_handlers(session_factory)
+    interaction = FakeInteraction(user=FakeUser(id=123_456_789_012_345_623))
+
+    asyncio.run(
+        handlers.leaderboard(as_interaction(interaction), MatchFormat.THREE_VS_THREE.value, 1)
+    )
+
+    assert_response(
+        interaction,
+        ["プレイヤー登録が必要です。先に /register を実行してください。"],
+        ephemeral=True,
+    )
+
+
+def test_leaderboard_command_requires_active_info_thread_binding(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    discord_user_id = 123_456_789_012_345_624
+    create_player(session, discord_user_id)
+    handlers = create_handlers(session_factory)
+    interaction = FakeInteraction(user=FakeUser(id=discord_user_id))
+
+    asyncio.run(
+        handlers.leaderboard(as_interaction(interaction), MatchFormat.THREE_VS_THREE.value, 1)
+    )
+
+    assert_response(
+        interaction,
+        ["先に /info_thread を実行してください。"],
+        ephemeral=True,
+    )
+
+
+def test_leaderboard_command_returns_thread_not_found_when_bound_thread_is_missing(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    discord_user_id = 123_456_789_012_345_625
+    player = create_player(session, discord_user_id)
+    handlers = create_handlers(session_factory)
+    guild = FakeGuild(id=14_099_8)
+    info_channel = FakeTextChannel(id=13_099_8, name="レート戦情報", guild=guild)
+    guild.channels.append(info_channel)
+    setup_info_managed_ui_channel(handlers, info_channel.id)
+    handlers.info_thread_binding_service.upsert_latest_thread_channel_id(
+        player_id=player.id,
+        thread_channel_id=99_003,
+    )
+    interaction = FakeInteraction(
+        user=FakeUser(id=discord_user_id),
+        channel_id=13_197_8,
+        guild_id=guild.id,
+        guild=guild,
+    )
+
+    asyncio.run(
+        handlers.leaderboard(as_interaction(interaction), MatchFormat.THREE_VS_THREE.value, 1)
+    )
+
+    assert_response(
+        interaction,
+        ["情報確認用スレッドが見つかりません。先に /info_thread を実行してください。"],
+        ephemeral=True,
+    )
+
+
+def test_leaderboard_command_returns_thread_not_found_when_bound_thread_send_fails(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    discord_user_id = 123_456_789_012_345_626
+    create_player(session, discord_user_id)
+    handlers = create_handlers(session_factory)
+    guild = FakeGuild(id=14_099_9)
+    info_channel = FakeTextChannel(id=13_099_9, name="レート戦情報", guild=guild)
+    guild.channels.append(info_channel)
+    setup_info_managed_ui_channel(handlers, info_channel.id)
+    created_thread = create_active_info_thread(
+        handlers,
+        discord_user_id=discord_user_id,
+        guild=guild,
+        info_channel=info_channel,
+        command_name=InfoThreadCommandName.LEADERBOARD,
+        interaction_channel_id=13_198_9,
+    )
+    create_player(session, 123_456_789_012_345_627)
+    get_player_format_stats(session, 2).games_played = 1
+    session.commit()
+    created_thread.fail_send_with = make_not_found()
+    interaction = FakeInteraction(
+        user=FakeUser(id=discord_user_id),
+        channel_id=13_197_9,
+        guild_id=guild.id,
+        guild=guild,
+    )
+
+    asyncio.run(
+        handlers.leaderboard(as_interaction(interaction), MatchFormat.THREE_VS_THREE.value, 1)
+    )
+
+    assert_response(
+        interaction,
+        ["情報確認用スレッドが見つかりません。先に /info_thread を実行してください。"],
+        ephemeral=True,
+    )
+    assert [message.content for message in created_thread.sent_messages] == [
+        build_info_thread_initial_message(InfoThreadCommandName.LEADERBOARD),
+    ]
+
+
+def test_leaderboard_command_returns_invalid_page_without_posting_to_thread(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    discord_user_id = 123_456_789_012_345_628
+    create_player(session, discord_user_id)
+    handlers = create_handlers(session_factory)
+    guild = FakeGuild(id=14_100_0)
+    info_channel = FakeTextChannel(id=13_100_0, name="レート戦情報", guild=guild)
+    guild.channels.append(info_channel)
+    setup_info_managed_ui_channel(handlers, info_channel.id)
+    created_thread = create_active_info_thread(
+        handlers,
+        discord_user_id=discord_user_id,
+        guild=guild,
+        info_channel=info_channel,
+        command_name=InfoThreadCommandName.LEADERBOARD,
+        interaction_channel_id=13_198_0,
+    )
+    interaction = FakeInteraction(
+        user=FakeUser(id=discord_user_id),
+        channel_id=13_197_0,
+        guild_id=guild.id,
+        guild=guild,
+    )
+
+    asyncio.run(
+        handlers.leaderboard(as_interaction(interaction), MatchFormat.THREE_VS_THREE.value, 0)
+    )
+
+    assert_response(
+        interaction,
+        ["page は 1 以上で指定してください。"],
+        ephemeral=True,
+    )
+    assert [message.content for message in created_thread.sent_messages] == [
+        build_info_thread_initial_message(InfoThreadCommandName.LEADERBOARD),
+    ]
+
+
+def test_leaderboard_command_returns_invalid_match_format_without_posting_to_thread(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    discord_user_id = 123_456_789_012_345_629
+    create_player(session, discord_user_id)
+    handlers = create_handlers(session_factory)
+    guild = FakeGuild(id=14_100_1)
+    info_channel = FakeTextChannel(id=13_100_1, name="レート戦情報", guild=guild)
+    guild.channels.append(info_channel)
+    setup_info_managed_ui_channel(handlers, info_channel.id)
+    created_thread = create_active_info_thread(
+        handlers,
+        discord_user_id=discord_user_id,
+        guild=guild,
+        info_channel=info_channel,
+        command_name=InfoThreadCommandName.LEADERBOARD,
+        interaction_channel_id=13_198_1,
+    )
+    interaction = FakeInteraction(
+        user=FakeUser(id=discord_user_id),
+        channel_id=13_197_1,
+        guild_id=guild.id,
+        guild=guild,
+    )
+
+    asyncio.run(handlers.leaderboard(as_interaction(interaction), "invalid", 1))
+
+    assert_response(
+        interaction,
+        ["指定したフォーマットは存在しません。"],
+        ephemeral=True,
+    )
+    assert [message.content for message in created_thread.sent_messages] == [
+        build_info_thread_initial_message(InfoThreadCommandName.LEADERBOARD),
+    ]
+
+
+def test_leaderboard_command_returns_page_not_found_without_posting_to_thread(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    discord_user_id = 123_456_789_012_345_630
+    create_player(session, discord_user_id)
+    handlers = create_handlers(session_factory)
+    guild = FakeGuild(id=14_100_2)
+    info_channel = FakeTextChannel(id=13_100_2, name="レート戦情報", guild=guild)
+    guild.channels.append(info_channel)
+    setup_info_managed_ui_channel(handlers, info_channel.id)
+    created_thread = create_active_info_thread(
+        handlers,
+        discord_user_id=discord_user_id,
+        guild=guild,
+        info_channel=info_channel,
+        command_name=InfoThreadCommandName.LEADERBOARD,
+        interaction_channel_id=13_198_2,
+    )
+    interaction = FakeInteraction(
+        user=FakeUser(id=discord_user_id),
+        channel_id=13_197_2,
+        guild_id=guild.id,
+        guild=guild,
+    )
+
+    asyncio.run(
+        handlers.leaderboard(as_interaction(interaction), MatchFormat.THREE_VS_THREE.value, 1)
+    )
+
+    assert_response(
+        interaction,
+        ["指定したページにはランキングがありません。"],
+        ephemeral=True,
+    )
+    assert [message.content for message in created_thread.sent_messages] == [
+        build_info_thread_initial_message(InfoThreadCommandName.LEADERBOARD),
+    ]
+
+
+def test_leaderboard_command_returns_internal_error_message_when_lookup_fails(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    class FailingLeaderboardService:
+        def get_current_leaderboard_page(
+            self,
+            match_format: str,
+            page: int,
+        ) -> None:
+            raise RuntimeError(f"boom match_format={match_format} page={page}")
+
+    discord_user_id = 123_456_789_012_345_631
+    create_player(session, discord_user_id)
+    handlers = create_handlers(session_factory)
+    handlers.leaderboard_service = cast(Any, FailingLeaderboardService())
+    guild = FakeGuild(id=14_100_3)
+    info_channel = FakeTextChannel(id=13_100_3, name="レート戦情報", guild=guild)
+    guild.channels.append(info_channel)
+    setup_info_managed_ui_channel(handlers, info_channel.id)
+    created_thread = create_active_info_thread(
+        handlers,
+        discord_user_id=discord_user_id,
+        guild=guild,
+        info_channel=info_channel,
+        command_name=InfoThreadCommandName.LEADERBOARD,
+        interaction_channel_id=13_198_3,
+    )
+    interaction = FakeInteraction(
+        user=FakeUser(id=discord_user_id),
+        channel_id=13_197_3,
+        guild_id=guild.id,
+        guild=guild,
+    )
+
+    asyncio.run(
+        handlers.leaderboard(as_interaction(interaction), MatchFormat.THREE_VS_THREE.value, 1)
+    )
+
+    assert_response(
+        interaction,
+        ["ランキングの取得に失敗しました。管理者に確認してください。"],
+        ephemeral=True,
+    )
+    assert [message.content for message in created_thread.sent_messages] == [
+        build_info_thread_initial_message(InfoThreadCommandName.LEADERBOARD),
+    ]
 
 
 @pytest.mark.parametrize(
@@ -4533,6 +4977,23 @@ def test_info_thread_command_is_registered_with_expected_parameters_and_choices(
         InfoThreadCommandName.PLAYER_INFO.value,
         InfoThreadCommandName.PLAYER_INFO_SEASON.value,
     ]
+
+
+def test_leaderboard_command_is_registered_with_expected_parameters_and_choices() -> None:
+    handlers = BotCommandHandlers(
+        settings=create_settings(),
+        session_factory=sessionmaker(),
+    )
+    client = discord.Client(intents=discord.Intents.none())
+    tree = discord.app_commands.CommandTree(client)
+
+    register_app_commands(tree, handlers)
+
+    command = tree.get_command("leaderboard")
+
+    assert command is not None
+    assert [parameter.name for parameter in command.parameters] == ["match_format", "page"]
+    assert [choice.value for choice in command.parameters[0].choices] == list(MATCH_FORMAT_CHOICES)
 
 
 def test_match_spectate_command_is_registered_with_match_id_parameter() -> None:

@@ -99,6 +99,19 @@ class SeasonService:
     def __init__(self, session_factory: sessionmaker[Session]) -> None:
         self.session_factory = session_factory
 
+    def list_started_seasons(
+        self,
+        *,
+        current_time: datetime | None = None,
+        limit: int | None = None,
+    ) -> tuple[SeasonInfo, ...]:
+        with session_scope(self.session_factory) as session:
+            return list_started_seasons(
+                session,
+                current_time=current_time,
+                limit=limit,
+            )
+
     def rename_season(self, season_id: int, name: str) -> SeasonRenameResult:
         with session_scope(self.session_factory) as session:
             season = session.get(Season, season_id)
@@ -186,6 +199,35 @@ def get_active_and_upcoming_seasons(
         raise SeasonStateError("稼働中シーズンに対応する次シーズンが存在しません。")
 
     return ActiveSeasonPair(active=active_season, upcoming=upcoming_season)
+
+
+def list_started_seasons(
+    session: Session,
+    *,
+    current_time: datetime | None = None,
+    limit: int | None = None,
+) -> tuple[SeasonInfo, ...]:
+    resolved_current_time = get_database_now(session) if current_time is None else current_time
+    statement = (
+        select(Season)
+        .where(Season.start_at <= resolved_current_time)
+        .order_by(Season.start_at.desc(), Season.id.desc())
+    )
+    if limit is not None:
+        statement = statement.limit(limit)
+
+    seasons = session.scalars(statement).all()
+    return tuple(
+        SeasonInfo(
+            season_id=season.id,
+            name=season.name,
+            start_at=season.start_at,
+            end_at=season.end_at,
+            completed=season.completed,
+            completed_at=season.completed_at,
+        )
+        for season in seasons
+    )
 
 
 def ensure_player_stats_for_current_and_future_seasons(

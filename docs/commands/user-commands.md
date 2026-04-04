@@ -436,6 +436,7 @@ last_played_at: -
 - 表示対象のシーズンが現在シーズンであっても、順位差分は表示しない。
 - `次のページ` button は、slash command `/leaderboard_season` を直接実行して thread に投稿された結果にも、thread 内 UI から実行して投稿された結果にも同じ条件で付く。
 - `leaderboard_season` 用 info thread 初回メッセージの `ランキングを表示` button と、ランキング結果メッセージの `次のページ` button は、一度押すと押下元メッセージ上の component 全体が disabled になる。
+- `leaderboard_season` 用 info thread 初回メッセージの `season_id` pulldown には、開始済みシーズンの最新 25 件が `season_name` 表示で並ぶ。
 - ランキングの並び順とシーズン別参照ルールは [../leaderboard/ranking.md](../leaderboard/ranking.md) を参照する。
 - thread への表示形式は [../ui/info_thread.md](../ui/info_thread.md) を参照する。
 

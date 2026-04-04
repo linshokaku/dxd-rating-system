@@ -350,6 +350,7 @@ def test_get_season_leaderboard_page_returns_ranked_entries_for_started_season(
     assert result.match_format == MatchFormat.THREE_VS_THREE
     assert result.page == 1
     assert result.page_size == 20
+    assert result.has_next_page is False
     assert [
         (
             entry.rank,
@@ -407,9 +408,55 @@ def test_get_season_leaderboard_page_returns_page_two_with_rank_21(
         current_time=current_time,
     )
 
+    assert result.has_next_page is False
     assert len(result.entries) == 1
     assert result.entries[0].rank == 21
     assert result.entries[0].display_name == str(players[20].discord_user_id)
+
+
+def test_get_season_leaderboard_page_marks_has_next_page_when_more_entries_exist(
+    session: Session,
+) -> None:
+    current_time = datetime(2026, 3, 22, 3, 15, 0, tzinfo=timezone.utc)
+    season = Season(
+        name="202601delta",
+        start_at=current_time - timedelta(days=70),
+        end_at=current_time - timedelta(days=40),
+        completed=True,
+        completed_at=current_time - timedelta(days=40),
+    )
+    session.add(season)
+    session.flush()
+    players = create_players(
+        session,
+        display_names=tuple(f"Player {index}" for index in range(1, 22)),
+        start_discord_user_id=623_456_789_012_345_600,
+    )
+    session.add_all(
+        PlayerFormatStats(
+            player_id=player.id,
+            season_id=season.id,
+            match_format=MatchFormat.THREE_VS_THREE,
+            rating=2000 - index,
+            games_played=1,
+            wins=1,
+        )
+        for index, player in enumerate(players)
+    )
+    session.flush()
+
+    result = get_season_leaderboard_page(
+        session,
+        season_id=season.id,
+        match_format=MatchFormat.THREE_VS_THREE,
+        page=1,
+        current_time=current_time,
+    )
+
+    assert result.has_next_page is True
+    assert len(result.entries) == 20
+    assert result.entries[0].rank == 1
+    assert result.entries[-1].rank == 20
 
 
 def test_get_season_leaderboard_page_rejects_upcoming_season(session: Session) -> None:

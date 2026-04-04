@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from dxd_rating.contexts.players.application import register_player
 from dxd_rating.contexts.seasons.application import (
     ensure_active_and_upcoming_seasons,
+    list_started_seasons,
     resolve_player_format_stats_for_season,
     update_ended_season_completions,
 )
@@ -79,3 +80,60 @@ def test_update_ended_season_completions_marks_matchless_past_season_completed(
     assert completed_season_ids == (past_season.id,)
     assert past_season.completed is True
     assert past_season.completed_at == datetime(2026, 3, 22, 0, 0, 0, tzinfo=timezone.utc)
+
+
+def test_list_started_seasons_returns_latest_started_25_in_desc_order(
+    session: Session,
+) -> None:
+    current_time = datetime(2026, 3, 22, 0, 0, 0, tzinfo=timezone.utc)
+    latest_started_season = Season(
+        name="latest-started",
+        start_at=current_time - timedelta(hours=12),
+        end_at=current_time + timedelta(days=29),
+        completed=False,
+        completed_at=None,
+    )
+    second_latest_started_season = Season(
+        name="second-latest-started",
+        start_at=current_time - timedelta(days=1),
+        end_at=current_time + timedelta(days=30),
+        completed=False,
+        completed_at=None,
+    )
+    older_started_seasons = [
+        Season(
+            name=f"archive-{index:02d}",
+            start_at=current_time - timedelta(days=index + 2),
+            end_at=current_time - timedelta(days=index + 1),
+            completed=True,
+            completed_at=current_time - timedelta(days=index + 1),
+        )
+        for index in range(25)
+    ]
+    future_season = Season(
+        name="future-season",
+        start_at=current_time + timedelta(days=1),
+        end_at=current_time + timedelta(days=31),
+        completed=False,
+        completed_at=None,
+    )
+    session.add_all(
+        [
+            latest_started_season,
+            second_latest_started_season,
+            *older_started_seasons,
+            future_season,
+        ]
+    )
+    session.flush()
+
+    started_seasons = list_started_seasons(session, current_time=current_time, limit=25)
+
+    assert len(started_seasons) == 25
+    assert [season.name for season in started_seasons] == [
+        "latest-started",
+        "second-latest-started",
+        *(f"archive-{index:02d}" for index in range(23)),
+    ]
+    assert all(season.start_at <= current_time for season in started_seasons)
+    assert all(season.name != "future-season" for season in started_seasons)

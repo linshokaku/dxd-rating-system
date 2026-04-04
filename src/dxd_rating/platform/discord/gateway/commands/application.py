@@ -60,7 +60,7 @@ from dxd_rating.contexts.restrictions.application import (
     PlayerAccessRestrictionDuration,
     PlayerAccessRestrictionService,
 )
-from dxd_rating.contexts.seasons.application import SeasonService
+from dxd_rating.contexts.seasons.application import SeasonInfo, SeasonService
 from dxd_rating.contexts.ui.application import (
     REGISTERED_PLAYER_ROLE_NAME,
     InfoThreadBindingService,
@@ -82,10 +82,13 @@ from dxd_rating.platform.db.models import (
 )
 from dxd_rating.platform.db.session import session_scope
 from dxd_rating.platform.discord.ui import (
+    INFO_THREAD_LEADERBOARD_SEASON_MAX_OPTIONS,
     build_info_thread_initial_message,
     build_managed_ui_channel_overwrites,
     create_info_thread_leaderboard_initial_view,
     create_info_thread_leaderboard_next_page_view,
+    create_info_thread_leaderboard_season_initial_view,
+    create_info_thread_leaderboard_season_next_page_view,
     create_matchmaking_presence_thread_view,
     is_valid_managed_ui_channel_name,
     send_initial_managed_ui_message,
@@ -1009,6 +1012,38 @@ class BotCommandHandlers:
         match_format: str,
         page: int,
     ) -> None:
+        await self._run_season_leaderboard(
+            interaction,
+            season_id,
+            match_format,
+            page,
+            require_active_thread_match=False,
+        )
+
+    async def leaderboard_season_from_info_thread(
+        self,
+        interaction: discord.Interaction[Any],
+        season_id: int,
+        match_format: str,
+        page: int,
+    ) -> None:
+        await self._run_season_leaderboard(
+            interaction,
+            season_id,
+            match_format,
+            page,
+            require_active_thread_match=True,
+        )
+
+    async def _run_season_leaderboard(
+        self,
+        interaction: discord.Interaction[Any],
+        season_id: int,
+        match_format: str,
+        page: int,
+        *,
+        require_active_thread_match: bool,
+    ) -> None:
         await self._sync_requesting_user_identity(interaction)
         await self._defer_message_response(interaction, ephemeral=True)
         try:
@@ -1017,11 +1052,19 @@ class BotCommandHandlers:
                 self._get_latest_info_thread_channel_id,
                 player_id,
             )
-            if thread_channel_id is None:
+            if require_active_thread_match:
+                should_continue = await self._validate_active_info_thread_binding(
+                    interaction,
+                    thread_channel_id=thread_channel_id,
+                )
+                if not should_continue:
+                    return
+            elif thread_channel_id is None:
                 raise MissingInfoThreadBindingError(
                     f"info thread binding is missing for player_id={player_id}"
                 )
 
+            assert thread_channel_id is not None
             info_thread = await self._resolve_bound_info_thread(
                 interaction,
                 thread_channel_id=thread_channel_id,
@@ -1035,6 +1078,7 @@ class BotCommandHandlers:
             await self._send_info_thread_message(
                 info_thread,
                 self._format_season_leaderboard_message(leaderboard_page),
+                view=self._build_season_leaderboard_view(leaderboard_page),
             )
         except PlayerNotRegisteredError:
             await self._send_player_operation_message(
@@ -1059,12 +1103,14 @@ class BotCommandHandlers:
             return
         except Exception:
             self.logger.exception(
-                "Failed to execute /leaderboard_season command "
-                "discord_user_id=%s season_id=%s match_format=%s page=%s",
+                "Failed to execute leaderboard_season interaction "
+                "discord_user_id=%s season_id=%s match_format=%s page=%s "
+                "require_active_thread_match=%s",
                 interaction.user.id,
                 season_id,
                 match_format,
                 page,
+                require_active_thread_match,
             )
             await self._send_player_operation_message(
                 interaction,
@@ -2811,6 +2857,11 @@ class BotCommandHandlers:
             page,
         )
 
+    def list_started_seasons_for_info_thread(self) -> tuple[SeasonInfo, ...]:
+        return self.season_service.list_started_seasons(
+            limit=INFO_THREAD_LEADERBOARD_SEASON_MAX_OPTIONS
+        )
+
     def _get_latest_info_thread_channel_id(self, player_id: int) -> int | None:
         return self.info_thread_binding_service.get_latest_thread_channel_id(player_id)
 
@@ -3094,14 +3145,18 @@ class BotCommandHandlers:
         )
         return "\n".join(lines)
 
-    def _build_info_thread_initial_view(
+    async def _build_info_thread_initial_view(
         self,
         command_name: InfoThreadCommandName,
     ) -> discord.ui.View | None:
-        if command_name is not InfoThreadCommandName.LEADERBOARD:
-            return None
+        if command_name is InfoThreadCommandName.LEADERBOARD:
+            return create_info_thread_leaderboard_initial_view(self)
 
-        return create_info_thread_leaderboard_initial_view(self)
+        if command_name is InfoThreadCommandName.LEADERBOARD_SEASON:
+            seasons = await asyncio.to_thread(self.list_started_seasons_for_info_thread)
+            return create_info_thread_leaderboard_season_initial_view(self, seasons)
+
+        return None
 
     def _build_current_leaderboard_view(
         self,
@@ -3111,6 +3166,20 @@ class BotCommandHandlers:
             return None
 
         return create_info_thread_leaderboard_next_page_view(
+            match_format=leaderboard_page.match_format,
+            target_page=leaderboard_page.page + 1,
+            interaction_handler=self,
+        )
+
+    def _build_season_leaderboard_view(
+        self,
+        leaderboard_page: SeasonLeaderboardPage,
+    ) -> discord.ui.View | None:
+        if not leaderboard_page.has_next_page:
+            return None
+
+        return create_info_thread_leaderboard_season_next_page_view(
+            season_id=leaderboard_page.season_id,
             match_format=leaderboard_page.match_format,
             target_page=leaderboard_page.page + 1,
             interaction_handler=self,
@@ -3597,7 +3666,7 @@ class BotCommandHandlers:
 
         await cast(Any, thread).send(
             build_info_thread_initial_message(command_name),
-            view=self._build_info_thread_initial_view(command_name),
+            view=await self._build_info_thread_initial_view(command_name),
         )
         self._require_discord_channel_id(thread)
         return thread

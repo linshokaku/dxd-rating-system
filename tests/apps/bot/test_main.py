@@ -18,6 +18,7 @@ from dxd_rating.platform.discord.ui import (
     MATCHMAKING_PRESENCE_THREAD_PRESENT_BUTTON_LABEL,
     REGISTER_PANEL_BUTTON_LABEL,
     InfoThreadLeaderboardNextPageButton,
+    InfoThreadLeaderboardSeasonNextPageButton,
     MatchmakingNewsMatchAnnouncementSpectateButton,
     MatchOperationThreadDrawButton,
     MatchOperationThreadLoseButton,
@@ -53,6 +54,7 @@ def test_setup_hook_restores_persistent_register_panel_view(
     session: Session,
     session_factory: sessionmaker[Session],
 ) -> None:
+    initialize_seasons(session_factory)
     settings = BotSettings.model_construct(
         discord_bot_token="discord-token",
         database_url="postgresql+psycopg://user:password@localhost:5432/dxd_rating",
@@ -97,6 +99,7 @@ def test_setup_hook_restores_persistent_register_panel_view(
         INFO_CHANNEL_PLAYER_INFO_SEASON_BUTTON_LABEL,
     ] in button_labels_by_view
     assert [None, INFO_THREAD_LEADERBOARD_SHOW_BUTTON_LABEL] in button_labels_by_view
+    assert [None, None, INFO_THREAD_LEADERBOARD_SHOW_BUTTON_LABEL] in button_labels_by_view
     dynamic_item_classes = set(client._connection._view_store._dynamic_items.values())
     assert MatchOperationThreadWinButton in dynamic_item_classes
     assert MatchOperationThreadDrawButton in dynamic_item_classes
@@ -105,12 +108,14 @@ def test_setup_hook_restores_persistent_register_panel_view(
     assert MatchOperationThreadVoidButton in dynamic_item_classes
     assert MatchmakingNewsMatchAnnouncementSpectateButton in dynamic_item_classes
     assert InfoThreadLeaderboardNextPageButton in dynamic_item_classes
+    assert InfoThreadLeaderboardSeasonNextPageButton in dynamic_item_classes
 
 
 def test_setup_hook_skips_managed_channels_without_persistent_view(
     session: Session,
     session_factory: sessionmaker[Session],
 ) -> None:
+    initialize_seasons(session_factory)
     settings = BotSettings.model_construct(
         discord_bot_token="discord-token",
         database_url="postgresql+psycopg://user:password@localhost:5432/dxd_rating",
@@ -140,6 +145,7 @@ def test_setup_hook_skips_managed_channels_without_persistent_view(
         MATCHMAKING_PRESENCE_THREAD_LEAVE_BUTTON_LABEL,
     ] in button_labels_by_view
     assert [None, INFO_THREAD_LEADERBOARD_SHOW_BUTTON_LABEL] in button_labels_by_view
+    assert [None, None, INFO_THREAD_LEADERBOARD_SHOW_BUTTON_LABEL] in button_labels_by_view
     dynamic_item_classes = set(client._connection._view_store._dynamic_items.values())
     assert MatchOperationThreadWinButton in dynamic_item_classes
     assert MatchOperationThreadDrawButton in dynamic_item_classes
@@ -148,3 +154,4 @@ def test_setup_hook_skips_managed_channels_without_persistent_view(
     assert MatchOperationThreadVoidButton in dynamic_item_classes
     assert MatchmakingNewsMatchAnnouncementSpectateButton in dynamic_item_classes
     assert InfoThreadLeaderboardNextPageButton in dynamic_item_classes
+    assert InfoThreadLeaderboardSeasonNextPageButton in dynamic_item_classes

@@ -86,7 +86,7 @@
 
 - シーズン別ランキング確認用 thread として案内する。
 - 初回メッセージには、`season_id` pulldown、`match_format` pulldown、`ランキングを表示` button を表示する。
-- `season_id` pulldown には、`start_at <= now()` を満たす開始済みシーズンだけを表示する。
+- `season_id` pulldown には、`start_at <= now()` を満たす開始済みシーズンのうち、最新 25 件だけを表示する。
 - `season_id` pulldown の並び順は、`start_at` の新しい順、同値なら `season_id` の大きい順とする。
 - `season_id` pulldown の各選択肢は、`label=season_name`、`description=season_id: <id>`、`value=season_id` とする。
 - `match_format` pulldown の選択肢は `/leaderboard_season` と同じ `1v1`、`2v2`、`3v3` とする。

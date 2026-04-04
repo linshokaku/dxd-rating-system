@@ -79,6 +79,7 @@ class SeasonLeaderboardPage:
     match_format: MatchFormat
     page: int
     page_size: int
+    has_next_page: bool
     entries: tuple[SeasonLeaderboardEntry, ...]
 
 
@@ -204,7 +205,7 @@ def get_season_leaderboard_page(
         season_id=season_id,
         current_time=resolved_current_time,
     )
-    page_offset, leaderboard_rows = _load_leaderboard_rows(
+    page_offset, leaderboard_rows, has_next_page = _load_season_leaderboard_rows(
         session,
         season_id=season.id,
         match_format=resolved_match_format,
@@ -229,6 +230,7 @@ def get_season_leaderboard_page(
         match_format=resolved_match_format,
         page=page,
         page_size=LEADERBOARD_PAGE_SIZE,
+        has_next_page=has_next_page,
         entries=entries,
     )
 
@@ -256,13 +258,13 @@ def _resolve_started_season(
     return season
 
 
-def _load_leaderboard_rows(
+def _load_season_leaderboard_rows(
     session: Session,
     *,
     season_id: int,
     match_format: MatchFormat,
     page: int,
-) -> tuple[int, list[tuple[PlayerFormatStats, Player]]]:
+) -> tuple[int, list[tuple[PlayerFormatStats, Player]], bool]:
     if page < 1:
         raise InvalidLeaderboardPageError(INVALID_LEADERBOARD_PAGE_MESSAGE)
 
@@ -282,14 +284,19 @@ def _load_leaderboard_rows(
                 PlayerFormatStats.player_id.asc(),
             )
             .offset(page_offset)
-            .limit(LEADERBOARD_PAGE_SIZE)
+            .limit(LEADERBOARD_PAGE_SIZE + 1)
         )
         .tuples()
         .all()
     )
     if not leaderboard_rows:
         raise LeaderboardPageNotFoundError(LEADERBOARD_PAGE_NOT_FOUND_MESSAGE)
-    return page_offset, leaderboard_rows
+
+    has_next_page = len(leaderboard_rows) > LEADERBOARD_PAGE_SIZE
+    if has_next_page:
+        leaderboard_rows = leaderboard_rows[:LEADERBOARD_PAGE_SIZE]
+
+    return page_offset, leaderboard_rows, has_next_page
 
 
 def _load_current_leaderboard_rows(

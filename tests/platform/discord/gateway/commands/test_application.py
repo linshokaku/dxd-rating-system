@@ -71,6 +71,8 @@ from dxd_rating.platform.discord.ui import (
     INFO_THREAD_LEADERBOARD_MATCH_FORMAT_PLACEHOLDER,
     INFO_THREAD_LEADERBOARD_NEXT_PAGE_BUTTON_LABEL,
     INFO_THREAD_PLAYER_INFO_SHOW_BUTTON_LABEL,
+    INFO_THREAD_PLAYER_INFO_SEASON_PLACEHOLDER,
+    INFO_THREAD_PLAYER_INFO_SEASON_SELECT_SEASON_MESSAGE,
     INFO_THREAD_LEADERBOARD_SEASON_MAX_OPTIONS,
     INFO_THREAD_LEADERBOARD_SEASON_PLACEHOLDER,
     INFO_THREAD_LEADERBOARD_SEASON_SELECT_BOTH_MESSAGE,
@@ -458,6 +460,32 @@ def assert_info_thread_player_info_initial_controls(view: discord.ui.View | None
     assert len(view.children) == 1
     show_button = cast(discord.ui.Button[Any], view.children[0])
 
+    assert show_button.label == INFO_THREAD_PLAYER_INFO_SHOW_BUTTON_LABEL
+    assert show_button.disabled is False
+
+
+def assert_info_thread_player_info_season_initial_controls(
+    view: discord.ui.View | None,
+    *,
+    expected_seasons: list[Season],
+) -> None:
+    assert view is not None
+    assert len(view.children) == 2
+    season_select = cast(discord.ui.Select[Any], view.children[0])
+    show_button = cast(discord.ui.Button[Any], view.children[1])
+
+    assert season_select.placeholder == INFO_THREAD_PLAYER_INFO_SEASON_PLACEHOLDER
+    assert [option.label for option in season_select.options] == [
+        season.name for season in expected_seasons[:INFO_THREAD_LEADERBOARD_SEASON_MAX_OPTIONS]
+    ]
+    assert [option.value for option in season_select.options] == [
+        str(season.id) for season in expected_seasons[:INFO_THREAD_LEADERBOARD_SEASON_MAX_OPTIONS]
+    ]
+    assert [option.description for option in season_select.options] == [
+        f"season_id: {season.id}"
+        for season in expected_seasons[:INFO_THREAD_LEADERBOARD_SEASON_MAX_OPTIONS]
+    ]
+    assert season_select.disabled is False
     assert show_button.label == INFO_THREAD_PLAYER_INFO_SHOW_BUTTON_LABEL
     assert show_button.disabled is False
 
@@ -1962,6 +1990,287 @@ def test_info_thread_player_info_button_returns_internal_error_and_disables_mess
     assert len(created_thread.sent_messages) == 1
 
 
+def test_info_thread_player_info_season_initial_message_includes_controls(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    current_time = get_database_now(session)
+    create_player(session, 223_456_789_012_345_690)
+    session.add_all(
+        Season(
+            name=f"archive-season-{index:02d}",
+            start_at=current_time - timedelta(days=31 + index),
+            end_at=current_time - timedelta(days=30 + index),
+            completed=True,
+            completed_at=current_time - timedelta(days=30 + index),
+        )
+        for index in range(27)
+    )
+    session.flush()
+    expected_seasons = session.scalars(
+        select(Season)
+        .where(Season.start_at <= current_time)
+        .order_by(Season.start_at.desc(), Season.id.desc())
+    ).all()
+    session.commit()
+
+    handlers = create_handlers(session_factory)
+    guild = FakeGuild(id=14_099_05)
+    info_channel = FakeTextChannel(id=13_099_05, name="レート戦情報", guild=guild)
+    guild.channels.append(info_channel)
+    setup_info_managed_ui_channel(handlers, info_channel.id)
+    created_thread = create_active_info_thread(
+        handlers,
+        discord_user_id=223_456_789_012_345_690,
+        guild=guild,
+        info_channel=info_channel,
+        command_name=InfoThreadCommandName.PLAYER_INFO_SEASON,
+        interaction_channel_id=13_198_06,
+    )
+
+    assert [message.content for message in created_thread.sent_messages] == [
+        build_info_thread_initial_message(InfoThreadCommandName.PLAYER_INFO_SEASON),
+    ]
+    assert_info_thread_player_info_season_initial_controls(
+        created_thread.sent_messages[0].view,
+        expected_seasons=expected_seasons,
+    )
+
+
+def test_info_thread_player_info_season_button_requires_season_selection(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    discord_user_id = 223_456_789_012_345_691
+    create_player(session, discord_user_id)
+    session.commit()
+    handlers = create_handlers(session_factory)
+    guild = FakeGuild(id=14_099_06)
+    info_channel = FakeTextChannel(id=13_099_06, name="レート戦情報", guild=guild)
+    guild.channels.append(info_channel)
+    setup_info_managed_ui_channel(handlers, info_channel.id)
+    created_thread = create_active_info_thread(
+        handlers,
+        discord_user_id=discord_user_id,
+        guild=guild,
+        info_channel=info_channel,
+        command_name=InfoThreadCommandName.PLAYER_INFO_SEASON,
+        interaction_channel_id=13_198_07,
+    )
+
+    initial_message = created_thread.sent_messages[0]
+    assert initial_message.view is not None
+    show_button = cast(discord.ui.Button[Any], initial_message.view.children[1])
+    interaction = FakeInteraction(
+        user=FakeUser(id=discord_user_id),
+        channel_id=created_thread.id,
+        guild_id=guild.id,
+        guild=guild,
+        message=initial_message,
+    )
+
+    asyncio.run(show_button.callback(as_interaction(interaction)))
+
+    assert_response(
+        interaction,
+        [INFO_THREAD_PLAYER_INFO_SEASON_SELECT_SEASON_MESSAGE],
+        ephemeral=True,
+    )
+    assert_all_controls_disabled(initial_message.view)
+    assert len(created_thread.sent_messages) == 1
+
+
+def test_info_thread_player_info_season_button_posts_requested_season_stats_to_active_thread(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    current_time = get_database_now(session)
+    season = Season(
+        name="archive-season",
+        start_at=current_time - timedelta(days=40),
+        end_at=current_time - timedelta(days=10),
+        completed=True,
+        completed_at=current_time - timedelta(days=10),
+    )
+    session.add(season)
+    session.flush()
+    discord_user_id = 223_456_789_012_345_692
+    player = create_player(session, discord_user_id)
+    session.add_all(
+        (
+            PlayerFormatStats(
+                player_id=player.id,
+                season_id=season.id,
+                match_format=MatchFormat.ONE_VS_ONE,
+                rating=1500.0,
+            ),
+            PlayerFormatStats(
+                player_id=player.id,
+                season_id=season.id,
+                match_format=MatchFormat.TWO_VS_TWO,
+                rating=1492.0,
+                games_played=3,
+                wins=1,
+                losses=2,
+            ),
+            PlayerFormatStats(
+                player_id=player.id,
+                season_id=season.id,
+                match_format=MatchFormat.THREE_VS_THREE,
+                rating=1611.0,
+                games_played=6,
+                wins=4,
+                losses=1,
+                draws=1,
+                last_played_at=datetime(2026, 3, 22, 12, 0, 0, tzinfo=timezone.utc),
+            ),
+        )
+    )
+    session.commit()
+    handlers = create_handlers(session_factory)
+    guild = FakeGuild(id=14_099_07)
+    info_channel = FakeTextChannel(id=13_099_07, name="レート戦情報", guild=guild)
+    guild.channels.append(info_channel)
+    setup_info_managed_ui_channel(handlers, info_channel.id)
+    created_thread = create_active_info_thread(
+        handlers,
+        discord_user_id=discord_user_id,
+        guild=guild,
+        info_channel=info_channel,
+        command_name=InfoThreadCommandName.PLAYER_INFO_SEASON,
+        interaction_channel_id=13_198_08,
+    )
+
+    initial_message = created_thread.sent_messages[0]
+    assert initial_message.view is not None
+    season_select = cast(discord.ui.Select[Any], initial_message.view.children[0])
+    show_button = cast(discord.ui.Button[Any], initial_message.view.children[1])
+
+    set_select_values(season_select, [str(season.id)])
+    season_interaction = FakeInteraction(
+        user=FakeUser(id=discord_user_id),
+        channel_id=created_thread.id,
+        guild_id=guild.id,
+        guild=guild,
+    )
+    asyncio.run(season_select.callback(as_interaction(season_interaction)))
+
+    assert initial_message.view is not None
+    assert all(getattr(child, "disabled", False) is False for child in initial_message.view.children)
+
+    interaction = FakeInteraction(
+        user=FakeUser(id=discord_user_id),
+        channel_id=created_thread.id,
+        guild_id=guild.id,
+        guild=guild,
+        message=initial_message,
+    )
+    asyncio.run(show_button.callback(as_interaction(interaction)))
+
+    assert season_interaction.response.deferred is True
+    assert_response(interaction, ["シーズン別プレイヤー情報を表示しました。"], ephemeral=True)
+    assert_all_controls_disabled(initial_message.view)
+    assert [message.content for message in created_thread.sent_messages] == [
+        build_info_thread_initial_message(InfoThreadCommandName.PLAYER_INFO_SEASON),
+        format_player_info_message(
+            {
+                MatchFormat.ONE_VS_ONE: (1500.0, 0, 0, 0, 0, None),
+                MatchFormat.TWO_VS_TWO: (1492.0, 3, 1, 2, 0, None),
+                MatchFormat.THREE_VS_THREE: (
+                    1611.0,
+                    6,
+                    4,
+                    1,
+                    1,
+                    datetime(2026, 3, 22, 12, 0, 0, tzinfo=timezone.utc),
+                ),
+            },
+            season_id=season.id,
+            season_name=season.name,
+        ),
+    ]
+    assert created_thread.sent_messages[1].view is None
+
+
+def test_info_thread_player_info_season_button_rejects_inactive_thread(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    current_time = get_database_now(session)
+    season = Season(
+        name="archive-season",
+        start_at=current_time - timedelta(days=40),
+        end_at=current_time - timedelta(days=10),
+        completed=True,
+        completed_at=current_time - timedelta(days=10),
+    )
+    session.add(season)
+    session.flush()
+    discord_user_id = 223_456_789_012_345_693
+    create_player(session, discord_user_id)
+    session.commit()
+    handlers = create_handlers(session_factory)
+    guild = FakeGuild(id=14_099_08)
+    info_channel = FakeTextChannel(id=13_099_08, name="レート戦情報", guild=guild)
+    guild.channels.append(info_channel)
+    setup_info_managed_ui_channel(handlers, info_channel.id)
+    stale_thread = create_active_info_thread(
+        handlers,
+        discord_user_id=discord_user_id,
+        guild=guild,
+        info_channel=info_channel,
+        command_name=InfoThreadCommandName.PLAYER_INFO_SEASON,
+        interaction_channel_id=13_198_09,
+    )
+    initial_message = stale_thread.sent_messages[0]
+    assert initial_message.view is not None
+    season_select = cast(discord.ui.Select[Any], initial_message.view.children[0])
+    show_button = cast(discord.ui.Button[Any], initial_message.view.children[1])
+
+    set_select_values(season_select, [str(season.id)])
+    asyncio.run(
+        season_select.callback(
+            as_interaction(
+                FakeInteraction(
+                    user=FakeUser(id=discord_user_id),
+                    channel_id=stale_thread.id,
+                    guild_id=guild.id,
+                    guild=guild,
+                )
+            )
+        )
+    )
+
+    create_active_info_thread(
+        handlers,
+        discord_user_id=discord_user_id,
+        guild=guild,
+        info_channel=info_channel,
+        command_name=InfoThreadCommandName.PLAYER_INFO_SEASON,
+        interaction_channel_id=13_198_10,
+    )
+    interaction = FakeInteraction(
+        user=FakeUser(id=discord_user_id),
+        channel_id=stale_thread.id,
+        guild_id=guild.id,
+        guild=guild,
+        message=initial_message,
+    )
+
+    asyncio.run(show_button.callback(as_interaction(interaction)))
+
+    assert_response(
+        interaction,
+        [
+            "このスレッドは現在の情報確認用スレッドではありません。"
+            "最新の情報確認用スレッドを利用してください。"
+        ],
+        ephemeral=True,
+    )
+    assert_all_controls_disabled(initial_message.view)
+    assert len(stale_thread.sent_messages) == 1
+
+
 def test_player_info_season_command_returns_requested_season_stats_in_active_info_thread(
     session: Session,
     session_factory: sessionmaker[Session],
@@ -2022,6 +2331,7 @@ def test_player_info_season_command_returns_requested_season_stats_in_active_inf
             season_name="next-spring",
         ),
     ]
+    assert created_thread.sent_messages[1].view is None
 
 
 def test_player_info_season_command_requires_active_info_thread_binding(

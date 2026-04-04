@@ -86,6 +86,7 @@ from dxd_rating.platform.discord.ui import (
     build_info_thread_initial_message,
     build_managed_ui_channel_overwrites,
     create_info_thread_player_info_initial_view,
+    create_info_thread_player_info_season_initial_view,
     create_info_thread_leaderboard_initial_view,
     create_info_thread_leaderboard_next_page_view,
     create_info_thread_leaderboard_season_initial_view,
@@ -879,27 +880,59 @@ class BotCommandHandlers:
         interaction: discord.Interaction[Any],
         season_id: int,
     ) -> None:
+        await self._run_player_info_season(
+            interaction,
+            season_id,
+            require_active_thread_match=False,
+        )
+
+    async def player_info_season_from_info_thread(
+        self,
+        interaction: discord.Interaction[Any],
+        season_id: int,
+    ) -> None:
+        await self._run_player_info_season(
+            interaction,
+            season_id,
+            require_active_thread_match=True,
+        )
+
+    async def _run_player_info_season(
+        self,
+        interaction: discord.Interaction[Any],
+        season_id: int,
+        *,
+        require_active_thread_match: bool,
+    ) -> None:
         await self._sync_requesting_user_identity(interaction)
         await self._defer_message_response(interaction, ephemeral=True)
         try:
-            player_info = await asyncio.to_thread(
-                self._lookup_player_info_by_season,
-                interaction.user.id,
-                season_id,
-            )
             player_id = await asyncio.to_thread(self._lookup_player_id, interaction.user.id)
             thread_channel_id = await asyncio.to_thread(
                 self._get_latest_info_thread_channel_id,
                 player_id,
             )
-            if thread_channel_id is None:
+            if require_active_thread_match:
+                should_continue = await self._validate_active_info_thread_binding(
+                    interaction,
+                    thread_channel_id=thread_channel_id,
+                )
+                if not should_continue:
+                    return
+            elif thread_channel_id is None:
                 raise MissingInfoThreadBindingError(
                     f"info thread binding is missing for player_id={player_id}"
                 )
 
+            assert thread_channel_id is not None
             info_thread = await self._resolve_bound_info_thread(
                 interaction,
                 thread_channel_id=thread_channel_id,
+            )
+            player_info = await asyncio.to_thread(
+                self._lookup_player_info_by_season,
+                interaction.user.id,
+                season_id,
             )
             await self._send_info_thread_message(
                 info_thread,
@@ -922,9 +955,11 @@ class BotCommandHandlers:
             return
         except Exception:
             self.logger.exception(
-                "Failed to execute /player_info_season command discord_user_id=%s season_id=%s",
+                "Failed to execute player_info_season interaction "
+                "discord_user_id=%s season_id=%s require_active_thread_match=%s",
                 interaction.user.id,
                 season_id,
+                require_active_thread_match,
             )
             await self._send_player_operation_message(
                 interaction,
@@ -3182,6 +3217,10 @@ class BotCommandHandlers:
     ) -> discord.ui.View | None:
         if command_name is InfoThreadCommandName.PLAYER_INFO:
             return create_info_thread_player_info_initial_view(self)
+
+        if command_name is InfoThreadCommandName.PLAYER_INFO_SEASON:
+            seasons = await asyncio.to_thread(self.list_started_seasons_for_info_thread)
+            return create_info_thread_player_info_season_initial_view(self, seasons)
 
         if command_name is InfoThreadCommandName.LEADERBOARD:
             return create_info_thread_leaderboard_initial_view(self)

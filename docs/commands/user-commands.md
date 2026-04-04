@@ -308,7 +308,7 @@ last_played_at: -
 - `レート戦情報` チャンネル配下に、情報確認用の private thread を 1 つ作成する。
 - private thread の親チャンネルは、このコマンドをどのチャンネルで実行したかには依存しない。
 - 作成した thread には、少なくとも実行ユーザー、admin、Bot を参加させる。
-- `command_name` は、作成直後の案内文と、その thread に将来設置する操作 UI の種類を決める。
+- `command_name` は、作成直後の案内文と、その thread に表示する操作 UI の種類を決める。
 - `/info_thread` 実行直後には、指定した `command_name` 相当の本文データを自動では表示しない。
 - Bot は、作成した `thread_id` を実行ユーザーの最新の情報確認 thread として一時的に紐づける。
 - 実行ユーザーに既存の紐づけがあっても、新しい thread を作成して最新紐づけを上書きする。
@@ -351,6 +351,8 @@ last_played_at: -
 - 1 ページあたり 20 件ずつ取得する。
 - 表示内容は、実行ユーザーに現在紐づいている情報確認用 private thread に送る。
 - thread に表示する項目は、現在順位、ユーザー名、小数点付きのレート値、`1日前` の順位差分、`3日前` の順位差分、`7日前` の順位差分とする。
+- thread に投稿するランキングメッセージには、次ページが存在する場合だけ末尾に `次のページ` button を付ける。
+- `次のページ` button を押したときは、同じ `match_format` の `/leaderboard <match_format> page:n+1` と同等の処理を行う。
 - レスポンスは interaction 宛てに、実行ユーザーにだけ見えるプレーンテキストで返す。
 - 成功時のレスポンス:
   - `ランキングを表示しました。`
@@ -373,6 +375,7 @@ last_played_at: -
 #### 備考
 
 - このコマンドは新しい private thread を作成せず、現在紐づいている thread を表示先として使う。
+- `次のページ` button は、slash command `/leaderboard` を直接実行して thread に投稿された結果にも、thread 内 UI から実行して投稿された結果にも同じ条件で付く。
 - ランキングの並び順と順位差分の計算ルールは [../leaderboard/ranking.md](../leaderboard/ranking.md) を参照する。
 - thread への表示形式は [../ui/info_thread.md](../ui/info_thread.md) を参照する。
 

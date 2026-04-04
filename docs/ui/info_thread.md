@@ -40,34 +40,50 @@
 - 新しい thread を作成した場合は、古い thread を表示先として再利用しない。
 - 推奨 thread 名は `情報-<display_name>` とする。
 
-## 初回表示と予定 UI
+## active thread 判定
+
+- `/info_thread` で作成された private thread のうち、active thread は、実行ユーザーに現在紐づいている最新 1 件の `thread_id` を持つ thread とする。
+- この仕様で定義する thread 内 button を押したときは、押下元 thread の `thread_id` と、実行ユーザーに現在紐づいている最新の `thread_id` を比較する。
+- `thread_id` が一致した場合だけ、その button 操作を正当な操作として扱い、対応するコマンド相当の処理を実行する。
+- `thread_id` が一致しない場合は、その thread は active でないものとして扱い、対応するコマンド相当の処理は実行しない。
+- active でない thread で button が押された場合は、押下したユーザーにだけ見えるメッセージで `このスレッドは現在の情報確認用スレッドではありません。最新の情報確認用スレッドを利用してください。` を返す。
+- この active / inactive 判定ルールは、`leaderboard` 用 button だけでなく、今後この仕様で定義する `/info_thread` 由来 private thread 内 button 全般に適用する。
+
+補足:
+
+- 同じユーザーが再度 `/info_thread` を実行して新しい thread を作成した後は、古い thread 上に残った button は active でないものとして無効化できる。
+
+## 初回表示と thread 内 UI
 
 - thread 作成直後に、情報確認用 thread であることを案内するメッセージを送る。
-- 初回メッセージの文面と、その thread に将来設置する button / pulldown UI の種類は `command_name` に応じて変える。
+- 初回メッセージの文面と、その thread に表示する button / pulldown UI の種類は `command_name` に応じて変える。
 
 ### `command_name=player_info`
 
 - 現在シーズンのプレイヤー情報確認用 thread として案内する。
 - 初回メッセージでは、将来この thread 内の button から `/player_info` と同等の操作を行えるようにすることを案内する。
-- 将来 UI は、`/player_info` と同等の処理を起動する button のみを置く。
+- 将来 UI は、`/player_info` と同等の処理を起動する button のみを置く想定とする。
 
 ### `command_name=player_info_season`
 
 - シーズン別プレイヤー情報確認用 thread として案内する。
 - 初回メッセージでは、将来この thread 内の `season_id` pulldown と button から `/player_info_season` と同等の操作を行えるようにすることを案内する。
-- 将来 UI は、`season_id` pulldown と実行 button を置く。
+- 将来 UI は、`season_id` pulldown と実行 button を置く想定とする。
 
 ### `command_name=leaderboard`
 
 - 現在シーズンのランキング確認用 thread として案内する。
-- 初回メッセージでは、将来この thread 内の `match_format` pulldown、`page` pulldown、button から `/leaderboard` と同等の操作を行えるようにすることを案内する。
-- 将来 UI は、`match_format` pulldown、`page` pulldown、実行 button を置く。
+- 初回メッセージには、`match_format` pulldown と `ランキングを表示` button を表示する。
+- `match_format` pulldown の選択肢は `/leaderboard` と同じ `1v1`、`2v2`、`3v3` とする。
+- `ランキングを表示` button を押したときは、選択された `match_format` を使って `/leaderboard <match_format> page:1` と同等の処理を行う。
+- `leaderboard` 用の初期 UI には `page` pulldown は置かない。
+- 2 ページ目以降の表示は、ランキング結果メッセージ末尾に表示する `次のページ` button で行う。
 
 ### `command_name=leaderboard_season`
 
 - シーズン別ランキング確認用 thread として案内する。
 - 初回メッセージでは、将来この thread 内の `season_id` pulldown、`match_format` pulldown、`page` pulldown、button から `/leaderboard_season` と同等の操作を行えるようにすることを案内する。
-- 将来 UI は、`season_id` pulldown、`match_format` pulldown、`page` pulldown、実行 button を置く。
+- 将来 UI は、`season_id` pulldown、`match_format` pulldown、`page` pulldown、実行 button を置く想定とする。
 
 ## `/player_info` による表示
 
@@ -148,6 +164,10 @@ last_played_at: -
 - `rating` は小数点以下 2 桁で表示してよい。
 - 順位差分は `+3`、`0`、`-2` のように表現してよい。
 - 比較不能な順位差分は `-` で表示する。
+- ランキング結果メッセージの末尾には、そのページの次ページが存在する場合だけ `次のページ` button を付ける。
+- `次のページ` button を押したときは、表示中メッセージの `match_format` と `page` を引き継いで `/leaderboard <match_format> page:n+1` と同等の処理を行う。
+- 次ページが存在しない最終ページでは `次のページ` button を表示しない。
+- この `次のページ` button は、thread 内の `ランキングを表示` button から表示したランキング結果だけでなく、slash command `/leaderboard <match_format> page:n` を直接実行して thread に投稿したランキング結果にも同様に付ける。
 
 表示例:
 
@@ -203,6 +223,7 @@ items: 21-40
 ## 可視性と運用
 
 - thread 内のメッセージは、実行ユーザー、admin、Bot に見える。
+- thread 内 button の成功・失敗通知は、押下したユーザーにだけ見える返答として扱ってよい。
 - 同じユーザーが `/player_info`、`/player_info_season`、`/leaderboard`、`/leaderboard_season` を繰り返し実行した場合、最新紐づけ先の同じ thread に結果を追記してよい。
 - `command_name` ごとの別 thread 管理は行わないため、`leaderboard` 用に作成した thread に後から `/player_info` の結果が表示されてもよい。
 - 同じユーザーが再度 `/info_thread` を実行して新しい thread を作成した後は、古い thread へ情報を表示しない。

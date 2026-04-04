@@ -55,6 +55,8 @@ from dxd_rating.contexts.restrictions.application import (
 from dxd_rating.contexts.seasons.application import SeasonService
 from dxd_rating.contexts.ui.application import (
     REGISTERED_PLAYER_ROLE_NAME,
+    InfoThreadBindingService,
+    InfoThreadCommandName,
     ManagedUiDefinition,
     ManagedUiService,
     get_managed_ui_definition,
@@ -72,6 +74,7 @@ from dxd_rating.platform.db.models import (
 )
 from dxd_rating.platform.db.session import session_scope
 from dxd_rating.platform.discord.ui import (
+    build_info_thread_initial_message,
     build_managed_ui_channel_overwrites,
     create_matchmaking_presence_thread_view,
     is_valid_managed_ui_channel_name,
@@ -110,6 +113,11 @@ PLAYER_INFO_FAILED_MESSAGE = "プレイヤー情報の取得に失敗しまし�
 PLAYER_SEASON_INFO_FAILED_MESSAGE = (
     "シーズン別プレイヤー情報の取得に失敗しました。管理者に確認してください。"
 )
+INFO_THREAD_SUCCESS_MESSAGE = "情報確認用スレッドを作成しました。"
+INFO_THREAD_CHANNEL_NOT_FOUND_MESSAGE = (
+    "情報確認用チャンネルが見つかりません。管理者に確認してください。"
+)
+INFO_THREAD_FAILED_MESSAGE = "情報確認用スレッドの作成に失敗しました。管理者に確認してください。"
 
 MATCH_PARENT_SUCCESS_MESSAGE = "親に立候補しました。"
 MATCH_SPECTATE_RESTRICTED_MESSAGE = "現在観戦を制限されています。"
@@ -168,6 +176,7 @@ ADMIN_TEARDOWN_UI_CHANNELS_FAILED_MESSAGE = (
 )
 ADMIN_TEARDOWN_CONFIRM_VALUE = "teardown"
 MATCHMAKING_PRESENCE_THREAD_NAME_PREFIX = "在席確認-"
+INFO_THREAD_NAME_PREFIX = "情報-"
 MAX_DISCORD_THREAD_NAME_LENGTH = 100
 MATCHMAKING_PRESENCE_THREAD_GUIDE_MESSAGE = "在席確認は {thread_mention} で行ってください。"
 
@@ -405,6 +414,7 @@ class BotCommandHandlers:
             self._match_service = cast(MatchCommandService, matching_queue_service)
         self.player_lookup_service = player_lookup_service or PlayerLookupService(session_factory)
         self.managed_ui_service = ManagedUiService(session_factory)
+        self.info_thread_binding_service = InfoThreadBindingService(session_factory)
 
     @property
     def matching_queue_service(self) -> MatchingQueueCommandService | None:
@@ -705,6 +715,65 @@ class BotCommandHandlers:
             interaction,
             self._format_player_info_message(player_info),
         )
+
+    async def info_thread(
+        self,
+        interaction: discord.Interaction[Any],
+        command_name: str,
+    ) -> None:
+        await self._sync_requesting_user_identity(interaction)
+        created_thread: object | None = None
+        resolved_command_name: InfoThreadCommandName | None = None
+
+        try:
+            resolved_command_name = self._parse_info_thread_command_name(command_name)
+            player_id = await asyncio.to_thread(self._lookup_player_id, interaction.user.id)
+            parent_channel = await self._resolve_required_info_thread_parent_channel(interaction)
+            created_thread = await self._create_info_thread(
+                interaction,
+                parent_channel=parent_channel,
+                command_name=resolved_command_name,
+                target_discord_user_id=interaction.user.id,
+                target_user=interaction.user,
+            )
+            await asyncio.to_thread(
+                self._upsert_latest_info_thread_channel_id,
+                player_id,
+                self._require_discord_channel_id(created_thread),
+            )
+        except PlayerNotRegisteredError:
+            await self._send_player_operation_message(
+                interaction,
+                PLAYER_REGISTRATION_REQUIRED_MESSAGE,
+            )
+            return
+        except RequiredManagedUiChannelUnavailableError:
+            await self._send_player_operation_message(
+                interaction,
+                INFO_THREAD_CHANNEL_NOT_FOUND_MESSAGE,
+            )
+            return
+        except Exception:
+            if created_thread is not None:
+                await self._best_effort_delete_info_thread(
+                    created_thread,
+                    reason=(
+                        f"Rollback info thread creation for discord_user_id={interaction.user.id}"
+                    ),
+                )
+
+            self.logger.exception(
+                "Failed to execute /info_thread command discord_user_id=%s command_name=%s "
+                "channel_id=%s guild_id=%s",
+                interaction.user.id,
+                command_name if resolved_command_name is None else resolved_command_name.value,
+                interaction.channel_id,
+                interaction.guild_id,
+            )
+            await self._send_player_operation_message(interaction, INFO_THREAD_FAILED_MESSAGE)
+            return
+
+        await self._send_player_operation_message(interaction, INFO_THREAD_SUCCESS_MESSAGE)
 
     async def player_info_season(
         self,
@@ -2462,6 +2531,16 @@ class BotCommandHandlers:
             season_id,
         )
 
+    def _upsert_latest_info_thread_channel_id(
+        self,
+        player_id: int,
+        thread_channel_id: int,
+    ) -> None:
+        self.info_thread_binding_service.upsert_latest_thread_channel_id(
+            player_id=player_id,
+            thread_channel_id=thread_channel_id,
+        )
+
     def _rename_season(self, season_id: int, name: str) -> None:
         self.season_service.rename_season(season_id, name)
 
@@ -2660,6 +2739,9 @@ class BotCommandHandlers:
     def _parse_managed_ui_type(self, value: str) -> ManagedUiType:
         return ManagedUiType(value)
 
+    def _parse_info_thread_command_name(self, value: str) -> InfoThreadCommandName:
+        return InfoThreadCommandName(value)
+
     def _parse_restriction_type(self, value: str) -> PlayerAccessRestrictionType:
         try:
             return PlayerAccessRestrictionType(value)
@@ -2721,6 +2803,21 @@ class BotCommandHandlers:
         )
         suffix = str(discord_user_id) if display_name is None else display_name
         return f"{MATCHMAKING_PRESENCE_THREAD_NAME_PREFIX}{suffix}"[:MAX_DISCORD_THREAD_NAME_LENGTH]
+
+    def _build_info_thread_name(
+        self,
+        *,
+        discord_user_id: int,
+        discord_user: DiscordUserLike | None = None,
+    ) -> str:
+        display_name = resolve_player_display_name(
+            discord_user_id=discord_user_id,
+            guild_display_name=getattr(discord_user, "nick", None),
+            global_display_name=getattr(discord_user, "global_name", None),
+            username=getattr(discord_user, "name", None),
+        )
+        suffix = str(discord_user_id) if display_name is None else display_name
+        return f"{INFO_THREAD_NAME_PREFIX}{suffix}"[:MAX_DISCORD_THREAD_NAME_LENGTH]
 
     def _build_match_operation_thread_name(self, match_id: int) -> str:
         return f"試合-{match_id}"
@@ -3086,6 +3183,65 @@ class BotCommandHandlers:
             )
         return None
 
+    async def _create_info_thread(
+        self,
+        interaction: discord.Interaction[Any],
+        *,
+        parent_channel: discord.abc.GuildChannel,
+        command_name: InfoThreadCommandName,
+        target_discord_user_id: int,
+        target_user: DiscordUserLike | None,
+    ) -> object:
+        guild = self._require_guild(interaction)
+        create_thread = getattr(parent_channel, "create_thread", None)
+        if not callable(create_thread):
+            raise TypeError(
+                f"channel_id={getattr(parent_channel, 'id', None)} does not support thread creation"
+            )
+
+        thread = await create_thread(
+            name=self._build_info_thread_name(
+                discord_user_id=target_discord_user_id,
+                discord_user=target_user,
+            ),
+            type=discord.ChannelType.private_thread,
+            invitable=False,
+            reason=f"Create info thread for discord_user_id={target_discord_user_id}",
+        )
+
+        add_user = getattr(thread, "add_user", None)
+        if callable(add_user):
+            invitees: list[DiscordUserLike] = []
+            if target_user is not None:
+                invitees.append(target_user)
+            invitees.extend(await self._resolve_admin_presence_thread_users(interaction, guild))
+            for invitee in self._dedupe_discord_users(invitees):
+                await add_user(invitee)
+
+        await cast(Any, thread).send(build_info_thread_initial_message(command_name))
+        self._require_discord_channel_id(thread)
+        return thread
+
+    async def _best_effort_delete_info_thread(
+        self,
+        thread: object,
+        *,
+        reason: str,
+    ) -> None:
+        delete = getattr(thread, "delete", None)
+        if not callable(delete):
+            return
+
+        thread_id = getattr(thread, "id", None)
+        try:
+            await delete(reason=reason)
+        except Exception:
+            self.logger.exception(
+                "Failed to cleanup info thread thread_id=%s reason=%s",
+                thread_id,
+                reason,
+            )
+
     async def _create_and_bind_matchmaking_presence_thread(
         self,
         interaction: discord.Interaction[Any],
@@ -3272,6 +3428,44 @@ class BotCommandHandlers:
 
         return channel
 
+    async def _resolve_required_info_thread_parent_channel(
+        self,
+        interaction: discord.Interaction[Any],
+    ) -> discord.abc.GuildChannel:
+        guild = interaction.guild
+        if guild is None:
+            raise RequiredManagedUiChannelUnavailableError(
+                ui_type=ManagedUiType.INFO_CHANNEL,
+                reason="interaction guild is unavailable",
+            )
+
+        managed_ui_channel = await asyncio.to_thread(
+            self._get_managed_ui_channel_by_type,
+            ManagedUiType.INFO_CHANNEL,
+        )
+        if managed_ui_channel is None:
+            raise RequiredManagedUiChannelUnavailableError(
+                ui_type=ManagedUiType.INFO_CHANNEL,
+                reason="managed UI channel is not setup",
+            )
+
+        channel = self._find_guild_channel_by_id(guild, managed_ui_channel.channel_id)
+        if channel is None:
+            raise RequiredManagedUiChannelUnavailableError(
+                ui_type=ManagedUiType.INFO_CHANNEL,
+                reason="managed UI channel is missing from guild",
+                channel_id=managed_ui_channel.channel_id,
+            )
+
+        if not callable(getattr(channel, "create_thread", None)):
+            raise RequiredManagedUiChannelUnavailableError(
+                ui_type=ManagedUiType.INFO_CHANNEL,
+                reason="managed UI channel does not support thread creation",
+                channel_id=managed_ui_channel.channel_id,
+            )
+
+        return channel
+
     async def _resolve_presence_thread_target_user(
         self,
         interaction: discord.Interaction[Any],
@@ -3348,6 +3542,12 @@ class BotCommandHandlers:
             deduped_users.append(user)
             seen_user_ids.add(user_id)
         return deduped_users
+
+    def _require_discord_channel_id(self, channel: object) -> int:
+        channel_id = getattr(channel, "id", None)
+        if not isinstance(channel_id, int):
+            raise TypeError(f"Discord channel id is unavailable: {channel!r}")
+        return channel_id
 
     async def _provision_managed_ui_channel(
         self,
@@ -3525,6 +3725,10 @@ def register_app_commands(
         app_commands.Choice(name=definition.ui_type.value, value=definition.ui_type.value)
         for definition in get_required_managed_ui_definitions()
     ]
+    info_thread_command_choices = [
+        app_commands.Choice(name=command_name.value, value=command_name.value)
+        for command_name in InfoThreadCommandName
+    ]
 
     @tree.command(name="register", description="プレイヤー登録を行います")
     async def register_command(interaction: discord.Interaction[Any]) -> None:
@@ -3552,6 +3756,15 @@ def register_app_commands(
     @tree.command(name="player_info", description="自分のプレイヤー情報を表示します")
     async def player_info_command(interaction: discord.Interaction[Any]) -> None:
         await handlers.player_info(interaction)
+
+    @tree.command(name="info_thread", description="情報確認用スレッドを作成します")
+    @app_commands.describe(command_name="作成したい情報確認スレッドの用途")
+    @app_commands.choices(command_name=info_thread_command_choices)
+    async def info_thread_command(
+        interaction: discord.Interaction[Any],
+        command_name: str,
+    ) -> None:
+        await handlers.info_thread(interaction, command_name)
 
     @tree.command(
         name="player_info_season",

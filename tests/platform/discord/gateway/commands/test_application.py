@@ -23,6 +23,7 @@ from dxd_rating.contexts.restrictions.application import (
 from dxd_rating.contexts.seasons.application import ensure_active_and_upcoming_seasons
 from dxd_rating.contexts.ui.application import (
     REGISTERED_PLAYER_ROLE_NAME,
+    InfoThreadCommandName,
     get_required_managed_ui_definitions,
 )
 from dxd_rating.platform.config.bot import BotSettings
@@ -46,6 +47,7 @@ from dxd_rating.platform.db.models import (
     PlayerAccessRestriction,
     PlayerAccessRestrictionType,
     PlayerFormatStats,
+    PlayerInfoThreadBinding,
     PlayerPenalty,
     Season,
 )
@@ -66,6 +68,7 @@ from dxd_rating.platform.discord.ui import (
     REGISTER_PANEL_MESSAGE,
     SYSTEM_ANNOUNCEMENTS_CHANNEL_MESSAGE,
     MatchmakingPanelView,
+    build_info_thread_initial_message,
 )
 from dxd_rating.platform.runtime import MatchRuntime
 
@@ -199,6 +202,8 @@ class FakeThread:
     parent: FakeTextChannel
     sent_messages: list[FakeMessage] = field(default_factory=list)
     added_user_ids: list[int] = field(default_factory=list)
+    fail_delete_with: Exception | None = None
+    deleted: bool = False
 
     async def add_user(self, user: object) -> None:
         user_id = getattr(user, "id", None)
@@ -221,6 +226,12 @@ class FakeThread:
         self.sent_messages.append(message)
         return cast(discord.Message, message)
 
+    async def delete(self, *_: Any, **__: Any) -> None:
+        if self.fail_delete_with is not None:
+            raise self.fail_delete_with
+
+        self.deleted = True
+
 
 @dataclass
 class FakeTextChannel:
@@ -231,6 +242,7 @@ class FakeTextChannel:
     sent_messages: list[FakeMessage] = field(default_factory=list)
     created_threads: list[FakeThread] = field(default_factory=list)
     fail_send_with: Exception | None = None
+    fail_create_thread_with: Exception | None = None
     fail_delete_with: Exception | None = None
     deleted: bool = False
 
@@ -259,6 +271,9 @@ class FakeTextChannel:
         name: str,
         **_: Any,
     ) -> discord.Thread:
+        if self.fail_create_thread_with is not None:
+            raise self.fail_create_thread_with
+
         thread = FakeThread(
             id=self.guild.next_channel_id,
             name=name,
@@ -281,9 +296,16 @@ class FakeTextChannel:
 
 
 @dataclass
+class FakeUnsupportedGuildChannel:
+    id: int
+    name: str
+    guild: FakeGuild
+
+
+@dataclass
 class FakeGuild:
     id: int
-    channels: list[FakeTextChannel] = field(default_factory=list)
+    channels: list[Any] = field(default_factory=list)
     members: dict[int, object] = field(default_factory=dict)
     default_role: FakeRole = field(default_factory=lambda: FakeRole(id=0))
     roles: list[FakeRole] = field(default_factory=list)
@@ -335,7 +357,7 @@ class FakeGuild:
         self.roles.append(role)
         return cast(discord.Role, role)
 
-    def get_channel(self, channel_id: int) -> FakeTextChannel | None:
+    def get_channel(self, channel_id: int) -> Any | None:
         for channel in self.channels:
             if channel.id == channel_id:
                 return channel
@@ -474,6 +496,21 @@ def setup_matchmaking_managed_ui_channel(
 ) -> None:
     handlers.managed_ui_service.create_managed_ui_channel(
         ui_type=ManagedUiType.MATCHMAKING_CHANNEL,
+        channel_id=channel_id,
+        message_id=message_id,
+        created_by_discord_user_id=created_by_discord_user_id,
+    )
+
+
+def setup_info_managed_ui_channel(
+    handlers: BotCommandHandlers,
+    channel_id: int,
+    *,
+    created_by_discord_user_id: int = 10,
+    message_id: int = 70_101,
+) -> None:
+    handlers.managed_ui_service.create_managed_ui_channel(
+        ui_type=ManagedUiType.INFO_CHANNEL,
         channel_id=channel_id,
         message_id=message_id,
         created_by_discord_user_id=created_by_discord_user_id,
@@ -1555,6 +1592,284 @@ def test_player_info_season_command_returns_requested_season_stats(
         ],
         ephemeral=True,
     )
+
+
+@pytest.mark.parametrize(
+    ("command_name", "expected_initial_message"),
+    [
+        (
+            InfoThreadCommandName.LEADERBOARD,
+            build_info_thread_initial_message(InfoThreadCommandName.LEADERBOARD),
+        ),
+        (
+            InfoThreadCommandName.LEADERBOARD_SEASON,
+            build_info_thread_initial_message(InfoThreadCommandName.LEADERBOARD_SEASON),
+        ),
+        (
+            InfoThreadCommandName.PLAYER_INFO,
+            build_info_thread_initial_message(InfoThreadCommandName.PLAYER_INFO),
+        ),
+        (
+            InfoThreadCommandName.PLAYER_INFO_SEASON,
+            build_info_thread_initial_message(InfoThreadCommandName.PLAYER_INFO_SEASON),
+        ),
+    ],
+)
+def test_info_thread_command_creates_thread_and_binding_for_registered_player(
+    session: Session,
+    session_factory: sessionmaker[Session],
+    command_name: InfoThreadCommandName,
+    expected_initial_message: str,
+) -> None:
+    discord_user_id = 123_456_789_012_345_686_2
+    admin_discord_user_id = 10
+    player = create_player(session, discord_user_id)
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({admin_discord_user_id}),
+    )
+    guild = FakeGuild(
+        id=14_100,
+        members={admin_discord_user_id: FakeMember(id=admin_discord_user_id)},
+    )
+    info_channel = FakeTextChannel(
+        id=13_100,
+        name="レート戦情報",
+        guild=guild,
+    )
+    guild.channels.append(info_channel)
+    setup_info_managed_ui_channel(handlers, info_channel.id)
+    interaction = FakeInteraction(
+        user=FakeUser(
+            id=discord_user_id,
+            name="info-user",
+            global_name="info-global",
+            nick="info-guild",
+        ),
+        channel_id=13_199,
+        guild_id=guild.id,
+        guild=guild,
+    )
+
+    asyncio.run(handlers.info_thread(as_interaction(interaction), command_name.value))
+
+    session.expire_all()
+    binding = session.get(PlayerInfoThreadBinding, player.id)
+
+    assert_response(interaction, ["情報確認用スレッドを作成しました。"], ephemeral=True)
+    assert len(info_channel.created_threads) == 1
+    created_thread = info_channel.created_threads[0]
+    assert created_thread.name == "情報-info-guild"
+    assert created_thread.added_user_ids == [discord_user_id, admin_discord_user_id]
+    assert [message.content for message in created_thread.sent_messages] == [
+        expected_initial_message
+    ]
+    assert binding is not None
+    assert binding.thread_channel_id == created_thread.id
+
+
+def test_info_thread_command_overwrites_latest_binding_with_new_thread(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    discord_user_id = 123_456_789_012_345_686_3
+    player = create_player(session, discord_user_id)
+    handlers = create_handlers(session_factory, super_admin_user_ids=frozenset({10}))
+    guild = FakeGuild(id=14_101, members={10: FakeMember(id=10)})
+    info_channel = FakeTextChannel(id=13_101, name="レート戦情報", guild=guild)
+    guild.channels.append(info_channel)
+    setup_info_managed_ui_channel(handlers, info_channel.id)
+    interaction = FakeInteraction(
+        user=FakeUser(id=discord_user_id, nick="first-info"),
+        channel_id=13_198,
+        guild_id=guild.id,
+        guild=guild,
+    )
+
+    asyncio.run(
+        handlers.info_thread(as_interaction(interaction), InfoThreadCommandName.PLAYER_INFO.value)
+    )
+    asyncio.run(
+        handlers.info_thread(
+            as_interaction(interaction),
+            InfoThreadCommandName.LEADERBOARD.value,
+        )
+    )
+
+    session.expire_all()
+    binding = session.get(PlayerInfoThreadBinding, player.id)
+    bindings = session.scalars(select(PlayerInfoThreadBinding)).all()
+
+    assert len(info_channel.created_threads) == 2
+    assert binding is not None
+    assert binding.thread_channel_id == info_channel.created_threads[-1].id
+    assert len(bindings) == 1
+
+
+def test_info_thread_command_requires_registered_player(
+    session_factory: sessionmaker[Session],
+) -> None:
+    handlers = create_handlers(session_factory)
+    interaction = FakeInteraction(user=FakeUser(id=123_456_789_012_345_686_4))
+
+    asyncio.run(
+        handlers.info_thread(
+            as_interaction(interaction),
+            InfoThreadCommandName.PLAYER_INFO.value,
+        )
+    )
+
+    assert_response(
+        interaction,
+        ["プレイヤー登録が必要です。先に /register を実行してください。"],
+        ephemeral=True,
+    )
+
+
+def test_info_thread_command_returns_channel_missing_when_info_channel_is_not_setup(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    discord_user_id = 123_456_789_012_345_686_5
+    create_player(session, discord_user_id)
+    handlers = create_handlers(session_factory)
+    interaction = FakeInteraction(
+        user=FakeUser(id=discord_user_id),
+        guild_id=14_102,
+        guild=FakeGuild(id=14_102),
+    )
+
+    asyncio.run(
+        handlers.info_thread(
+            as_interaction(interaction),
+            InfoThreadCommandName.PLAYER_INFO.value,
+        )
+    )
+
+    assert_response(
+        interaction,
+        ["情報確認用チャンネルが見つかりません。管理者に確認してください。"],
+        ephemeral=True,
+    )
+
+
+def test_info_thread_command_returns_channel_missing_when_info_channel_cannot_create_threads(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    discord_user_id = 123_456_789_012_345_686_6
+    create_player(session, discord_user_id)
+    handlers = create_handlers(session_factory)
+    guild = FakeGuild(id=14_103)
+    unsupported_channel = FakeUnsupportedGuildChannel(
+        id=13_103,
+        name="レート戦情報",
+        guild=guild,
+    )
+    guild.channels.append(unsupported_channel)
+    setup_info_managed_ui_channel(handlers, unsupported_channel.id)
+    interaction = FakeInteraction(
+        user=FakeUser(id=discord_user_id),
+        guild_id=guild.id,
+        guild=guild,
+    )
+
+    asyncio.run(
+        handlers.info_thread(
+            as_interaction(interaction),
+            InfoThreadCommandName.PLAYER_INFO.value,
+        )
+    )
+
+    assert_response(
+        interaction,
+        ["情報確認用チャンネルが見つかりません。管理者に確認してください。"],
+        ephemeral=True,
+    )
+
+
+def test_info_thread_command_returns_generic_error_when_thread_creation_fails(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    discord_user_id = 123_456_789_012_345_686_7
+    create_player(session, discord_user_id)
+    handlers = create_handlers(session_factory, super_admin_user_ids=frozenset({10}))
+    guild = FakeGuild(id=14_104, members={10: FakeMember(id=10)})
+    info_channel = FakeTextChannel(
+        id=13_104,
+        name="レート戦情報",
+        guild=guild,
+        fail_create_thread_with=RuntimeError("boom"),
+    )
+    guild.channels.append(info_channel)
+    setup_info_managed_ui_channel(handlers, info_channel.id)
+    interaction = FakeInteraction(
+        user=FakeUser(id=discord_user_id),
+        guild_id=guild.id,
+        guild=guild,
+    )
+
+    asyncio.run(
+        handlers.info_thread(
+            as_interaction(interaction),
+            InfoThreadCommandName.PLAYER_INFO.value,
+        )
+    )
+
+    assert_response(
+        interaction,
+        ["情報確認用スレッドの作成に失敗しました。管理者に確認してください。"],
+        ephemeral=True,
+    )
+    assert info_channel.created_threads == []
+
+
+def test_info_thread_command_cleans_up_created_thread_when_binding_save_fails(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    class FailingInfoThreadBindingService:
+        def upsert_latest_thread_channel_id(
+            self,
+            *,
+            player_id: int,
+            thread_channel_id: int,
+        ) -> None:
+            raise RuntimeError("boom")
+
+    discord_user_id = 123_456_789_012_345_686_8
+    player = create_player(session, discord_user_id)
+    handlers = create_handlers(session_factory, super_admin_user_ids=frozenset({10}))
+    handlers.info_thread_binding_service = cast(Any, FailingInfoThreadBindingService())
+    guild = FakeGuild(id=14_105, members={10: FakeMember(id=10)})
+    info_channel = FakeTextChannel(id=13_105, name="レート戦情報", guild=guild)
+    guild.channels.append(info_channel)
+    setup_info_managed_ui_channel(handlers, info_channel.id)
+    interaction = FakeInteraction(
+        user=FakeUser(id=discord_user_id),
+        guild_id=guild.id,
+        guild=guild,
+    )
+
+    asyncio.run(
+        handlers.info_thread(
+            as_interaction(interaction),
+            InfoThreadCommandName.PLAYER_INFO.value,
+        )
+    )
+
+    session.expire_all()
+    binding = session.get(PlayerInfoThreadBinding, player.id)
+
+    assert_response(
+        interaction,
+        ["情報確認用スレッドの作成に失敗しました。管理者に確認してください。"],
+        ephemeral=True,
+    )
+    assert len(info_channel.created_threads) == 1
+    assert info_channel.created_threads[0].deleted is True
+    assert binding is None
 
 
 def test_player_info_command_requires_registered_player(
@@ -3779,6 +4094,28 @@ def test_admin_managed_ui_commands_are_registered_with_expected_parameters() -> 
     assert [parameter.name for parameter in setup_all_command.parameters] == []
     assert [parameter.name for parameter in cleanup_command.parameters] == ["confirm"]
     assert [parameter.name for parameter in teardown_command.parameters] == ["confirm"]
+
+
+def test_info_thread_command_is_registered_with_expected_parameters_and_choices() -> None:
+    handlers = BotCommandHandlers(
+        settings=create_settings(),
+        session_factory=sessionmaker(),
+    )
+    client = discord.Client(intents=discord.Intents.none())
+    tree = discord.app_commands.CommandTree(client)
+
+    register_app_commands(tree, handlers)
+
+    command = tree.get_command("info_thread")
+
+    assert command is not None
+    assert [parameter.name for parameter in command.parameters] == ["command_name"]
+    assert [choice.value for choice in command.parameters[0].choices] == [
+        InfoThreadCommandName.LEADERBOARD.value,
+        InfoThreadCommandName.LEADERBOARD_SEASON.value,
+        InfoThreadCommandName.PLAYER_INFO.value,
+        InfoThreadCommandName.PLAYER_INFO_SEASON.value,
+    ]
 
 
 def test_match_spectate_command_is_registered_with_match_id_parameter() -> None:

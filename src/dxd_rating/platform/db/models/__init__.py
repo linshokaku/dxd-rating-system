@@ -36,6 +36,7 @@ from dxd_rating.platform.db.models.player_format_stats import (
     CarryoverStatus,
     PlayerFormatStats,
 )
+from dxd_rating.platform.db.models.player_info_thread_binding import PlayerInfoThreadBinding
 from dxd_rating.platform.db.models.player_penalty import PlayerPenalty
 from dxd_rating.platform.db.models.player_penalty_adjustment import PlayerPenaltyAdjustment
 from dxd_rating.platform.db.models.season import Season
@@ -75,6 +76,7 @@ __all__ = [
     "PlayerAccessRestriction",
     "PlayerAccessRestrictionType",
     "PlayerFormatStats",
+    "PlayerInfoThreadBinding",
     "PlayerPenalty",
     "PlayerPenaltyAdjustment",
     "Season",

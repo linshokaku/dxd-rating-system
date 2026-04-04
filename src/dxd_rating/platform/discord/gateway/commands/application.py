@@ -111,6 +111,7 @@ PRESENT_FAILED_MESSAGE = "在席更新に失敗しました。管理者に確認
 LEAVE_FAILED_MESSAGE = "キュー退出に失敗しました。管理者に確認してください。"
 PLAYER_INFO_SUCCESS_MESSAGE = "プレイヤー情報を表示しました。"
 PLAYER_INFO_FAILED_MESSAGE = "プレイヤー情報の取得に失敗しました。管理者に確認してください。"
+PLAYER_SEASON_INFO_SUCCESS_MESSAGE = "シーズン別プレイヤー情報を表示しました。"
 PLAYER_SEASON_INFO_FAILED_MESSAGE = (
     "シーズン別プレイヤー情報の取得に失敗しました。管理者に確認してください。"
 )
@@ -816,11 +817,30 @@ class BotCommandHandlers:
         season_id: int,
     ) -> None:
         await self._sync_requesting_user_identity(interaction)
+        await self._defer_message_response(interaction, ephemeral=True)
         try:
             player_info = await asyncio.to_thread(
                 self._lookup_player_info_by_season,
                 interaction.user.id,
                 season_id,
+            )
+            player_id = await asyncio.to_thread(self._lookup_player_id, interaction.user.id)
+            thread_channel_id = await asyncio.to_thread(
+                self._get_latest_info_thread_channel_id,
+                player_id,
+            )
+            if thread_channel_id is None:
+                raise MissingInfoThreadBindingError(
+                    f"info thread binding is missing for player_id={player_id}"
+                )
+
+            info_thread = await self._resolve_bound_info_thread(
+                interaction,
+                thread_channel_id=thread_channel_id,
+            )
+            await self._send_info_thread_message(
+                info_thread,
+                self._format_player_info_message(player_info, include_season=True),
             )
         except PlayerNotRegisteredError:
             await self._send_player_operation_message(
@@ -830,6 +850,12 @@ class BotCommandHandlers:
             return
         except (SeasonNotFoundError, PlayerSeasonStatsNotFoundError) as exc:
             await self._send_player_operation_message(interaction, str(exc))
+            return
+        except MissingInfoThreadBindingError:
+            await self._send_player_operation_message(interaction, INFO_THREAD_REQUIRED_MESSAGE)
+            return
+        except (RequiredManagedUiChannelUnavailableError, UnavailableInfoThreadError):
+            await self._send_player_operation_message(interaction, INFO_THREAD_NOT_FOUND_MESSAGE)
             return
         except Exception:
             self.logger.exception(
@@ -843,10 +869,7 @@ class BotCommandHandlers:
             )
             return
 
-        await self._send_player_operation_message(
-            interaction,
-            self._format_player_info_message(player_info, include_season=True),
-        )
+        await self._send_player_operation_message(interaction, PLAYER_SEASON_INFO_SUCCESS_MESSAGE)
 
     async def match_parent(self, interaction: discord.Interaction[Any], match_id: int) -> None:
         await self._sync_requesting_user_identity(interaction)

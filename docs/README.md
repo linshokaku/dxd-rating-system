@@ -64,6 +64,8 @@
   - キュー参加後に作成する在席確認 private thread UI
 - [ui/match_operation_thread.md](ui/match_operation_thread.md)
   - マッチ成立後に作成する試合運営 private thread UI
+- [ui/info_channel.md](ui/info_channel.md)
+  - `レート戦情報` チャンネルに設置する公開 button UI
 - [ui/info_thread.md](ui/info_thread.md)
   - 情報確認用 private thread UI
 - [ui/matchmaking_news_match_announcement.md](ui/matchmaking_news_match_announcement.md)
@@ -93,5 +95,6 @@
 18. [ui/matchmaking_channel.md](ui/matchmaking_channel.md)
 19. [ui/matchmaking_presence_thread.md](ui/matchmaking_presence_thread.md)
 20. [ui/match_operation_thread.md](ui/match_operation_thread.md)
-21. [ui/info_thread.md](ui/info_thread.md)
-22. [ui/matchmaking_news_match_announcement.md](ui/matchmaking_news_match_announcement.md)
+21. [ui/info_channel.md](ui/info_channel.md)
+22. [ui/info_thread.md](ui/info_thread.md)
+23. [ui/matchmaking_news_match_announcement.md](ui/matchmaking_news_match_announcement.md)

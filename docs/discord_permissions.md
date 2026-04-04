@@ -97,5 +97,6 @@ Bot 招待時に少なくとも以下を付与する。
 
 - UI チャンネル構成は [ui/registered_channels.md](ui/registered_channels.md) を参照する。
 - マッチングチャンネル UI の詳細は [ui/matchmaking_channel.md](ui/matchmaking_channel.md) を参照する。
+- `レート戦情報` の公開 button UI の詳細は [ui/info_channel.md](ui/info_channel.md) を参照する。
 - UI 設置コマンドは [ui/setup_channel.md](ui/setup_channel.md) を参照する。
 - コマンド全体の仕様は [commands/user-commands.md](commands/user-commands.md) と [commands/dev-commands.md](commands/dev-commands.md) を参照する。

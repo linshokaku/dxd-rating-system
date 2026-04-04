@@ -10,6 +10,8 @@
 
 ## 対象外
 
+- `レート戦情報` チャンネルに設置する公開 button UI の詳細。
+  - [info_channel.md](info_channel.md)
 - `/info_thread`、`/player_info`、`/player_info_season`、`/leaderboard`、`/leaderboard_season` の slash command 入出力仕様。
   - [../commands/user-commands.md](../commands/user-commands.md)
 - ランキングの並び順、順位差分、比較不能時の計算ルール。
@@ -20,6 +22,7 @@
 ## 前提
 
 - `/info_thread` が成功したとき、Bot は `レート戦情報` チャンネル配下に private thread を 1 つ作成する。
+- `レート戦情報` チャンネルの公開 button UI は thread 作成導線だけを担当し、この `info_thread` は作成後の情報表示先として使う。
 - `/info_thread`、`/player_info`、`/player_info_season`、`/leaderboard`、`/leaderboard_season` では、コマンドの実行チャンネルに関わらず同じ `レート戦情報` チャンネル配下を使う。
 - Bot は、情報確認用 thread に実行ユーザーと admin を参加させる。
 - thread の閲覧対象は、少なくとも実行ユーザー、admin、Bot とする。
@@ -206,6 +209,7 @@ items: 21-40
 
 ## 関連仕様
 
+- 公開チャンネル側の UI は [info_channel.md](info_channel.md) を参照する。
 - 情報確認用チャンネルの用途と権限は [registered_channels.md](registered_channels.md) を参照する。
 - コマンド入出力仕様は [../commands/user-commands.md](../commands/user-commands.md) を参照する。
 - ランキング計算仕様は [../leaderboard/ranking.md](../leaderboard/ranking.md) を参照する。

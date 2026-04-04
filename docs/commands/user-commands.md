@@ -326,6 +326,7 @@ last_played_at: -
 
 #### 備考
 
+- `レート戦情報` チャンネルに設置する公開 button UI は、このコマンドの代替導線として同じ業務処理と文言を使う。詳細は [../ui/info_channel.md](../ui/info_channel.md) を参照する。
 - 作成直後の案内文と thread の可視性ルールは [../ui/info_thread.md](../ui/info_thread.md) を参照する。
 - 情報確認用チャンネルの用途と権限は [../ui/registered_channels.md](../ui/registered_channels.md) を参照する。
 

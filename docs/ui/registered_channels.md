@@ -104,9 +104,8 @@
 ### `info_channel`
 
 - 推奨チャンネル名は `レート戦情報` とする。
-- このチャンネルには、情報確認導線を示す常設メッセージを 1 つ以上設置する。
-- 常設メッセージには、`/info_thread command_name:<literal>` と同等の操作が行えるボタン UI を含める。
-- 常設ボタンは、少なくとも `leaderboard`、`leaderboard_season`、`player_info`、`player_info_season` の 4 種類の info thread 作成導線を持つ。
+- このチャンネルには、情報確認導線を示す常設メッセージを 1 つ設置する。
+- 常設メッセージには、情報確認用 private thread を作成する公開 button UI を設置する。
 - 登録済みユーザーは、このチャンネルを閲覧できる。
 - 一般ユーザーはこのチャンネルへ通常メッセージを送らない。
 - 一般ユーザーは public thread を作成しない。
@@ -115,6 +114,7 @@
 - 情報確認 thread は、実行ユーザー本人、admin、Bot が閲覧できる。
 - `/player_info`、`/player_info_season`、`/leaderboard`、`/leaderboard_season` の結果は、このチャンネル配下の情報確認 thread に集約する。
 - public 側の常設ボタンは thread 作成導線として扱い、private thread 側の button / pulldown UI は情報取得導線として扱う。
+- 公開 button UI の詳細仕様は [info_channel.md](info_channel.md) を参照する。
 - 情報確認 thread の詳細仕様は [info_thread.md](info_thread.md) を参照する。
 
 ### `system_announcements_channel`
@@ -144,6 +144,7 @@
 - マッチングチャンネル UI の詳細は [matchmaking_channel.md](matchmaking_channel.md) を参照する。
 - 在席確認 thread UI の詳細は [matchmaking_presence_thread.md](matchmaking_presence_thread.md) を参照する。
 - 試合運営 thread UI の詳細は [match_operation_thread.md](match_operation_thread.md) を参照する。
+- `レート戦情報` の公開 button UI の詳細は [info_channel.md](info_channel.md) を参照する。
 - 情報確認 thread UI の詳細は [info_thread.md](info_thread.md) を参照する。
 - マッチ速報アナウンス UI の詳細は [matchmaking_news_match_announcement.md](matchmaking_news_match_announcement.md) を参照する。
 - UI 全体の共通方針は [common.md](common.md) を参照する。

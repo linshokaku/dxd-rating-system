@@ -2,7 +2,7 @@
 
 ## 目的
 
-レーティングシステムに登録したユーザーが利用するチャンネル群と、各チャンネルの閲覧権限、書き込み権限、Bot が作成する private thread の役割を定義する。
+レーティングシステムに登録したユーザーが利用するチャンネル群と、運用上あわせて設置する admin 向けチャンネルについて、各チャンネルの閲覧権限、書き込み権限、Bot が作成する private thread の役割を定義する。
 
 ## スコープ
 
@@ -37,6 +37,7 @@
 | `info_channel` | `レート戦情報` | `/info_thread` で作成する情報確認 thread の親チャンネル |
 | `system_announcements_channel` | `レート戦アナウンス` | admin からのシステム告知 |
 | `admin_contact_channel` | `運営連絡・フィードバック` | admin への連絡、問い合わせ、フィードバック |
+| `admin_operations_channel` | `運営専用` | super admin の相談と Bot / worker の運用通知 |
 
 ## 共通権限ルール
 
@@ -60,6 +61,14 @@
 - 誰でも閲覧できる。
 - 誰でもメッセージ送信できる。
 - admin と Bot は返信できる。
+- 初期版では通常メッセージでのやり取りを想定し、thread 作成権限は必須としない。
+
+### `admin_operations_channel`
+
+- `SUPER_ADMIN_USER_IDS` に含まれる admin と Bot だけが閲覧できる。
+- 未登録ユーザー、登録済みユーザー、super admin ではない admin は閲覧できない。
+- super admin は通常メッセージを送信できる。
+- Bot は相談への補助返信と運用通知を投稿できる。
 - 初期版では通常メッセージでのやり取りを想定し、thread 作成権限は必須としない。
 
 ## チャンネル別仕様
@@ -132,11 +141,22 @@
 - 誰でも通常メッセージを書き込める。
 - 登録前ユーザーからの問い合わせも受け付けられるよう、公開チャンネルとして扱ってよい。
 
+### `admin_operations_channel`
+
+- 推奨チャンネル名は `運営専用` とする。
+- super admin の相談用 private channel として使う。
+- Bot や worker の運用通知を受け取るチャンネルとしても使う。
+- 初期スコープでは `daily worker` の起動通知だけを流してよい。
+- 通常ログの転送先としては使わない。
+- `admin_contact_channel` の代替ではなく、公開窓口とは別に設置する。
+- 詳細仕様は [admin_operations_channel.md](admin_operations_channel.md) を参照する。
+
 ## 登録前後の見え方
 
 - 未登録ユーザーは、少なくとも登録導線用チャンネルと `admin_contact_channel` を閲覧できる状態を想定する。
-- 未登録ユーザーは、`matchmaking_channel`、`matchmaking_news_channel`、`info_channel`、`system_announcements_channel` には入れない。
+- 未登録ユーザーは、`matchmaking_channel`、`matchmaking_news_channel`、`info_channel`、`system_announcements_channel`、`admin_operations_channel` には入れない。
 - 登録完了後は、登録済みユーザー向け閲覧権限の対象となり、`matchmaking_channel`、`matchmaking_news_channel`、`info_channel`、`system_announcements_channel` を閲覧できる。
+- 登録完了後も、super admin でない限り `admin_operations_channel` は閲覧できない。
 
 ## 関連仕様
 
@@ -147,5 +167,6 @@
 - `レート戦情報` の公開 button UI の詳細は [info_channel.md](info_channel.md) を参照する。
 - 情報確認 thread UI の詳細は [info_thread.md](info_thread.md) を参照する。
 - マッチ速報アナウンス UI の詳細は [matchmaking_news_match_announcement.md](matchmaking_news_match_announcement.md) を参照する。
+- admin 専用運用チャンネルの詳細は [admin_operations_channel.md](admin_operations_channel.md) を参照する。
 - UI 全体の共通方針は [common.md](common.md) を参照する。
 - UI 設置チャンネル管理コマンドの詳細は [setup_channel.md](setup_channel.md) を参照する。

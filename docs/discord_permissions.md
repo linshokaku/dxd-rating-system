@@ -10,6 +10,7 @@
 - UI 設置チャンネルの作成、初期メッセージ配置、撤収
 - 登録完了時の `レート戦参加者` role 付与
 - outbox 経由のチャンネル通知と DM 通知
+- `admin_operations_channel` への運用通知投稿
 
 ## 対象外
 
@@ -90,12 +91,14 @@ Bot 招待時に少なくとも以下を付与する。
 - Bot 内でいう `admin` は Discord の `Administrator` 権限ではなく、環境変数 `SUPER_ADMIN_USER_IDS` に含めた Discord user ID で判定する。
 - `Manage Roles` を使って `レート戦参加者` role を付与するには、Bot の role をその role より上位に置く必要がある。
 - UI チャンネルの実際の閲覧可否は、Bot のサーバー権限に加えて channel permission overwrite の影響を受ける。
+- `admin_operations_channel` の実際の閲覧可否は、`SUPER_ADMIN_USER_IDS` に含まれる各ユーザーへの個別 permission overwrite で決まる前提とする。
 - `/admin_setup_custom_ui_channel`、`/admin_setup_ui_channels`、`/admin_cleanup_ui_channels`、`/admin_teardown_ui_channels` は、事前に判定できた不足権限をレスポンスへ表示してよい。
 - これらのコマンドは、Discord API が返した `403 Forbidden` の `status` / `error code` / `text` をレスポンスへ補足表示してよい。
 
 ## 関連仕様
 
 - UI チャンネル構成は [ui/registered_channels.md](ui/registered_channels.md) を参照する。
+- admin 専用運用チャンネルの詳細は [ui/admin_operations_channel.md](ui/admin_operations_channel.md) を参照する。
 - マッチングチャンネル UI の詳細は [ui/matchmaking_channel.md](ui/matchmaking_channel.md) を参照する。
 - `レート戦情報` の公開 button UI の詳細は [ui/info_channel.md](ui/info_channel.md) を参照する。
 - UI 設置コマンドは [ui/setup_channel.md](ui/setup_channel.md) を参照する。

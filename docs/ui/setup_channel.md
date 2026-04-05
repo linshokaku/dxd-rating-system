@@ -60,10 +60,11 @@
 - `info_channel`
 - `system_announcements_channel`
 - `admin_contact_channel`
+- `admin_operations_channel`
 
 ### 正常時の挙動
 
-- 指定した `channel_name` で、指定した `ui_type` 用の公開テキストチャンネルを 1 つ作成する。
+- 指定した `channel_name` で、指定した `ui_type` 用のテキストチャンネルを 1 つ作成する。
 - 作成したチャンネルには、指定した `ui_type` に対応する初期 UI を 1 つ設置する。
 - `ui_type=register_panel` の場合は、[register.md](register.md) で定義した登録 UI を設置する。
 - `ui_type=matchmaking_channel` の場合は、[matchmaking_channel.md](matchmaking_channel.md) で定義したマッチング UI を設置する。
@@ -136,6 +137,19 @@
 - 誰でも通常メッセージを送信できる。
 - チャンネル内には、用途説明用の初期メッセージを 1 つ設置する。
 
+### `admin_operations_channel` のチャンネル作成ルール
+
+- private text channel として作成する。
+- 推奨チャンネル名は `運営専用` とする。
+- `@everyone` には閲覧権限を付与しない。
+- 登録済みユーザー向け role にも閲覧権限を付与しない。
+- `SUPER_ADMIN_USER_IDS` に含まれる Discord user ID に対応するサーバーメンバーだけが閲覧できる。
+- super admin は通常メッセージを送信できる。
+- Bot は運用通知投稿と保守上必要なメッセージ送信を行える前提とする。
+- thread 作成は初期スコープ外とし、通常メッセージだけを前提にする。
+- チャンネル内には、用途説明用の初期メッセージを 1 つ設置する。
+- 詳細仕様は [admin_operations_channel.md](admin_operations_channel.md) を参照する。
+
 ### エラー時の挙動
 
 - 実行者に `admin` 権限がない場合:
@@ -194,12 +208,13 @@
   - `info_channel`: `レート戦情報`
   - `system_announcements_channel`: `レート戦アナウンス`
   - `admin_contact_channel`: `運営連絡・フィードバック`
+  - `admin_operations_channel`: `運営専用`
 - 将来、運用開始時に必須となる UI が増えた場合は、この作成対象一覧に追加する。
 
 ### 正常時の挙動
 
 - Bot は作成対象一覧を参照し、未設置の UI だけを作成対象として抽出する。
-- 各作成対象について、対応する推奨チャンネル名で公開テキストチャンネルを 1 つ作成する。
+- 各作成対象について、対応する推奨チャンネル名と権限設定でテキストチャンネルを 1 つ作成する。
 - 作成した各チャンネルには、対応する初期 UI を 1 つ設置する。
 - 各チャンネル作成と UI 設置に成功したら、対応する UI 管理情報を保存する。
 - 1 件以上のチャンネルを新規作成できた場合、成功時のレスポンス文言は以下とする。
@@ -228,7 +243,7 @@
 
 ### 可視性
 
-- 作成された UI チャンネルと、そこに配置された UI メッセージ自体は、対象ユーザーに公開される。
+- 作成された UI チャンネルと、そこに配置された UI メッセージ自体は、対象ユーザーにだけ公開される。
 
 ### 整合性
 

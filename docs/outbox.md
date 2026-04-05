@@ -2,7 +2,7 @@
 
 ## 目的
 
-- マッチングキュー関連の後続通知を Discord へ非同期に送る
+- マッチングキュー関連と運用通知の後続通知を Discord へ非同期に送る
 - Bot プロセスのクラッシュや再起動があっても、通知の二重送信と送信漏れを避ける
 - commands 層と通知実行層を疎結合に保つ
 - 常時 polling による待機コストを抑える
@@ -14,10 +14,12 @@
 - `presence_reminder`
 - `queue_expired`
 - `match_created`
+- `admin_operations_notification`
 
 ## 基本方針
 
 - 通知の発火判断は service 層で行う
+- worker のような command 起点ではない処理も、必要なら outbox event を作成してよい
 - 通知の実行は runtime 層で行う
 - commands 層は通知先コンテキストを取得して service 層へ渡す
 - 通知先コンテキストは DB に保存し、再起動後も復元できるようにする
@@ -65,6 +67,7 @@
 - 開発者コマンド操作の `presence_reminder` と `queue_expired` も、`/dev_join` 成功時に作成された在席確認 thread の `channel_id` 宛てに送る
 - 開発者コマンド操作の `presence_reminder` と `queue_expired` も、公開チャンネルではなく在席確認 thread 内で行う
 - `match_created` は、公開の `レート戦マッチ速報` チャンネル通知を維持したうえで、在席確認 thread がある参加者にだけその thread へ送る
+- `admin_operations_notification` は、`admin_operations_channel` が設置済みのときだけその channel へ送る
 - 在席確認 thread 向けの `match_created` には、対象参加者への mention を付ける
 - `match_created` を `レート戦マッチング` 親チャンネルや通常通知先 channel へフォールバックして送らない
 - mention 形式は `<@discord_user_id>` を用いる
@@ -181,6 +184,18 @@ Team B
 <@456789012345678901>
 ```
 
+### `admin_operations_notification`
+
+- `admin_operations_notification` は admin 向け運用通知 1 件を表す。
+- 初期スコープでは `daily worker` の起動通知だけを対象とする。
+- service 層または worker は、通知先の `admin_operations_channel` が解決できた場合だけ event を作成する。
+- 通知先チャンネルが解決できない場合、worker 本体は処理を継続し、通知だけをスキップしてよい。
+- payload には、その時点の送信先スナップショットを含める。
+- 送信先は payload 内の `destination.channel_id`
+- 初期 `notification_kind` は `daily_worker_started` とする。
+- メッセージ例:
+  - `daily worker が起動しました。`
+
 ## outbox payload の要件
 
 ### 共通
@@ -219,6 +234,11 @@ Team B
   - `mention_discord_user_id` (在席確認 thread 向け payload のみ)
   - `match_operation_thread_parent_channel_id` (試合運営 thread 導線を解決する payload)
   - `create_match_operation_thread` (必要なら試合運営 thread を先に作成できる payload)
+- `admin_operations_notification`
+  - `notification_kind`
+  - `worker_name`
+  - `occurred_at`
+  - `destination`
 
 補足:
 
@@ -367,3 +387,4 @@ warning log の意図:
 - `match_created` を 1 channel に集約するか、参加者ごとに個別 channel へ送るか
 - 同じ match に対して複数 channel へ送る際の文面を統一するか
 - mention 対象を「コマンド実行者」に固定するか、「プレイヤー本人」に寄せるか
+- `admin_operations_notification` の対象イベントを今後どこまで増やすか

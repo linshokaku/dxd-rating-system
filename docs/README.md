@@ -56,6 +56,8 @@
   - Discord UI の共通仕様
 - [ui/registered_channels.md](ui/registered_channels.md)
   - 登録済みユーザーが利用できるチャンネル構成と権限
+- [ui/admin_operations_channel.md](ui/admin_operations_channel.md)
+  - super admin 専用の運用チャンネルと worker 通知
 - [ui/register.md](ui/register.md)
   - 公開チャンネルに設置する登録 UI
 - [ui/matchmaking_channel.md](ui/matchmaking_channel.md)
@@ -90,11 +92,12 @@
 13. [discord_permissions.md](discord_permissions.md)
 14. [ui/common.md](ui/common.md)
 15. [ui/registered_channels.md](ui/registered_channels.md)
-16. [ui/setup_channel.md](ui/setup_channel.md)
-17. [ui/register.md](ui/register.md)
-18. [ui/matchmaking_channel.md](ui/matchmaking_channel.md)
-19. [ui/matchmaking_presence_thread.md](ui/matchmaking_presence_thread.md)
-20. [ui/match_operation_thread.md](ui/match_operation_thread.md)
-21. [ui/info_channel.md](ui/info_channel.md)
-22. [ui/info_thread.md](ui/info_thread.md)
-23. [ui/matchmaking_news_match_announcement.md](ui/matchmaking_news_match_announcement.md)
+16. [ui/admin_operations_channel.md](ui/admin_operations_channel.md)
+17. [ui/setup_channel.md](ui/setup_channel.md)
+18. [ui/register.md](ui/register.md)
+19. [ui/matchmaking_channel.md](ui/matchmaking_channel.md)
+20. [ui/matchmaking_presence_thread.md](ui/matchmaking_presence_thread.md)
+21. [ui/match_operation_thread.md](ui/match_operation_thread.md)
+22. [ui/info_channel.md](ui/info_channel.md)
+23. [ui/info_thread.md](ui/info_thread.md)
+24. [ui/matchmaking_news_match_announcement.md](ui/matchmaking_news_match_announcement.md)

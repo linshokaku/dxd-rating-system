@@ -1,11 +1,14 @@
 from datetime import datetime, timedelta, timezone
 
+import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from dxd_rating.contexts.common.application.errors import SeasonStateError
 from dxd_rating.contexts.players.application import register_player
 from dxd_rating.contexts.seasons.application import (
     ensure_active_and_upcoming_seasons,
+    force_end_active_season,
     list_started_seasons,
     resolve_player_format_stats_for_season,
     update_ended_season_completions,
@@ -137,3 +140,60 @@ def test_list_started_seasons_returns_latest_started_25_in_desc_order(
     ]
     assert all(season.start_at <= current_time for season in started_seasons)
     assert all(season.name != "future-season" for season in started_seasons)
+
+
+def test_force_end_active_season_updates_only_active_end_and_upcoming_start(
+    session: Session,
+) -> None:
+    archive_season = Season(
+        name="archive-season",
+        start_at=datetime(2026, 1, 13, 15, 0, 0, tzinfo=timezone.utc),
+        end_at=datetime(2026, 2, 13, 15, 0, 0, tzinfo=timezone.utc),
+        completed=True,
+        completed_at=datetime(2026, 2, 13, 15, 0, 0, tzinfo=timezone.utc),
+    )
+    session.add(archive_season)
+    session.flush()
+
+    forced_at = datetime(2026, 4, 1, 0, 0, 0, tzinfo=timezone.utc)
+    season_pair = ensure_active_and_upcoming_seasons(
+        session,
+        current_time=forced_at,
+    )
+    active_completed = season_pair.active.completed
+    active_completed_at = season_pair.active.completed_at
+    upcoming_end_at = season_pair.upcoming.end_at
+    session.flush()
+
+    result = force_end_active_season(session, current_time=forced_at)
+
+    assert result.active_season_id == season_pair.active.id
+    assert result.upcoming_season_id == season_pair.upcoming.id
+    assert result.forced_at == forced_at
+    assert result.previous_active_end_at == datetime(2026, 4, 13, 15, 0, 0, tzinfo=timezone.utc)
+    assert result.previous_upcoming_start_at == datetime(2026, 4, 13, 15, 0, 0, tzinfo=timezone.utc)
+    assert season_pair.active.end_at == forced_at
+    assert season_pair.upcoming.start_at == forced_at
+    assert season_pair.upcoming.end_at == upcoming_end_at
+    assert season_pair.active.completed is active_completed
+    assert season_pair.active.completed_at == active_completed_at
+    session.expire_all()
+    persisted_archive = session.get(Season, archive_season.id)
+    assert persisted_archive is not None
+    assert persisted_archive.end_at == datetime(2026, 2, 13, 15, 0, 0, tzinfo=timezone.utc)
+
+
+def test_force_end_active_season_rejects_active_start_timestamp(
+    session: Session,
+) -> None:
+    current_time = datetime(2026, 4, 1, 0, 0, 0, tzinfo=timezone.utc)
+    season_pair = ensure_active_and_upcoming_seasons(
+        session,
+        current_time=current_time,
+    )
+
+    with pytest.raises(
+        SeasonStateError,
+        match="稼働中シーズンの開始時刻以前には強制終了できません。",
+    ):
+        force_end_active_season(session, current_time=season_pair.active.start_at)

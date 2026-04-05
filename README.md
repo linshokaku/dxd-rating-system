@@ -26,6 +26,7 @@ src/
         main.py
       worker/
         daily.py
+        force_end_season.py
     contexts/
       common/
       players/
@@ -107,6 +108,15 @@ uv run python -m dxd_rating.apps.worker.daily
 このジョブは Bot 本体とは別プロセスで動作し、現在は DB 接続確認と今後の定期処理を追加するための雛形を提供します。
 Railway ではこのコマンドを Cron Job に設定し、スケジュール自体は Railway 側で管理してください。
 このジョブは現在、DB 接続確認、シーズン保守、ランキング snapshot の日次生成と古い snapshot の削除を行います。
+
+テスト目的で active season を強制終了する手動 CLI app も用意しています。
+
+```bash
+uv run python -m dxd_rating.apps.worker.force_end_season
+```
+
+このコマンドは DB を直接更新し、実行時点の active season の `end_at` と次 season の `start_at` を同じ時刻へ変更します。
+テスト用途専用であり、season completion 判定、次 season 作成、snapshot 更新、通知 enqueue は行いません。
 
 ## モデル更新
 ```bash

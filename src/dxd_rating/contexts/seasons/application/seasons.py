@@ -66,6 +66,15 @@ class ActiveSeasonPair:
 
 
 @dataclass(frozen=True, slots=True)
+class ForceEndSeasonResult:
+    active_season_id: int
+    upcoming_season_id: int
+    forced_at: datetime
+    previous_active_end_at: datetime
+    previous_upcoming_start_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
 class PlayerFormatSeasonInfo:
     match_format: MatchFormat
     rating: float
@@ -199,6 +208,31 @@ def get_active_and_upcoming_seasons(
         raise SeasonStateError("稼働中シーズンに対応する次シーズンが存在しません。")
 
     return ActiveSeasonPair(active=active_season, upcoming=upcoming_season)
+
+
+def force_end_active_season(
+    session: Session,
+    *,
+    current_time: datetime | None = None,
+) -> ForceEndSeasonResult:
+    forced_at = get_database_now(session) if current_time is None else current_time
+    season_pair = get_active_and_upcoming_seasons(session, current_time=forced_at)
+    if forced_at <= season_pair.active.start_at:
+        raise SeasonStateError("稼働中シーズンの開始時刻以前には強制終了できません。")
+
+    previous_active_end_at = season_pair.active.end_at
+    previous_upcoming_start_at = season_pair.upcoming.start_at
+    season_pair.active.end_at = forced_at
+    season_pair.upcoming.start_at = forced_at
+    session.flush()
+
+    return ForceEndSeasonResult(
+        active_season_id=season_pair.active.id,
+        upcoming_season_id=season_pair.upcoming.id,
+        forced_at=forced_at,
+        previous_active_end_at=previous_active_end_at,
+        previous_upcoming_start_at=previous_upcoming_start_at,
+    )
 
 
 def list_started_seasons(

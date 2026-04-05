@@ -77,6 +77,11 @@
 - `start_at` と `end_at` は作成後に変更しない
 - シーズンの追加や削除は Bot コマンドからは行わない
 
+補足:
+
+- テスト用 CLI `dxd_rating.apps.worker.force_end_season` に限り、active season の `end_at` と次 season の `start_at` を実行時刻へ変更してよい
+- この CLI はテスト用途の手動操作であり、通常運用フローには含めない
+
 ## 日次 worker による事前作成
 
 日次 worker は 1 日 1 回、少なくとも以下を行う。

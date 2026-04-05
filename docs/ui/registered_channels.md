@@ -35,7 +35,7 @@
 | `matchmaking_channel` | `レート戦マッチング` | マッチングキュー参加 UI の設置、`/join`・`/dev_join`・参加 UI 起点の在席確認 thread と試合連絡 thread の親チャンネル |
 | `matchmaking_news_channel` | `レート戦マッチ速報` | マッチ成立アナウンスと観戦 button の設置 |
 | `info_channel` | `レート戦情報` | `/info_thread` で作成する情報確認 thread の親チャンネル |
-| `system_announcements_channel` | `レート戦アナウンス` | admin からのシステム告知 |
+| `system_announcements_channel` | `レート戦アナウンス` | admin と Bot からのシステム告知 |
 | `admin_contact_channel` | `運営連絡・フィードバック` | admin への連絡、問い合わせ、フィードバック |
 | `admin_operations_channel` | `運営専用` | super admin の相談と Bot / worker の運用通知 |
 
@@ -129,8 +129,10 @@
 ### `system_announcements_channel`
 
 - 推奨チャンネル名は `レート戦アナウンス` とする。
-- admin だけが告知メッセージを投稿できるチャンネルとする。
-- Bot は必要に応じて補助的なアナウンス投稿を行ってよい。
+- admin がシステム告知を投稿できるチャンネルとする。
+- Bot は公開向けのシステムアナウンスを投稿してよい。
+- 初期スコープでは、`update_season_completion` によってシーズン完了が確定したとき、そのシーズンの全試合完了を知らせる通常メッセージを投稿してよい。
+- シーズン完了通知は公開チャンネルへの通常メッセージ投稿のみとし、button や thread は付けない。
 - 一般ユーザーはこのチャンネルへ通常メッセージを送らない。
 - 一般ユーザーは thread を作成しない。
 

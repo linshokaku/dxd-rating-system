@@ -262,6 +262,8 @@ carryover を適用しない場合:
 - 試合結果確定時のレート更新先は、稼働中シーズンではなく `started_season_id` の `player_format_stats` とする
 - したがって、前シーズン開始の試合が次シーズン開始後に finalize されても、前シーズンのレートが更新される
 - 各試合の finalize 処理のたびに、その `started_season_id` について `completed` を立てられる状態かどうかを再判定する
+- `update_season_completion` によって `completed = true` へ遷移した場合は、後続で `season_completed` 通知を enqueue する
+- この通知は `system_announcements_channel` (`レート戦アナウンス`) への公開アナウンスとし、同じ `season_id` について重複送信しない
 
 ### admin 結果修正時
 
@@ -279,6 +281,9 @@ carryover を適用しない場合:
 - 日次 worker では、`end_at <= now()` かつ `completed = false` のシーズンについて、同様に未確定試合の有無を確認する
 - 未確定試合が 0 件であり、かつ `end_at <= now()` を満たす場合に `completed = true` とする
 - `completed_at` は `completed = true` にした時刻を保存する
+- `update_season_completion` が `true` を返したときだけ、該当シーズンの全試合完了を表す `season_completed` 通知を 1 回だけ enqueue する
+- 通知発火条件は caller に依存せず、試合 finalize 経由でも日次 worker 経由でも同じ規則を使う
+- すでに `completed = true` のシーズンでは、後続の再判定や結果修正によって `season_completed` を再送しない
 - 一度 `completed = true` になったシーズンは、admin による結果修正後も `false` に戻さない
 
 意図:

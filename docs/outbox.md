@@ -2,7 +2,7 @@
 
 ## 目的
 
-- マッチングキュー関連と運用通知の後続通知を Discord へ非同期に送る
+- マッチングキュー関連、公開アナウンス、運用通知の後続通知を Discord へ非同期に送る
 - Bot プロセスのクラッシュや再起動があっても、通知の二重送信と送信漏れを避ける
 - commands 層と通知実行層を疎結合に保つ
 - 常時 polling による待機コストを抑える
@@ -14,6 +14,7 @@
 - `presence_reminder`
 - `queue_expired`
 - `match_created`
+- `season_completed`
 - `admin_operations_notification`
 
 ## 基本方針
@@ -67,6 +68,7 @@
 - 開発者コマンド操作の `presence_reminder` と `queue_expired` も、`/dev_join` 成功時に作成された在席確認 thread の `channel_id` 宛てに送る
 - 開発者コマンド操作の `presence_reminder` と `queue_expired` も、公開チャンネルではなく在席確認 thread 内で行う
 - `match_created` は、公開の `レート戦マッチ速報` チャンネル通知を維持したうえで、在席確認 thread がある参加者にだけその thread へ送る
+- `season_completed` は、`system_announcements_channel` が設置済みのときだけその channel へ送る
 - `admin_operations_notification` は、`admin_operations_channel` が設置済みのときだけその channel へ送る
 - 在席確認 thread 向けの `match_created` には、対象参加者への mention を付ける
 - `match_created` を `レート戦マッチング` 親チャンネルや通常通知先 channel へフォールバックして送らない
@@ -196,6 +198,26 @@ Team B
 - メッセージ例:
   - `daily worker が起動しました。`
 
+### `season_completed`
+
+- `season_completed` は、1 シーズンについて「そのシーズン所属の全試合が完了した」ことを表す公開通知 1 件を表す。
+- `season_completed` は、`update_season_completion` が実際に `True` を返したときだけ作成する。
+- 試合 finalize 経由でも日次 worker 経由でも、発火条件は `update_season_completion` の完了遷移に統一する。
+- 同一 `season_id` の `season_completed` は 1 回だけ送る前提とし、重複 enqueue を避ける。
+- service 層または worker は、通知先の `system_announcements_channel` が解決できた場合だけ event を作成する。
+- 通知先チャンネルが解決できない場合でも、シーズン完了処理自体は成功扱いのまま継続し、通知だけを warning ログでスキップしてよい。
+- payload には、その時点の送信先スナップショットを含める。
+- 送信先は payload 内の `destination.channel_id`
+- payload は少なくとも以下を含む。
+  - `season_id`
+  - `season_name`
+  - `completed_at`
+  - `destination`
+- メッセージは、該当シーズンの全試合が完了したことが分かる簡潔なプレーンテキストとする。
+- メッセージには、少なくとも `season_name` と `season_id` を含める。
+- `completed_at` は簡潔に表示してよい。
+- mention や button は付けない。
+
 ## outbox payload の要件
 
 ### 共通
@@ -234,6 +256,11 @@ Team B
   - `mention_discord_user_id` (在席確認 thread 向け payload のみ)
   - `match_operation_thread_parent_channel_id` (試合運営 thread 導線を解決する payload)
   - `create_match_operation_thread` (必要なら試合運営 thread を先に作成できる payload)
+- `season_completed`
+  - `season_id`
+  - `season_name`
+  - `completed_at`
+  - `destination`
 - `admin_operations_notification`
   - `notification_kind`
   - `worker_name`

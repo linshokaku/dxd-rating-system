@@ -1,12 +1,24 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
+from datetime import datetime
+from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session, sessionmaker
 
-from dxd_rating.platform.db.models import ManagedUiChannel, ManagedUiType
+from dxd_rating.platform.db.models import (
+    ManagedUiChannel,
+    ManagedUiType,
+    OutboxEvent,
+    OutboxEventType,
+)
 from dxd_rating.platform.db.session import session_scope
+from dxd_rating.shared.constants import OUTBOX_NOTIFY_CHANNEL
+
+logger = logging.getLogger(__name__)
 
 REGISTER_PANEL_RECOMMENDED_CHANNEL_NAME = "レート戦はこちらから"
 MATCHMAKING_CHANNEL_RECOMMENDED_CHANNEL_NAME = "レート戦マッチング"
@@ -15,6 +27,8 @@ INFO_CHANNEL_RECOMMENDED_CHANNEL_NAME = "レート戦情報"
 SYSTEM_ANNOUNCEMENTS_CHANNEL_RECOMMENDED_CHANNEL_NAME = "レート戦アナウンス"
 ADMIN_CONTACT_CHANNEL_RECOMMENDED_CHANNEL_NAME = "運営連絡・フィードバック"
 ADMIN_OPERATIONS_CHANNEL_RECOMMENDED_CHANNEL_NAME = "運営専用"
+ADMIN_OPERATIONS_NOTIFICATION_KIND_DAILY_WORKER_STARTED = "daily_worker_started"
+ADMIN_OPERATIONS_NOTIFICATION_WORKER_NAME_DAILY_WORKER = "daily_worker"
 REGISTERED_PLAYER_ROLE_NAME = "レート戦参加者"
 
 
@@ -95,6 +109,66 @@ def get_managed_ui_definition(ui_type: ManagedUiType) -> ManagedUiDefinition:
 
 def get_required_managed_ui_definitions() -> tuple[ManagedUiDefinition, ...]:
     return tuple(MANAGED_UI_DEFINITIONS[ui_type] for ui_type in REQUIRED_MANAGED_UI_TYPES)
+
+
+def enqueue_daily_worker_started_admin_operations_notification(
+    session: Session,
+    *,
+    occurred_at: datetime,
+) -> bool:
+    if occurred_at.tzinfo is None or occurred_at.utcoffset() is None:
+        raise ValueError("occurred_at must be timezone-aware")
+
+    admin_operations_channel = _get_managed_ui_channel_by_type(
+        session,
+        ui_type=ManagedUiType.ADMIN_OPERATIONS_CHANNEL,
+    )
+    if admin_operations_channel is None:
+        logger.warning(
+            "Skipping daily worker startup notification because admin_operations_channel "
+            "is not configured"
+        )
+        return False
+
+    payload: dict[str, Any] = {
+        "notification_kind": ADMIN_OPERATIONS_NOTIFICATION_KIND_DAILY_WORKER_STARTED,
+        "worker_name": ADMIN_OPERATIONS_NOTIFICATION_WORKER_NAME_DAILY_WORKER,
+        "occurred_at": occurred_at.isoformat(),
+        "destination": {
+            "kind": "channel",
+            "channel_id": admin_operations_channel.channel_id,
+            "guild_id": None,
+        },
+    }
+    dedupe_key = (
+        "admin_operations_notification:"
+        f"{ADMIN_OPERATIONS_NOTIFICATION_KIND_DAILY_WORKER_STARTED}:"
+        f"{ADMIN_OPERATIONS_NOTIFICATION_WORKER_NAME_DAILY_WORKER}:"
+        f"{occurred_at.isoformat()}"
+    )
+    inserted_event_id = session.execute(
+        pg_insert(OutboxEvent)
+        .values(
+            event_type=OutboxEventType.ADMIN_OPERATIONS_NOTIFICATION,
+            dedupe_key=dedupe_key,
+            payload=payload,
+        )
+        .on_conflict_do_nothing(index_elements=[OutboxEvent.dedupe_key])
+        .returning(OutboxEvent.id)
+    ).scalar_one_or_none()
+
+    if inserted_event_id is None:
+        return False
+
+    session.execute(
+        select(
+            func.pg_notify(
+                OUTBOX_NOTIFY_CHANNEL,
+                str(inserted_event_id),
+            )
+        )
+    )
+    return True
 
 
 class ManagedUiService:

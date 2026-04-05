@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime, timezone
 
 import pytest
 from sqlalchemy import select
@@ -9,7 +10,11 @@ from dxd_rating.contexts.players.application import register_player
 from dxd_rating.contexts.seasons.application import ensure_active_and_upcoming_seasons
 from dxd_rating.platform.db.models import (
     LeaderboardSnapshot,
+    ManagedUiChannel,
+    ManagedUiType,
     MatchFormat,
+    OutboxEvent,
+    OutboxEventType,
     PlayerFormatStats,
     Season,
 )
@@ -33,6 +38,15 @@ def test_run_daily_jobs_runs_season_maintenance(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     caplog.set_level(logging.INFO)
+    started_at = datetime(2026, 4, 5, 0, 0, tzinfo=timezone.utc)
+    session.add(
+        ManagedUiChannel(
+            ui_type=ManagedUiType.ADMIN_OPERATIONS_CHANNEL,
+            channel_id=900_001,
+            message_id=900_101,
+            created_by_discord_user_id=900_201,
+        )
+    )
     season_pair = ensure_active_and_upcoming_seasons(session)
     player = register_player(session=session, discord_user_id=123_456_789_012_345_678)
     three_vs_three_stats = session.scalar(
@@ -47,9 +61,10 @@ def test_run_daily_jobs_runs_season_maintenance(
     three_vs_three_stats.games_played = 4
     session.commit()
 
-    run_daily_jobs(session_factory)
+    run_daily_jobs(session_factory, started_at=started_at)
     session.expire_all()
     seasons = session.scalars(select(Season).order_by(Season.start_at, Season.id)).all()
+    outbox_events = session.scalars(select(OutboxEvent).order_by(OutboxEvent.id)).all()
     snapshots = session.scalars(
         select(LeaderboardSnapshot).order_by(
             LeaderboardSnapshot.snapshot_date,
@@ -61,9 +76,52 @@ def test_run_daily_jobs_runs_season_maintenance(
     assert "Database connectivity check succeeded" in caplog.text
     assert "Season maintenance completed" in caplog.text
     assert "Leaderboard snapshot maintenance completed" in caplog.text
+    assert "Processed daily worker startup notification enqueue" in caplog.text
     assert len(seasons) == 2
     assert seasons[0].end_at == seasons[1].start_at
+    assert len(outbox_events) == 1
+    assert outbox_events[0].event_type == OutboxEventType.ADMIN_OPERATIONS_NOTIFICATION
+    assert outbox_events[0].dedupe_key == (
+        "admin_operations_notification:daily_worker_started:daily_worker:2026-04-05T00:00:00+00:00"
+    )
+    assert outbox_events[0].payload == {
+        "notification_kind": "daily_worker_started",
+        "worker_name": "daily_worker",
+        "occurred_at": "2026-04-05T00:00:00+00:00",
+        "destination": {
+            "kind": "channel",
+            "channel_id": 900_001,
+            "guild_id": None,
+        },
+    }
     assert len(snapshots) == 1
     assert snapshots[0].player_id == player.id
     assert snapshots[0].match_format == MatchFormat.THREE_VS_THREE
     assert snapshots[0].rank == 1
+
+
+def test_run_daily_jobs_skips_startup_notification_when_admin_operations_channel_is_missing(
+    session: Session,
+    session_factory: sessionmaker[Session],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO)
+
+    run_daily_jobs(
+        session_factory,
+        started_at=datetime(2026, 4, 5, 0, 0, tzinfo=timezone.utc),
+    )
+
+    session.expire_all()
+    seasons = session.scalars(select(Season).order_by(Season.start_at, Season.id)).all()
+    outbox_events = session.scalars(select(OutboxEvent).order_by(OutboxEvent.id)).all()
+
+    assert (
+        "Skipping daily worker startup notification because "
+        "admin_operations_channel is not configured" in caplog.text
+    )
+    assert "Database connectivity check succeeded" in caplog.text
+    assert "Season maintenance completed" in caplog.text
+    assert "Leaderboard snapshot maintenance completed" in caplog.text
+    assert len(seasons) == 2
+    assert outbox_events == []

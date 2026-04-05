@@ -3620,6 +3620,79 @@ def test_discord_outbox_publisher_renders_match_finalized_message_with_ratings()
     assert channel.sent_messages == [expected_message]
 
 
+def test_discord_outbox_publisher_renders_daily_worker_started_admin_notification() -> None:
+    channel = FakeDiscordChannel(
+        id=900_024,
+        guild=FakeDiscordGuild(id=910_024),
+    )
+    client = FakeDiscordClient(channels={channel.id: channel})
+    publisher = DiscordOutboxEventPublisher(client=client)
+
+    expected_message = "\n".join(
+        [
+            "daily worker が起動しました。",
+            "開始時刻: 2026-04-05 09:00 JST",
+        ]
+    )
+
+    async def scenario() -> None:
+        await publish_with_bound_loop(
+            publisher,
+            PendingOutboxEvent(
+                id=9,
+                event_type=OutboxEventType.ADMIN_OPERATIONS_NOTIFICATION,
+                dedupe_key="admin_operations_notification:daily_worker_started:daily_worker:2026-04-05T00:00:00+00:00",
+                payload={
+                    "notification_kind": "daily_worker_started",
+                    "worker_name": "daily_worker",
+                    "occurred_at": "2026-04-05T00:00:00+00:00",
+                    "destination": {
+                        "kind": "channel",
+                        "channel_id": channel.id,
+                        "guild_id": None,
+                    },
+                },
+                created_at=datetime.now(timezone.utc),
+            ),
+        )
+
+    asyncio.run(scenario())
+
+    assert channel.sent_messages == [expected_message]
+
+
+def test_discord_outbox_publisher_raises_for_unknown_admin_operations_notification_kind() -> None:
+    channel = FakeDiscordChannel(
+        id=900_025,
+        guild=FakeDiscordGuild(id=910_025),
+    )
+    client = FakeDiscordClient(channels={channel.id: channel})
+    publisher = DiscordOutboxEventPublisher(client=client)
+
+    with pytest.raises(ValueError, match="Unsupported admin operations notification kind"):
+        asyncio.run(
+            publish_with_bound_loop(
+                publisher,
+                PendingOutboxEvent(
+                    id=10,
+                    event_type=OutboxEventType.ADMIN_OPERATIONS_NOTIFICATION,
+                    dedupe_key="admin_operations_notification:unknown:daily_worker:2026-04-05T00:00:00+00:00",
+                    payload={
+                        "notification_kind": "unknown",
+                        "worker_name": "daily_worker",
+                        "occurred_at": "2026-04-05T00:00:00+00:00",
+                        "destination": {
+                            "kind": "channel",
+                            "channel_id": channel.id,
+                            "guild_id": None,
+                        },
+                    },
+                    created_at=datetime.now(timezone.utc),
+                ),
+            )
+        )
+
+
 def test_discord_outbox_publisher_raises_when_destination_is_missing() -> None:
     publisher = DiscordOutboxEventPublisher(client=FakeDiscordClient())
 

@@ -4,7 +4,9 @@ import asyncio
 import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from typing import NoReturn, Protocol, cast
+from zoneinfo import ZoneInfo
 
 import discord
 
@@ -21,6 +23,10 @@ from dxd_rating.contexts.matchmaking.application import (
     MATCH_CREATED_NOTIFICATION_MESSAGE,
     PRESENCE_REMINDER_NOTIFICATION_MESSAGE,
     QUEUE_EXPIRED_NOTIFICATION_MESSAGE,
+)
+from dxd_rating.contexts.ui.application import (
+    ADMIN_OPERATIONS_NOTIFICATION_KIND_DAILY_WORKER_STARTED,
+    ADMIN_OPERATIONS_NOTIFICATION_WORKER_NAME_DAILY_WORKER,
 )
 from dxd_rating.platform.db.models import OutboxEventType
 from dxd_rating.platform.discord.ui import (
@@ -41,6 +47,9 @@ from dxd_rating.platform.runtime.outbox import (
     PendingOutboxEvent,
 )
 from dxd_rating.shared.constants import format_discord_user_mention, is_dummy_discord_user_id
+
+ADMIN_OPERATIONS_DAILY_WORKER_STARTED_MESSAGE = "daily worker が起動しました。"
+JST = ZoneInfo("Asia/Tokyo")
 
 
 class DiscordSendableChannel(Protocol):
@@ -650,6 +659,9 @@ class DiscordOutboxEventPublisher:
         if event_type == OutboxEventType.MATCH_ADMIN_REVIEW_REQUIRED:
             return self._render_match_admin_review_required_content(payload)
 
+        if event_type == OutboxEventType.ADMIN_OPERATIONS_NOTIFICATION:
+            return self._render_admin_operations_notification_content(payload)
+
         self._raise_publish_error(f"Unsupported outbox event type: {event_type}")
 
     def _render_presence_reminder_content(self, payload: dict[str, object]) -> str:
@@ -662,6 +674,28 @@ class DiscordOutboxEventPublisher:
         return self._render_channel_targeted_text_notification(
             payload,
             QUEUE_EXPIRED_NOTIFICATION_MESSAGE,
+        )
+
+    def _render_admin_operations_notification_content(self, payload: dict[str, object]) -> str:
+        notification_kind = self._require_payload_str(payload, "notification_kind")
+        if notification_kind != ADMIN_OPERATIONS_NOTIFICATION_KIND_DAILY_WORKER_STARTED:
+            self._raise_publish_error(
+                f"Unsupported admin operations notification kind: {notification_kind}"
+            )
+
+        worker_name = self._require_payload_str(payload, "worker_name")
+        if worker_name != ADMIN_OPERATIONS_NOTIFICATION_WORKER_NAME_DAILY_WORKER:
+            self._raise_publish_error(
+                f"Unsupported admin operations notification worker_name: {worker_name}"
+            )
+
+        occurred_at = self._parse_admin_operations_notification_occurred_at(payload)
+        localized_occurred_at = occurred_at.astimezone(JST)
+        return "\n".join(
+            [
+                ADMIN_OPERATIONS_DAILY_WORKER_STARTED_MESSAGE,
+                f"開始時刻: {localized_occurred_at:%Y-%m-%d %H:%M JST}",
+            ]
         )
 
     def _render_match_created_content(self, payload: dict[str, object]) -> str:
@@ -1154,6 +1188,26 @@ class DiscordOutboxEventPublisher:
                 for entry in team_b_rating_entries
             ],
         ]
+
+    def _parse_admin_operations_notification_occurred_at(
+        self,
+        payload: dict[str, object],
+    ) -> datetime:
+        occurred_at = self._require_payload_str(payload, "occurred_at")
+        try:
+            parsed = datetime.fromisoformat(occurred_at)
+        except ValueError:
+            self._raise_publish_error(
+                f"Outbox payload 'occurred_at' must be an ISO 8601 datetime: {occurred_at!r}"
+            )
+
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            self._raise_publish_error(
+                f"Outbox payload 'occurred_at' must be timezone-aware UTC: {occurred_at!r}"
+            )
+        if parsed.utcoffset() != timedelta(0):
+            self._raise_publish_error(f"Outbox payload 'occurred_at' must be UTC: {occurred_at!r}")
+        return parsed
 
     def _require_destination(self, payload: dict[str, object]) -> NotificationDestination:
         value = payload.get("destination")

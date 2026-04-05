@@ -1,8 +1,8 @@
-"""recreate initial schema with admin operations channel
+"""recreate initial schema with season completed outbox event
 
-Revision ID: b4a22db3a894
+Revision ID: 6dd52eaf4e31
 Revises: 
-Create Date: 2026-04-05 12:06:43.234771
+Create Date: 2026-04-05 13:40:23.926648
 """
 
 from collections.abc import Sequence
@@ -13,7 +13,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = 'b4a22db3a894'
+revision: str = '6dd52eaf4e31'
 down_revision: str | None = None
 branch_labels: Sequence[str] | None = None
 depends_on: Sequence[str] | None = None
@@ -35,7 +35,7 @@ def upgrade() -> None:
     op.create_index(op.f('ix_managed_ui_channels_ui_type'), 'managed_ui_channels', ['ui_type'], unique=False)
     op.create_table('outbox_events',
     sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
-    sa.Column('event_type', sa.Enum('presence_reminder', 'queue_expired', 'match_created', 'match_parent_assigned', 'match_report_opened', 'match_approval_requested', 'match_finalized', 'match_admin_review_required', 'admin_operations_notification', name='outbox_event_type', native_enum=False, create_constraint=True), nullable=False),
+    sa.Column('event_type', sa.Enum('presence_reminder', 'queue_expired', 'match_created', 'match_parent_assigned', 'match_report_opened', 'match_approval_requested', 'match_finalized', 'match_admin_review_required', 'season_completed', 'admin_operations_notification', name='outbox_event_type', native_enum=False, create_constraint=True), nullable=False),
     sa.Column('dedupe_key', sa.String(length=255), nullable=False),
     sa.Column('payload', sa.JSON(), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),

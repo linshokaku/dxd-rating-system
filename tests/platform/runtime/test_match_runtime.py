@@ -3661,6 +3661,49 @@ def test_discord_outbox_publisher_renders_daily_worker_started_admin_notificatio
     assert channel.sent_messages == [expected_message]
 
 
+def test_discord_outbox_publisher_renders_season_completed_notification() -> None:
+    channel = FakeDiscordChannel(
+        id=900_026,
+        guild=FakeDiscordGuild(id=910_026),
+    )
+    client = FakeDiscordClient(channels={channel.id: channel})
+    publisher = DiscordOutboxEventPublisher(client=client)
+
+    expected_message = "\n".join(
+        [
+            "シーズンの全試合が完了しました。",
+            "season_id: 12",
+            "season_name: 202603delta",
+            "完了時刻: 2026-04-05 09:00 JST",
+        ]
+    )
+
+    async def scenario() -> None:
+        await publish_with_bound_loop(
+            publisher,
+            PendingOutboxEvent(
+                id=11,
+                event_type=OutboxEventType.SEASON_COMPLETED,
+                dedupe_key="season_completed:12",
+                payload={
+                    "season_id": 12,
+                    "season_name": "202603delta",
+                    "completed_at": "2026-04-05T00:00:00+00:00",
+                    "destination": {
+                        "kind": "channel",
+                        "channel_id": channel.id,
+                        "guild_id": None,
+                    },
+                },
+                created_at=datetime.now(timezone.utc),
+            ),
+        )
+
+    asyncio.run(scenario())
+
+    assert channel.sent_messages == [expected_message]
+
+
 def test_discord_outbox_publisher_raises_for_unknown_admin_operations_notification_kind() -> None:
     channel = FakeDiscordChannel(
         id=900_025,

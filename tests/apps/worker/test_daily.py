@@ -125,3 +125,62 @@ def test_run_daily_jobs_skips_startup_notification_when_admin_operations_channel
     assert "Leaderboard snapshot maintenance completed" in caplog.text
     assert len(seasons) == 2
     assert outbox_events == []
+
+
+def test_run_daily_jobs_enqueues_season_completed_notification_for_past_season(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    session.add(
+        ManagedUiChannel(
+            ui_type=ManagedUiType.SYSTEM_ANNOUNCEMENTS_CHANNEL,
+            channel_id=901_001,
+            message_id=901_101,
+            created_by_discord_user_id=901_201,
+        )
+    )
+    past_season = Season(
+        name="past-worker-season",
+        start_at=datetime(2025, 1, 13, 15, 0, 0, tzinfo=timezone.utc),
+        end_at=datetime(2025, 2, 13, 15, 0, 0, tzinfo=timezone.utc),
+        completed=False,
+        completed_at=None,
+    )
+    session.add(past_season)
+    session.commit()
+
+    run_daily_jobs(
+        session_factory,
+        started_at=datetime(2026, 4, 5, 0, 0, 0, tzinfo=timezone.utc),
+    )
+
+    session.expire_all()
+    outbox_events = session.scalars(
+        select(OutboxEvent)
+        .where(OutboxEvent.event_type == OutboxEventType.SEASON_COMPLETED)
+        .order_by(OutboxEvent.id)
+    ).all()
+    persisted_past_season = session.get(Season, past_season.id)
+    season_completed_event = next(
+        (
+            event
+            for event in outbox_events
+            if event.dedupe_key == f"season_completed:{past_season.id}"
+        ),
+        None,
+    )
+
+    assert persisted_past_season is not None
+    assert persisted_past_season.completed is True
+    assert persisted_past_season.completed_at is not None
+    assert season_completed_event is not None
+    assert season_completed_event.payload == {
+        "season_id": past_season.id,
+        "season_name": "past-worker-season",
+        "completed_at": persisted_past_season.completed_at.isoformat(),
+        "destination": {
+            "kind": "channel",
+            "channel_id": 901_001,
+            "guild_id": None,
+        },
+    }

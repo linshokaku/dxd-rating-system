@@ -18,6 +18,7 @@ from dxd_rating.contexts.common.application.errors import (
     SeasonStateError,
 )
 from dxd_rating.contexts.players.domain import format_player_display_name
+from dxd_rating.contexts.ui.application import enqueue_season_completed_notification
 from dxd_rating.platform.db.models import (
     INITIAL_RATING,
     ActiveMatchState,
@@ -442,6 +443,10 @@ def update_season_completion(
     if season.end_at > resolved_current_time:
         return False
 
+    # Callers may update related match state in the same transaction while using autoflush=False.
+    # Flush here so the completion check sees those in-transaction changes.
+    session.flush()
+
     remaining_match_exists = session.scalar(
         select(
             exists().where(
@@ -457,6 +462,12 @@ def update_season_completion(
     season.completed = True
     season.completed_at = resolved_current_time
     session.flush()
+    enqueue_season_completed_notification(
+        session,
+        season_id=season.id,
+        season_name=season.name,
+        completed_at=resolved_current_time,
+    )
     return True
 
 

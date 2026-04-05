@@ -22,6 +22,7 @@ class OutboxEventType(StrEnum):
     MATCH_APPROVAL_REQUESTED = "match_approval_requested"
     MATCH_FINALIZED = "match_finalized"
     MATCH_ADMIN_REVIEW_REQUIRED = "match_admin_review_required"
+    SEASON_COMPLETED = "season_completed"
     ADMIN_OPERATIONS_NOTIFICATION = "admin_operations_notification"
 
 

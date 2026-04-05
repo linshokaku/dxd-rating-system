@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -11,9 +12,19 @@ from dxd_rating.contexts.seasons.application import (
     force_end_active_season,
     list_started_seasons,
     resolve_player_format_stats_for_season,
+    update_season_completion,
     update_ended_season_completions,
 )
-from dxd_rating.platform.db.models import CarryoverStatus, MatchFormat, PlayerFormatStats, Season
+from dxd_rating.platform.db.models import (
+    CarryoverStatus,
+    ManagedUiChannel,
+    ManagedUiType,
+    MatchFormat,
+    OutboxEvent,
+    OutboxEventType,
+    PlayerFormatStats,
+    Season,
+)
 
 
 def test_resolve_player_format_stats_for_season_applies_carryover_only_once(
@@ -83,6 +94,84 @@ def test_update_ended_season_completions_marks_matchless_past_season_completed(
     assert completed_season_ids == (past_season.id,)
     assert past_season.completed is True
     assert past_season.completed_at == datetime(2026, 3, 22, 0, 0, 0, tzinfo=timezone.utc)
+
+
+def test_update_season_completion_enqueues_system_announcement_notification(
+    session: Session,
+) -> None:
+    session.add(
+        ManagedUiChannel(
+            ui_type=ManagedUiType.SYSTEM_ANNOUNCEMENTS_CHANNEL,
+            channel_id=910_001,
+            message_id=910_101,
+            created_by_discord_user_id=910_201,
+        )
+    )
+    past_season = Season(
+        name="past-summary",
+        start_at=datetime(2025, 1, 13, 15, 0, 0, tzinfo=timezone.utc),
+        end_at=datetime(2025, 2, 13, 15, 0, 0, tzinfo=timezone.utc),
+        completed=False,
+        completed_at=None,
+    )
+    session.add(past_season)
+    session.flush()
+
+    updated = update_season_completion(
+        session,
+        season_id=past_season.id,
+        current_time=datetime(2026, 3, 22, 0, 0, 0, tzinfo=timezone.utc),
+    )
+
+    outbox_events = session.scalars(select(OutboxEvent).order_by(OutboxEvent.id)).all()
+
+    assert updated is True
+    assert past_season.completed is True
+    assert len(outbox_events) == 1
+    assert outbox_events[0].event_type == OutboxEventType.SEASON_COMPLETED
+    assert outbox_events[0].dedupe_key == f"season_completed:{past_season.id}"
+    assert outbox_events[0].payload == {
+        "season_id": past_season.id,
+        "season_name": "past-summary",
+        "completed_at": "2026-03-22T00:00:00+00:00",
+        "destination": {
+            "kind": "channel",
+            "channel_id": 910_001,
+            "guild_id": None,
+        },
+    }
+
+
+def test_update_season_completion_skips_notification_when_channel_is_missing(
+    session: Session,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.WARNING)
+    past_season = Season(
+        name="past-no-channel",
+        start_at=datetime(2025, 1, 13, 15, 0, 0, tzinfo=timezone.utc),
+        end_at=datetime(2025, 2, 13, 15, 0, 0, tzinfo=timezone.utc),
+        completed=False,
+        completed_at=None,
+    )
+    session.add(past_season)
+    session.flush()
+
+    updated = update_season_completion(
+        session,
+        season_id=past_season.id,
+        current_time=datetime(2026, 3, 22, 0, 0, 0, tzinfo=timezone.utc),
+    )
+
+    outbox_events = session.scalars(select(OutboxEvent).order_by(OutboxEvent.id)).all()
+
+    assert updated is True
+    assert past_season.completed is True
+    assert outbox_events == []
+    assert (
+        "Skipping season completed notification because system_announcements_channel "
+        "is not configured season_id="
+    ) in caplog.text
 
 
 def test_list_started_seasons_returns_latest_started_25_in_desc_order(

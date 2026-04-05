@@ -49,6 +49,7 @@ from dxd_rating.platform.runtime.outbox import (
 from dxd_rating.shared.constants import format_discord_user_mention, is_dummy_discord_user_id
 
 ADMIN_OPERATIONS_DAILY_WORKER_STARTED_MESSAGE = "daily worker が起動しました。"
+SEASON_COMPLETED_MESSAGE = "シーズンの全試合が完了しました。"
 JST = ZoneInfo("Asia/Tokyo")
 
 
@@ -659,6 +660,9 @@ class DiscordOutboxEventPublisher:
         if event_type == OutboxEventType.MATCH_ADMIN_REVIEW_REQUIRED:
             return self._render_match_admin_review_required_content(payload)
 
+        if event_type == OutboxEventType.SEASON_COMPLETED:
+            return self._render_season_completed_content(payload)
+
         if event_type == OutboxEventType.ADMIN_OPERATIONS_NOTIFICATION:
             return self._render_admin_operations_notification_content(payload)
 
@@ -695,6 +699,20 @@ class DiscordOutboxEventPublisher:
             [
                 ADMIN_OPERATIONS_DAILY_WORKER_STARTED_MESSAGE,
                 f"開始時刻: {localized_occurred_at:%Y-%m-%d %H:%M JST}",
+            ]
+        )
+
+    def _render_season_completed_content(self, payload: dict[str, object]) -> str:
+        season_id = self._require_payload_int(payload, "season_id")
+        season_name = self._require_payload_str(payload, "season_name")
+        completed_at = self._parse_season_completed_at(payload)
+        localized_completed_at = completed_at.astimezone(JST)
+        return "\n".join(
+            [
+                SEASON_COMPLETED_MESSAGE,
+                f"season_id: {season_id}",
+                f"season_name: {season_name}",
+                f"完了時刻: {localized_completed_at:%Y-%m-%d %H:%M JST}",
             ]
         )
 
@@ -1207,6 +1225,28 @@ class DiscordOutboxEventPublisher:
             )
         if parsed.utcoffset() != timedelta(0):
             self._raise_publish_error(f"Outbox payload 'occurred_at' must be UTC: {occurred_at!r}")
+        return parsed
+
+    def _parse_season_completed_at(
+        self,
+        payload: dict[str, object],
+    ) -> datetime:
+        completed_at = self._require_payload_str(payload, "completed_at")
+        try:
+            parsed = datetime.fromisoformat(completed_at)
+        except ValueError:
+            self._raise_publish_error(
+                f"Outbox payload 'completed_at' must be an ISO 8601 datetime: {completed_at!r}"
+            )
+
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            self._raise_publish_error(
+                f"Outbox payload 'completed_at' must be timezone-aware UTC: {completed_at!r}"
+            )
+        if parsed.utcoffset() != timedelta(0):
+            self._raise_publish_error(
+                f"Outbox payload 'completed_at' must be UTC: {completed_at!r}"
+            )
         return parsed
 
     def _require_destination(self, payload: dict[str, object]) -> NotificationDestination:

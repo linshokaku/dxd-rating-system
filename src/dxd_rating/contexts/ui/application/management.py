@@ -171,6 +171,64 @@ def enqueue_daily_worker_started_admin_operations_notification(
     return True
 
 
+def enqueue_season_completed_notification(
+    session: Session,
+    *,
+    season_id: int,
+    season_name: str,
+    completed_at: datetime,
+) -> bool:
+    if completed_at.tzinfo is None or completed_at.utcoffset() is None:
+        raise ValueError("completed_at must be timezone-aware")
+
+    system_announcements_channel = _get_managed_ui_channel_by_type(
+        session,
+        ui_type=ManagedUiType.SYSTEM_ANNOUNCEMENTS_CHANNEL,
+    )
+    if system_announcements_channel is None:
+        logger.warning(
+            "Skipping season completed notification because system_announcements_channel "
+            "is not configured season_id=%s",
+            season_id,
+        )
+        return False
+
+    payload: dict[str, Any] = {
+        "season_id": season_id,
+        "season_name": season_name,
+        "completed_at": completed_at.isoformat(),
+        "destination": {
+            "kind": "channel",
+            "channel_id": system_announcements_channel.channel_id,
+            "guild_id": None,
+        },
+    }
+    dedupe_key = f"season_completed:{season_id}"
+    inserted_event_id = session.execute(
+        pg_insert(OutboxEvent)
+        .values(
+            event_type=OutboxEventType.SEASON_COMPLETED,
+            dedupe_key=dedupe_key,
+            payload=payload,
+        )
+        .on_conflict_do_nothing(index_elements=[OutboxEvent.dedupe_key])
+        .returning(OutboxEvent.id)
+    ).scalar_one_or_none()
+
+    if inserted_event_id is None:
+        return False
+
+    session.execute(
+        select(
+            func.pg_notify(
+                OUTBOX_NOTIFY_CHANNEL,
+                str(inserted_event_id),
+            )
+        )
+    )
+    return True
+
+
 class ManagedUiService:
     def __init__(self, session_factory: sessionmaker[Session]) -> None:
         self.session_factory = session_factory

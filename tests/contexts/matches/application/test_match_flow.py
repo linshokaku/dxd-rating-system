@@ -56,6 +56,7 @@ from dxd_rating.platform.db.models import (
     PlayerFormatStats,
     PlayerPenalty,
     PlayerPenaltyAdjustment,
+    Season,
 )
 from dxd_rating.shared.constants import MATCH_PARENT_SELECTION_WINDOW, get_match_format_definition
 
@@ -1546,6 +1547,68 @@ def test_match_flow_uses_match_operation_thread_payloads_for_finalized_notificat
         admin_review_events[0].payload["match_operation_thread_parent_channel_id"]
         == matchmaking_channel.channel_id
     )
+
+
+def test_finalize_match_enqueues_season_completed_notification_when_last_match_finishes(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    create_managed_ui_channel(
+        session,
+        ui_type=ManagedUiType.SYSTEM_ANNOUNCEMENTS_CHANNEL,
+        channel_id=95_700,
+        message_id=96_700,
+    )
+    match_id, participants = create_first_match_for_format(
+        session,
+        session_factory,
+        match_format=MatchFormat.THREE_VS_THREE,
+        start_discord_user_id=60_700,
+        channel_id=91_007_00,
+        guild_id=92_007_00,
+    )
+    active_season_id = get_active_season_id(session)
+    active_season = session.get(Season, active_season_id)
+    assert active_season is not None
+    active_season.end_at = get_database_now(session) - timedelta(seconds=1)
+    session.commit()
+
+    match_service = MatchFlowService(
+        session_factory,
+        admin_discord_user_ids=frozenset({9_701, 9_702}),
+    )
+
+    finalize_match_with_result(
+        session,
+        match_service,
+        match_id=match_id,
+        participants=participants,
+        final_result=MatchResult.TEAM_A_WIN,
+    )
+
+    session.expire_all()
+    persisted_season = session.get(Season, active_season_id)
+    season_completed_events = session.scalars(
+        select(OutboxEvent)
+        .where(OutboxEvent.event_type == OutboxEventType.SEASON_COMPLETED)
+        .order_by(OutboxEvent.id)
+    ).all()
+
+    assert persisted_season is not None
+    assert persisted_season.completed is True
+    assert persisted_season.completed_at is not None
+    assert len(season_completed_events) == 1
+    assert season_completed_events[0].dedupe_key == f"season_completed:{active_season_id}"
+    assert season_completed_events[0].payload == {
+        "season_id": active_season_id,
+        "season_name": persisted_season.name,
+        "completed_at": persisted_season.completed_at.isoformat(),
+        "destination": {
+            "kind": "channel",
+            "channel_id": 95_700,
+            "guild_id": None,
+        },
+    }
 
 
 @pytest.mark.parametrize(

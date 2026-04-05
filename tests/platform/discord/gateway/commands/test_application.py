@@ -59,6 +59,7 @@ from dxd_rating.platform.db.models import (
 from dxd_rating.platform.discord.gateway.commands import BotCommandHandlers, register_app_commands
 from dxd_rating.platform.discord.ui import (
     ADMIN_CONTACT_CHANNEL_MESSAGE,
+    ADMIN_OPERATIONS_CHANNEL_MESSAGE,
     INFO_CHANNEL_LEADERBOARD_BUTTON_CUSTOM_ID,
     INFO_CHANNEL_LEADERBOARD_BUTTON_LABEL,
     INFO_CHANNEL_LEADERBOARD_SEASON_BUTTON_CUSTOM_ID,
@@ -6367,6 +6368,55 @@ def test_admin_setup_custom_ui_channel_creates_info_channel_buttons(
     assert all(button.style is discord.ButtonStyle.primary for button in info_buttons)
 
 
+def test_admin_setup_custom_ui_channel_creates_admin_operations_channel_for_super_admins(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    executor_discord_user_id = 10
+    second_super_admin_discord_user_id = 20
+    second_super_admin = FakeGuildMember(id=second_super_admin_discord_user_id)
+    guild = FakeGuild(
+        id=2_108_3,
+        members={second_super_admin_discord_user_id: second_super_admin},
+    )
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset(
+            {executor_discord_user_id, second_super_admin_discord_user_id}
+        ),
+    )
+    interaction = FakeInteraction(
+        user=FakeUser(id=executor_discord_user_id),
+        guild_id=guild.id,
+        guild=guild,
+    )
+
+    asyncio.run(
+        handlers.admin_setup_custom_ui_channel(
+            as_interaction(interaction),
+            ManagedUiType.ADMIN_OPERATIONS_CHANNEL.value,
+            "運営専用",
+        )
+    )
+
+    session.expire_all()
+    managed_ui_channel = session.scalar(select(ManagedUiChannel))
+    persisted_channel = guild.channels[0]
+    persisted_message = persisted_channel.sent_messages[0]
+
+    assert_response(interaction, ["UI 設置チャンネルを作成しました。"], ephemeral=True)
+    assert managed_ui_channel is not None
+    assert managed_ui_channel.ui_type == ManagedUiType.ADMIN_OPERATIONS_CHANNEL
+    assert managed_ui_channel.channel_id == persisted_channel.id
+    assert managed_ui_channel.message_id == persisted_message.id
+    assert persisted_channel.overwrites[guild.default_role].view_channel is False
+    assert persisted_channel.overwrites[interaction.user].view_channel is True
+    assert persisted_channel.overwrites[interaction.user].send_messages is True
+    assert persisted_channel.overwrites[second_super_admin].view_channel is True
+    assert persisted_channel.overwrites[second_super_admin].send_messages is True
+    assert persisted_message.content == ADMIN_OPERATIONS_CHANNEL_MESSAGE
+
+
 def test_info_channel_button_creates_info_thread_via_existing_command_flow(
     session: Session,
     session_factory: sessionmaker[Session],
@@ -6797,16 +6847,32 @@ def test_admin_setup_ui_channels_creates_registered_channel_set(
     assert admin_contact_channel.overwrites[guild.default_role].send_messages is True
     assert admin_contact_channel.sent_messages[0].content == ADMIN_CONTACT_CHANNEL_MESSAGE
 
+    admin_operations_channel = find_channel_by_name(guild, "運営専用")
+    assert admin_operations_channel.overwrites[guild.default_role].view_channel is False
+    assert admin_operations_channel.overwrites[interaction.user].view_channel is True
+    assert admin_operations_channel.overwrites[interaction.user].send_messages is True
+    assert (
+        admin_operations_channel.sent_messages[0].content
+        == ADMIN_OPERATIONS_CHANNEL_MESSAGE
+    )
+
 
 def test_admin_setup_ui_channels_creates_private_channels_in_development_mode(
     session: Session,
     session_factory: sessionmaker[Session],
 ) -> None:
     executor_discord_user_id = 10
-    guild = FakeGuild(id=2_102_5_1)
+    second_super_admin_discord_user_id = 20
+    second_super_admin = FakeGuildMember(id=second_super_admin_discord_user_id)
+    guild = FakeGuild(
+        id=2_102_5_1,
+        members={second_super_admin_discord_user_id: second_super_admin},
+    )
     handlers = create_handlers(
         session_factory,
-        super_admin_user_ids=frozenset({executor_discord_user_id}),
+        super_admin_user_ids=frozenset(
+            {executor_discord_user_id, second_super_admin_discord_user_id}
+        ),
         development_mode=True,
     )
     interaction = FakeInteraction(
@@ -6849,6 +6915,12 @@ def test_admin_setup_ui_channels_creates_private_channels_in_development_mode(
     admin_contact_channel = find_channel_by_name(guild, "運営連絡・フィードバック")
     assert admin_contact_channel.overwrites[interaction.user].view_channel is True
     assert admin_contact_channel.overwrites[interaction.user].send_messages is True
+
+    admin_operations_channel = find_channel_by_name(guild, "運営専用")
+    assert admin_operations_channel.overwrites[interaction.user].view_channel is True
+    assert admin_operations_channel.overwrites[interaction.user].send_messages is True
+    assert admin_operations_channel.overwrites[second_super_admin].view_channel is True
+    assert admin_operations_channel.overwrites[second_super_admin].send_messages is True
 
 
 def test_admin_setup_ui_channels_reports_missing_manage_roles_permission(

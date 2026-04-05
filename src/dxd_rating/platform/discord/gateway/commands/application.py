@@ -1476,6 +1476,13 @@ class BotCommandHandlers:
                 return
 
             guild = self._require_guild(interaction)
+            private_channel = definition.ui_type is ManagedUiType.ADMIN_OPERATIONS_CHANNEL
+            visible_members: tuple[discord.abc.Snowflake, ...] = ()
+            if private_channel:
+                visible_members = await self._resolve_admin_operations_channel_visible_members(
+                    interaction,
+                    guild,
+                )
             if self._guild_has_channel_named(guild, channel_name):
                 await self._send_message(
                     interaction,
@@ -1502,6 +1509,8 @@ class BotCommandHandlers:
                     definition=definition,
                     channel_name=channel_name,
                     created_by_discord_user_id=interaction.user.id,
+                    private_channel=private_channel,
+                    visible_members=visible_members,
                 )
             except discord.Forbidden as exc:
                 self._log_managed_ui_forbidden(
@@ -1637,14 +1646,24 @@ class BotCommandHandlers:
 
             provisioned_channels: list[ProvisionedManagedUiChannel] = []
             for definition in missing_definitions:
+                private_channel = self.settings.development_mode
+                visible_members: tuple[discord.abc.Snowflake, ...] = ()
+                if private_channel:
+                    visible_members = (interaction.user,)
+                if definition.ui_type is ManagedUiType.ADMIN_OPERATIONS_CHANNEL:
+                    private_channel = True
+                    visible_members = await self._resolve_admin_operations_channel_visible_members(
+                        interaction,
+                        guild,
+                    )
                 try:
                     provisioned_channel = await self._provision_managed_ui_channel(
                         guild=guild,
                         definition=definition,
                         channel_name=definition.recommended_channel_name,
                         created_by_discord_user_id=interaction.user.id,
-                        private_channel=self.settings.development_mode,
-                        visible_member=interaction.user,
+                        private_channel=private_channel,
+                        visible_members=visible_members,
                     )
                 except discord.Forbidden as exc:
                     rollback_succeeded = await self._rollback_provisioned_managed_ui_channels(
@@ -4117,8 +4136,7 @@ class BotCommandHandlers:
                 member = await fetch_member(discord_user_id)
             except Exception:
                 self.logger.warning(
-                    "Failed to resolve guild member for presence thread "
-                    "discord_user_id=%s guild_id=%s",
+                    "Failed to resolve guild member discord_user_id=%s guild_id=%s",
                     discord_user_id,
                     guild.id,
                 )
@@ -4126,6 +4144,18 @@ class BotCommandHandlers:
                 return cast(DiscordUserLike, member)
 
         return None
+
+    async def _resolve_admin_operations_channel_visible_members(
+        self,
+        interaction: discord.Interaction[Any],
+        guild: discord.Guild,
+    ) -> tuple[discord.abc.Snowflake, ...]:
+        return tuple(
+            cast(discord.abc.Snowflake, user)
+            for user in self._dedupe_discord_users(
+                await self._resolve_admin_presence_thread_users(interaction, guild)
+            )
+        )
 
     def _dedupe_discord_users(
         self,
@@ -4155,7 +4185,7 @@ class BotCommandHandlers:
         channel_name: str,
         created_by_discord_user_id: int,
         private_channel: bool = False,
-        visible_member: discord.abc.Snowflake | None = None,
+        visible_members: Sequence[discord.abc.Snowflake] = (),
     ) -> ProvisionedManagedUiChannel:
         registered_player_role = None
         if definition.requires_registered_player_role:
@@ -4170,7 +4200,7 @@ class BotCommandHandlers:
                     definition.ui_type,
                     registered_player_role=registered_player_role,
                     private_channel=private_channel,
-                    visible_member=visible_member,
+                    visible_members=visible_members,
                 ),
             ),
             reason=f"Create managed UI channel for {definition.ui_type.value}",

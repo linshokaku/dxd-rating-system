@@ -19,6 +19,7 @@ class ManagedUiType(StrEnum):
     INFO_CHANNEL = "info_channel"
     SYSTEM_ANNOUNCEMENTS_CHANNEL = "system_announcements_channel"
     ADMIN_CONTACT_CHANNEL = "admin_contact_channel"
+    ADMIN_OPERATIONS_CHANNEL = "admin_operations_channel"
 
 
 class ManagedUiChannel(Base):

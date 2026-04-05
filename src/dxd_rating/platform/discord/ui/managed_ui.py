@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -71,6 +71,9 @@ INFO_CHANNEL_PLAYER_INFO_SEASON_BUTTON_CUSTOM_ID = (
 )
 SYSTEM_ANNOUNCEMENTS_CHANNEL_MESSAGE = "このチャンネルは運営からのシステムアナウンス専用です。"
 ADMIN_CONTACT_CHANNEL_MESSAGE = "運営への連絡やフィードバックはこちらへどうぞ。"
+ADMIN_OPERATIONS_CHANNEL_MESSAGE = (
+    "このチャンネルは super admin 専用の運用連絡チャンネルです。"
+)
 MAX_MANAGED_UI_CHANNEL_NAME_LENGTH = 100
 REGISTER_PANEL_FALLBACK_ERROR_MESSAGE = "登録に失敗しました。管理者に確認してください。"
 MATCHMAKING_CHANNEL_FALLBACK_ERROR_MESSAGE = "操作に失敗しました。管理者に確認してください。"
@@ -485,7 +488,7 @@ def build_managed_ui_channel_overwrites(
     *,
     registered_player_role: discord.abc.Snowflake | None = None,
     private_channel: bool = False,
-    visible_member: discord.abc.Snowflake | None = None,
+    visible_members: Sequence[discord.abc.Snowflake] = (),
 ) -> Mapping[discord.abc.Snowflake, discord.PermissionOverwrite]:
     if ui_type is ManagedUiType.REGISTER_PANEL:
         overwrites: dict[discord.abc.Snowflake, discord.PermissionOverwrite] = {
@@ -538,11 +541,24 @@ def build_managed_ui_channel_overwrites(
                 use_application_commands=not private_channel,
             )
         }
+    elif ui_type is ManagedUiType.ADMIN_OPERATIONS_CHANNEL:
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(
+                view_channel=False,
+                read_messages=False,
+                read_message_history=False,
+                send_messages=False,
+                create_public_threads=False,
+                create_private_threads=False,
+                use_application_commands=False,
+            )
+        }
     else:
         raise ValueError(f"Unsupported ui_type: {ui_type}")
 
-    if private_channel and visible_member is not None:
-        overwrites[visible_member] = _build_private_visible_overwrite(ui_type)
+    if private_channel:
+        for visible_member in visible_members:
+            overwrites[visible_member] = _build_private_visible_overwrite(ui_type)
 
     if guild.me is not None:
         overwrites[guild.me] = discord.PermissionOverwrite(
@@ -560,7 +576,10 @@ def build_managed_ui_channel_overwrites(
 
 
 def _build_private_visible_overwrite(ui_type: ManagedUiType) -> discord.PermissionOverwrite:
-    if ui_type is ManagedUiType.ADMIN_CONTACT_CHANNEL:
+    if ui_type in (
+        ManagedUiType.ADMIN_CONTACT_CHANNEL,
+        ManagedUiType.ADMIN_OPERATIONS_CHANNEL,
+    ):
         return discord.PermissionOverwrite(
             view_channel=True,
             read_messages=True,
@@ -618,5 +637,7 @@ async def send_initial_managed_ui_message(
         return await channel.send(content=SYSTEM_ANNOUNCEMENTS_CHANNEL_MESSAGE)
     if ui_type is ManagedUiType.ADMIN_CONTACT_CHANNEL:
         return await channel.send(content=ADMIN_CONTACT_CHANNEL_MESSAGE)
+    if ui_type is ManagedUiType.ADMIN_OPERATIONS_CHANNEL:
+        return await channel.send(content=ADMIN_OPERATIONS_CHANNEL_MESSAGE)
 
     raise ValueError(f"Unsupported ui_type: {ui_type}")

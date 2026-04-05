@@ -14,6 +14,7 @@ MATCHMAKING_NEWS_CHANNEL_RECOMMENDED_CHANNEL_NAME = "レート戦マッチ速報
 INFO_CHANNEL_RECOMMENDED_CHANNEL_NAME = "レート戦情報"
 SYSTEM_ANNOUNCEMENTS_CHANNEL_RECOMMENDED_CHANNEL_NAME = "レート戦アナウンス"
 ADMIN_CONTACT_CHANNEL_RECOMMENDED_CHANNEL_NAME = "運営連絡・フィードバック"
+ADMIN_OPERATIONS_CHANNEL_RECOMMENDED_CHANNEL_NAME = "運営専用"
 REGISTERED_PLAYER_ROLE_NAME = "レート戦参加者"
 
 
@@ -69,6 +70,13 @@ MANAGED_UI_DEFINITIONS = {
         requires_registered_player_role=False,
         installs_persistent_view=False,
     ),
+    ManagedUiType.ADMIN_OPERATIONS_CHANNEL: ManagedUiDefinition(
+        ui_type=ManagedUiType.ADMIN_OPERATIONS_CHANNEL,
+        recommended_channel_name=ADMIN_OPERATIONS_CHANNEL_RECOMMENDED_CHANNEL_NAME,
+        singleton=True,
+        requires_registered_player_role=False,
+        installs_persistent_view=False,
+    ),
 }
 REQUIRED_MANAGED_UI_TYPES = (
     ManagedUiType.REGISTER_PANEL,
@@ -77,6 +85,7 @@ REQUIRED_MANAGED_UI_TYPES = (
     ManagedUiType.INFO_CHANNEL,
     ManagedUiType.SYSTEM_ANNOUNCEMENTS_CHANNEL,
     ManagedUiType.ADMIN_CONTACT_CHANNEL,
+    ManagedUiType.ADMIN_OPERATIONS_CHANNEL,
 )
 
 

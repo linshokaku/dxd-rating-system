@@ -128,7 +128,7 @@ def test_setup_hook_skips_managed_channels_without_persistent_view(
     )
     session.add(
         ManagedUiChannel(
-            ui_type=ManagedUiType.ADMIN_CONTACT_CHANNEL,
+            ui_type=ManagedUiType.ADMIN_OPERATIONS_CHANNEL,
             channel_id=1002,
             message_id=2002,
             created_by_discord_user_id=3002,

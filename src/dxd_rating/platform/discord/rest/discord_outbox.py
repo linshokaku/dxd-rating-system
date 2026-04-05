@@ -50,6 +50,7 @@ from dxd_rating.shared.constants import format_discord_user_mention, is_dummy_di
 
 ADMIN_OPERATIONS_DAILY_WORKER_STARTED_MESSAGE = "daily worker が起動しました。"
 SEASON_COMPLETED_MESSAGE = "シーズンの全試合が完了しました。"
+SEASON_TOP_RANKINGS_MESSAGE = "シーズン最終順位表"
 JST = ZoneInfo("Asia/Tokyo")
 
 
@@ -128,6 +129,13 @@ class ResolvedNotification:
 @dataclass(frozen=True, slots=True)
 class TeamRatingEntry:
     discord_user_id: int
+    rating: float
+
+
+@dataclass(frozen=True, slots=True)
+class SeasonTopRankingEntry:
+    rank: int
+    display_name: str
     rating: float
 
 
@@ -663,6 +671,9 @@ class DiscordOutboxEventPublisher:
         if event_type == OutboxEventType.SEASON_COMPLETED:
             return self._render_season_completed_content(payload)
 
+        if event_type == OutboxEventType.SEASON_TOP_RANKINGS:
+            return self._render_season_top_rankings_content(payload)
+
         if event_type == OutboxEventType.ADMIN_OPERATIONS_NOTIFICATION:
             return self._render_admin_operations_notification_content(payload)
 
@@ -715,6 +726,38 @@ class DiscordOutboxEventPublisher:
                 f"完了時刻: {localized_completed_at:%Y-%m-%d %H:%M JST}",
             ]
         )
+
+    def _render_season_top_rankings_content(self, payload: dict[str, object]) -> str:
+        season_id = self._require_payload_int(payload, "season_id")
+        season_name = self._require_payload_str(payload, "season_name")
+        match_format = self._require_payload_str(payload, "match_format")
+        self._parse_season_completed_at(payload)
+        entries = self._get_season_top_ranking_entries(payload, "entries")
+        lines = [
+            SEASON_TOP_RANKINGS_MESSAGE,
+            f"season_id: {season_id}",
+            f"season_name: {season_name}",
+            f"match_format: {match_format}",
+        ]
+        if not entries:
+            lines.extend(
+                [
+                    "",
+                    "対象者なし",
+                ]
+            )
+            return "\n".join(lines)
+
+        lines.extend(
+            [
+                f"items: {entries[0].rank}-{entries[-1].rank}",
+                "",
+            ]
+        )
+        lines.extend(
+            f"{entry.rank} / {entry.display_name} / {entry.rating:.2f}" for entry in entries
+        )
+        return "\n".join(lines)
 
     def _render_match_created_content(self, payload: dict[str, object]) -> str:
         self._require_payload_int(payload, "match_id")
@@ -1172,6 +1215,48 @@ class DiscordOutboxEventPublisher:
             entries.append(
                 TeamRatingEntry(
                     discord_user_id=discord_user_id,
+                    rating=float(rating),
+                )
+                )
+        return entries
+
+    def _get_season_top_ranking_entries(
+        self,
+        payload: dict[str, object],
+        key: str,
+    ) -> list[SeasonTopRankingEntry]:
+        value = payload.get(key)
+        if not isinstance(value, list):
+            self._raise_publish_error(
+                f"Outbox payload '{key}' must be a list[dict[str, int | str | float]]: {value!r}"
+            )
+
+        entries: list[SeasonTopRankingEntry] = []
+        for item in value:
+            if not isinstance(item, dict):
+                self._raise_publish_error(
+                    "Outbox payload "
+                    f"'{key}' must be a list[dict[str, int | str | float]]: {value!r}"
+                )
+            rank = item.get("rank")
+            display_name = item.get("display_name")
+            rating = item.get("rating")
+            if not isinstance(rank, int) or isinstance(rank, bool):
+                self._raise_publish_error(
+                    f"Outbox payload '{key}.rank' must be an int: {rank!r}"
+                )
+            if not isinstance(display_name, str):
+                self._raise_publish_error(
+                    f"Outbox payload '{key}.display_name' must be a str: {display_name!r}"
+                )
+            if not isinstance(rating, int | float) or isinstance(rating, bool):
+                self._raise_publish_error(
+                    f"Outbox payload '{key}.rating' must be an int | float: {rating!r}"
+                )
+            entries.append(
+                SeasonTopRankingEntry(
+                    rank=rank,
+                    display_name=display_name,
                     rating=float(rating),
                 )
             )

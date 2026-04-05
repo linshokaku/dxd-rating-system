@@ -13,6 +13,7 @@ from dxd_rating.contexts.common.application import (
 from dxd_rating.contexts.leaderboard.application import (
     get_current_leaderboard_page,
     get_season_leaderboard_page,
+    get_season_top_rankings,
 )
 from dxd_rating.platform.db.models import (
     LeaderboardSnapshot,
@@ -457,6 +458,141 @@ def test_get_season_leaderboard_page_marks_has_next_page_when_more_entries_exist
     assert len(result.entries) == 20
     assert result.entries[0].rank == 1
     assert result.entries[-1].rank == 20
+
+
+def test_get_season_top_rankings_returns_top_12_entries_in_leaderboard_order(
+    session: Session,
+) -> None:
+    current_time = datetime(2026, 3, 22, 3, 15, 0, tzinfo=timezone.utc)
+    season = Season(
+        name="202601delta",
+        start_at=current_time - timedelta(days=70),
+        end_at=current_time - timedelta(days=40),
+        completed=True,
+        completed_at=current_time - timedelta(days=40),
+    )
+    session.add(season)
+    session.flush()
+    players = create_players(
+        session,
+        display_names=(
+            "Alice",
+            "Bob",
+            None,
+            "Dave",
+            "Eve",
+            "Frank",
+            "Grace",
+            "Heidi",
+            "Ivan",
+            "Judy",
+            "Ken",
+            "Leo",
+            "Mallory",
+            "NoGames",
+        ),
+        start_discord_user_id=723_456_789_012_345_600,
+    )
+    session.add_all(
+        (
+            PlayerFormatStats(
+                player_id=players[0].id,
+                season_id=season.id,
+                match_format=MatchFormat.THREE_VS_THREE,
+                rating=1700,
+                games_played=5,
+                wins=4,
+                losses=1,
+            ),
+            PlayerFormatStats(
+                player_id=players[1].id,
+                season_id=season.id,
+                match_format=MatchFormat.THREE_VS_THREE,
+                rating=1700,
+                games_played=7,
+                wins=5,
+                losses=2,
+            ),
+            PlayerFormatStats(
+                player_id=players[2].id,
+                season_id=season.id,
+                match_format=MatchFormat.THREE_VS_THREE,
+                rating=1700,
+                games_played=7,
+                wins=5,
+                losses=2,
+            ),
+            *(
+                PlayerFormatStats(
+                    player_id=player.id,
+                    season_id=season.id,
+                    match_format=MatchFormat.THREE_VS_THREE,
+                    rating=1690 - index,
+                    games_played=1,
+                    wins=1,
+                )
+                for index, player in enumerate(players[3:13], start=0)
+            ),
+            PlayerFormatStats(
+                player_id=players[13].id,
+                season_id=season.id,
+                match_format=MatchFormat.THREE_VS_THREE,
+                rating=2000,
+                games_played=0,
+            ),
+        )
+    )
+    session.flush()
+
+    result = get_season_top_rankings(
+        session,
+        season_id=season.id,
+        match_format=MatchFormat.THREE_VS_THREE,
+        current_time=current_time,
+    )
+
+    assert result.season_id == season.id
+    assert result.season_name == season.name
+    assert result.match_format == MatchFormat.THREE_VS_THREE
+    assert [(entry.rank, entry.display_name, entry.rating) for entry in result.entries] == [
+        (1, "Bob", 1700),
+        (2, str(players[2].discord_user_id), 1700),
+        (3, "Alice", 1700),
+        (4, "Dave", 1690),
+        (5, "Eve", 1689),
+        (6, "Frank", 1688),
+        (7, "Grace", 1687),
+        (8, "Heidi", 1686),
+        (9, "Ivan", 1685),
+        (10, "Judy", 1684),
+        (11, "Ken", 1683),
+        (12, "Leo", 1682),
+    ]
+
+
+def test_get_season_top_rankings_returns_empty_entries_when_no_players_ranked(
+    session: Session,
+) -> None:
+    current_time = datetime(2026, 3, 22, 3, 15, 0, tzinfo=timezone.utc)
+    season = Season(
+        name="202601delta",
+        start_at=current_time - timedelta(days=70),
+        end_at=current_time - timedelta(days=40),
+        completed=True,
+        completed_at=current_time - timedelta(days=40),
+    )
+    session.add(season)
+    session.flush()
+
+    result = get_season_top_rankings(
+        session,
+        season_id=season.id,
+        match_format=MatchFormat.THREE_VS_THREE,
+        current_time=current_time,
+    )
+
+    assert result.season_id == season.id
+    assert result.entries == ()
 
 
 def test_get_season_leaderboard_page_rejects_upcoming_season(session: Session) -> None:

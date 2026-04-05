@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from dxd_rating.platform.db.models import (
     ManagedUiChannel,
     ManagedUiType,
+    MatchFormat,
     OutboxEvent,
     OutboxEventType,
 )
@@ -39,6 +40,19 @@ class ManagedUiDefinition:
     singleton: bool
     requires_registered_player_role: bool
     installs_persistent_view: bool
+
+
+@dataclass(frozen=True, slots=True)
+class SeasonTopRankingEntryPayload:
+    rank: int
+    display_name: str
+    rating: float
+
+
+@dataclass(frozen=True, slots=True)
+class SeasonTopRankingsNotification:
+    match_format: MatchFormat
+    entries: tuple[SeasonTopRankingEntryPayload, ...]
 
 
 MANAGED_UI_DEFINITIONS = {
@@ -146,28 +160,17 @@ def enqueue_daily_worker_started_admin_operations_notification(
         f"{ADMIN_OPERATIONS_NOTIFICATION_WORKER_NAME_DAILY_WORKER}:"
         f"{occurred_at.isoformat()}"
     )
-    inserted_event_id = session.execute(
-        pg_insert(OutboxEvent)
-        .values(
-            event_type=OutboxEventType.ADMIN_OPERATIONS_NOTIFICATION,
-            dedupe_key=dedupe_key,
-            payload=payload,
-        )
-        .on_conflict_do_nothing(index_elements=[OutboxEvent.dedupe_key])
-        .returning(OutboxEvent.id)
-    ).scalar_one_or_none()
+    inserted_event_id = _insert_outbox_event(
+        session,
+        event_type=OutboxEventType.ADMIN_OPERATIONS_NOTIFICATION,
+        dedupe_key=dedupe_key,
+        payload=payload,
+    )
 
     if inserted_event_id is None:
         return False
 
-    session.execute(
-        select(
-            func.pg_notify(
-                OUTBOX_NOTIFY_CHANNEL,
-                str(inserted_event_id),
-            )
-        )
-    )
+    _notify_outbox(session, inserted_event_id)
     return True
 
 
@@ -204,29 +207,94 @@ def enqueue_season_completed_notification(
         },
     }
     dedupe_key = f"season_completed:{season_id}"
-    inserted_event_id = session.execute(
-        pg_insert(OutboxEvent)
-        .values(
-            event_type=OutboxEventType.SEASON_COMPLETED,
-            dedupe_key=dedupe_key,
-            payload=payload,
-        )
-        .on_conflict_do_nothing(index_elements=[OutboxEvent.dedupe_key])
-        .returning(OutboxEvent.id)
-    ).scalar_one_or_none()
+    inserted_event_id = _insert_outbox_event(
+        session,
+        event_type=OutboxEventType.SEASON_COMPLETED,
+        dedupe_key=dedupe_key,
+        payload=payload,
+    )
 
     if inserted_event_id is None:
         return False
 
-    session.execute(
-        select(
-            func.pg_notify(
-                OUTBOX_NOTIFY_CHANNEL,
-                str(inserted_event_id),
-            )
-        )
-    )
+    _notify_outbox(session, inserted_event_id)
     return True
+
+
+def enqueue_season_completion_notifications(
+    session: Session,
+    *,
+    season_id: int,
+    season_name: str,
+    completed_at: datetime,
+    top_rankings: tuple[SeasonTopRankingsNotification, ...],
+) -> bool:
+    if completed_at.tzinfo is None or completed_at.utcoffset() is None:
+        raise ValueError("completed_at must be timezone-aware")
+
+    system_announcements_channel = _get_managed_ui_channel_by_type(
+        session,
+        ui_type=ManagedUiType.SYSTEM_ANNOUNCEMENTS_CHANNEL,
+    )
+    if system_announcements_channel is None:
+        logger.warning(
+            "Skipping season completion notifications because system_announcements_channel "
+            "is not configured season_id=%s",
+            season_id,
+        )
+        return False
+
+    destination = {
+        "kind": "channel",
+        "channel_id": system_announcements_channel.channel_id,
+        "guild_id": None,
+    }
+    event_ids: list[int] = []
+
+    inserted_season_completed_event_id = _insert_outbox_event(
+        session,
+        event_type=OutboxEventType.SEASON_COMPLETED,
+        dedupe_key=f"season_completed:{season_id}",
+        payload={
+            "season_id": season_id,
+            "season_name": season_name,
+            "completed_at": completed_at.isoformat(),
+            "destination": destination,
+        },
+    )
+    if inserted_season_completed_event_id is not None:
+        event_ids.append(inserted_season_completed_event_id)
+
+    for season_top_rankings in top_rankings:
+        inserted_event_id = _insert_outbox_event(
+            session,
+            event_type=OutboxEventType.SEASON_TOP_RANKINGS,
+            dedupe_key=(
+                "season_top_rankings:"
+                f"{season_id}:{season_top_rankings.match_format.value}"
+            ),
+            payload={
+                "season_id": season_id,
+                "season_name": season_name,
+                "completed_at": completed_at.isoformat(),
+                "match_format": season_top_rankings.match_format.value,
+                "entries": [
+                    {
+                        "rank": entry.rank,
+                        "display_name": entry.display_name,
+                        "rating": entry.rating,
+                    }
+                    for entry in season_top_rankings.entries
+                ],
+                "destination": destination,
+            },
+        )
+        if inserted_event_id is not None:
+            event_ids.append(inserted_event_id)
+
+    for event_id in event_ids:
+        _notify_outbox(session, event_id)
+    return bool(event_ids)
 
 
 class ManagedUiService:
@@ -318,3 +386,33 @@ def _delete_managed_ui_channels_by_channel_ids(
         .returning(ManagedUiChannel.channel_id)
     ).all()
     return len(deleted_channel_ids)
+
+
+def _insert_outbox_event(
+    session: Session,
+    *,
+    event_type: OutboxEventType,
+    dedupe_key: str,
+    payload: dict[str, Any],
+) -> int | None:
+    return session.execute(
+        pg_insert(OutboxEvent)
+        .values(
+            event_type=event_type,
+            dedupe_key=dedupe_key,
+            payload=payload,
+        )
+        .on_conflict_do_nothing(index_elements=[OutboxEvent.dedupe_key])
+        .returning(OutboxEvent.id)
+    ).scalar_one_or_none()
+
+
+def _notify_outbox(session: Session, event_id: int) -> None:
+    session.execute(
+        select(
+            func.pg_notify(
+                OUTBOX_NOTIFY_CHANNEL,
+                str(event_id),
+            )
+        )
+    )

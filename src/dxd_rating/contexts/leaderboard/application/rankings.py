@@ -29,6 +29,7 @@ from dxd_rating.platform.db.models import (
 from dxd_rating.platform.db.session import session_scope
 
 LEADERBOARD_PAGE_SIZE = 20
+SEASON_TOP_RANKING_LIMIT = 12
 INVALID_MATCH_FORMAT_MESSAGE = "指定したフォーマットは存在しません。"
 INVALID_LEADERBOARD_PAGE_MESSAGE = "page は 1 以上で指定してください。"
 LEADERBOARD_PAGE_NOT_FOUND_MESSAGE = "指定したページにはランキングがありません。"
@@ -83,6 +84,14 @@ class SeasonLeaderboardPage:
     entries: tuple[SeasonLeaderboardEntry, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class SeasonTopRankings:
+    season_id: int
+    season_name: str
+    match_format: MatchFormat
+    entries: tuple[SeasonLeaderboardEntry, ...]
+
+
 class LeaderboardService:
     def __init__(self, session_factory: sessionmaker[Session]) -> None:
         self.session_factory = session_factory
@@ -107,6 +116,21 @@ class LeaderboardService:
                 season_id=season_id,
                 match_format=match_format,
                 page=page,
+            )
+
+    def get_season_top_rankings(
+        self,
+        season_id: int,
+        match_format: MatchFormat | str,
+        *,
+        limit: int = SEASON_TOP_RANKING_LIMIT,
+    ) -> SeasonTopRankings:
+        with session_scope(self.session_factory) as session:
+            return get_season_top_rankings(
+                session,
+                season_id=season_id,
+                match_format=match_format,
+                limit=limit,
             )
 
 
@@ -235,6 +259,35 @@ def get_season_leaderboard_page(
     )
 
 
+def get_season_top_rankings(
+    session: Session,
+    *,
+    season_id: int,
+    match_format: MatchFormat | str,
+    limit: int = SEASON_TOP_RANKING_LIMIT,
+    current_time: datetime | None = None,
+) -> SeasonTopRankings:
+    resolved_current_time = get_database_now(session) if current_time is None else current_time
+    resolved_match_format = _resolve_match_format(match_format)
+    season = _resolve_started_season(
+        session,
+        season_id=season_id,
+        current_time=resolved_current_time,
+    )
+    leaderboard_rows = _query_leaderboard_rows(
+        session,
+        season_id=season.id,
+        match_format=resolved_match_format,
+        limit=limit,
+    )
+    return SeasonTopRankings(
+        season_id=season.id,
+        season_name=season.name,
+        match_format=resolved_match_format,
+        entries=_build_season_leaderboard_entries(leaderboard_rows, page_offset=0),
+    )
+
+
 def _resolve_match_format(match_format: MatchFormat | str) -> MatchFormat:
     try:
         if isinstance(match_format, MatchFormat):
@@ -269,25 +322,12 @@ def _load_season_leaderboard_rows(
         raise InvalidLeaderboardPageError(INVALID_LEADERBOARD_PAGE_MESSAGE)
 
     page_offset = (page - 1) * LEADERBOARD_PAGE_SIZE
-    leaderboard_rows = list(
-        session.execute(
-            select(PlayerFormatStats, Player)
-            .join(Player, Player.id == PlayerFormatStats.player_id)
-            .where(
-                PlayerFormatStats.season_id == season_id,
-                PlayerFormatStats.match_format == match_format,
-                PlayerFormatStats.games_played > 0,
-            )
-            .order_by(
-                PlayerFormatStats.rating.desc(),
-                PlayerFormatStats.games_played.desc(),
-                PlayerFormatStats.player_id.asc(),
-            )
-            .offset(page_offset)
-            .limit(LEADERBOARD_PAGE_SIZE + 1)
-        )
-        .tuples()
-        .all()
+    leaderboard_rows = _query_leaderboard_rows(
+        session,
+        season_id=season_id,
+        match_format=match_format,
+        offset=page_offset,
+        limit=LEADERBOARD_PAGE_SIZE + 1,
     )
     if not leaderboard_rows:
         raise LeaderboardPageNotFoundError(LEADERBOARD_PAGE_NOT_FOUND_MESSAGE)
@@ -310,7 +350,32 @@ def _load_current_leaderboard_rows(
         raise InvalidLeaderboardPageError(INVALID_LEADERBOARD_PAGE_MESSAGE)
 
     page_offset = (page - 1) * LEADERBOARD_PAGE_SIZE
-    leaderboard_rows = list(
+    leaderboard_rows = _query_leaderboard_rows(
+        session,
+        season_id=season_id,
+        match_format=match_format,
+        offset=page_offset,
+        limit=LEADERBOARD_PAGE_SIZE + 1,
+    )
+    if not leaderboard_rows:
+        raise LeaderboardPageNotFoundError(LEADERBOARD_PAGE_NOT_FOUND_MESSAGE)
+
+    has_next_page = len(leaderboard_rows) > LEADERBOARD_PAGE_SIZE
+    if has_next_page:
+        leaderboard_rows = leaderboard_rows[:LEADERBOARD_PAGE_SIZE]
+
+    return page_offset, leaderboard_rows, has_next_page
+
+
+def _query_leaderboard_rows(
+    session: Session,
+    *,
+    season_id: int,
+    match_format: MatchFormat,
+    limit: int,
+    offset: int = 0,
+) -> list[tuple[PlayerFormatStats, Player]]:
+    return list(
         session.execute(
             select(PlayerFormatStats, Player)
             .join(Player, Player.id == PlayerFormatStats.player_id)
@@ -324,20 +389,31 @@ def _load_current_leaderboard_rows(
                 PlayerFormatStats.games_played.desc(),
                 PlayerFormatStats.player_id.asc(),
             )
-            .offset(page_offset)
-            .limit(LEADERBOARD_PAGE_SIZE + 1)
+            .offset(offset)
+            .limit(limit)
         )
         .tuples()
         .all()
     )
-    if not leaderboard_rows:
-        raise LeaderboardPageNotFoundError(LEADERBOARD_PAGE_NOT_FOUND_MESSAGE)
 
-    has_next_page = len(leaderboard_rows) > LEADERBOARD_PAGE_SIZE
-    if has_next_page:
-        leaderboard_rows = leaderboard_rows[:LEADERBOARD_PAGE_SIZE]
 
-    return page_offset, leaderboard_rows, has_next_page
+def _build_season_leaderboard_entries(
+    leaderboard_rows: list[tuple[PlayerFormatStats, Player]],
+    *,
+    page_offset: int,
+) -> tuple[SeasonLeaderboardEntry, ...]:
+    return tuple(
+        SeasonLeaderboardEntry(
+            rank=page_offset + index,
+            display_name=_resolve_display_name(player),
+            rating=format_stats.rating,
+            games_played=format_stats.games_played,
+            wins=format_stats.wins,
+            losses=format_stats.losses,
+            draws=format_stats.draws,
+        )
+        for index, (format_stats, player) in enumerate(leaderboard_rows, start=1)
+    )
 
 
 def _resolve_display_name(player: Player) -> str:

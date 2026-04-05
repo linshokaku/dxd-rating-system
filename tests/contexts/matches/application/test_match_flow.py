@@ -1588,18 +1588,30 @@ def test_finalize_match_enqueues_season_completed_notification_when_last_match_f
 
     session.expire_all()
     persisted_season = session.get(Season, active_season_id)
-    season_completed_events = session.scalars(
+    season_notification_events = session.scalars(
         select(OutboxEvent)
-        .where(OutboxEvent.event_type == OutboxEventType.SEASON_COMPLETED)
+        .where(
+            OutboxEvent.event_type.in_(
+                [
+                    OutboxEventType.SEASON_COMPLETED,
+                    OutboxEventType.SEASON_TOP_RANKINGS,
+                ]
+            )
+        )
         .order_by(OutboxEvent.id)
     ).all()
 
     assert persisted_season is not None
     assert persisted_season.completed is True
     assert persisted_season.completed_at is not None
-    assert len(season_completed_events) == 1
-    assert season_completed_events[0].dedupe_key == f"season_completed:{active_season_id}"
-    assert season_completed_events[0].payload == {
+    assert [event.event_type for event in season_notification_events] == [
+        OutboxEventType.SEASON_COMPLETED,
+        OutboxEventType.SEASON_TOP_RANKINGS,
+        OutboxEventType.SEASON_TOP_RANKINGS,
+        OutboxEventType.SEASON_TOP_RANKINGS,
+    ]
+    assert season_notification_events[0].dedupe_key == f"season_completed:{active_season_id}"
+    assert season_notification_events[0].payload == {
         "season_id": active_season_id,
         "season_name": persisted_season.name,
         "completed_at": persisted_season.completed_at.isoformat(),
@@ -1609,6 +1621,11 @@ def test_finalize_match_enqueues_season_completed_notification_when_last_match_f
             "guild_id": None,
         },
     }
+    assert [event.payload["match_format"] for event in season_notification_events[1:]] == [
+        "1v1",
+        "2v2",
+        "3v3",
+    ]
 
 
 @pytest.mark.parametrize(

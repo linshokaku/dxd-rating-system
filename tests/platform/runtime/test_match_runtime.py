@@ -3704,6 +3704,113 @@ def test_discord_outbox_publisher_renders_season_completed_notification() -> Non
     assert channel.sent_messages == [expected_message]
 
 
+def test_discord_outbox_publisher_renders_season_top_rankings_notification() -> None:
+    channel = FakeDiscordChannel(
+        id=900_027,
+        guild=FakeDiscordGuild(id=910_027),
+    )
+    client = FakeDiscordClient(channels={channel.id: channel})
+    publisher = DiscordOutboxEventPublisher(client=client)
+
+    expected_message = "\n".join(
+        [
+            "シーズン最終順位表",
+            "season_id: 12",
+            "season_name: 202603delta",
+            "match_format: 3v3",
+            "items: 1-2",
+            "",
+            "1 / Bob / 1610.00",
+            "2 / Alice / 1600.00",
+        ]
+    )
+
+    async def scenario() -> None:
+        await publish_with_bound_loop(
+            publisher,
+            PendingOutboxEvent(
+                id=12,
+                event_type=OutboxEventType.SEASON_TOP_RANKINGS,
+                dedupe_key="season_top_rankings:12:3v3",
+                payload={
+                    "season_id": 12,
+                    "season_name": "202603delta",
+                    "completed_at": "2026-04-05T00:00:00+00:00",
+                    "match_format": "3v3",
+                    "entries": [
+                        {
+                            "rank": 1,
+                            "display_name": "Bob",
+                            "rating": 1610,
+                        },
+                        {
+                            "rank": 2,
+                            "display_name": "Alice",
+                            "rating": 1600,
+                        },
+                    ],
+                    "destination": {
+                        "kind": "channel",
+                        "channel_id": channel.id,
+                        "guild_id": None,
+                    },
+                },
+                created_at=datetime.now(timezone.utc),
+            ),
+        )
+
+    asyncio.run(scenario())
+
+    assert channel.sent_messages == [expected_message]
+
+
+def test_discord_outbox_publisher_renders_empty_season_top_rankings_notification() -> None:
+    channel = FakeDiscordChannel(
+        id=900_028,
+        guild=FakeDiscordGuild(id=910_028),
+    )
+    client = FakeDiscordClient(channels={channel.id: channel})
+    publisher = DiscordOutboxEventPublisher(client=client)
+
+    expected_message = "\n".join(
+        [
+            "シーズン最終順位表",
+            "season_id: 12",
+            "season_name: 202603delta",
+            "match_format: 1v1",
+            "",
+            "対象者なし",
+        ]
+    )
+
+    async def scenario() -> None:
+        await publish_with_bound_loop(
+            publisher,
+            PendingOutboxEvent(
+                id=13,
+                event_type=OutboxEventType.SEASON_TOP_RANKINGS,
+                dedupe_key="season_top_rankings:12:1v1",
+                payload={
+                    "season_id": 12,
+                    "season_name": "202603delta",
+                    "completed_at": "2026-04-05T00:00:00+00:00",
+                    "match_format": "1v1",
+                    "entries": [],
+                    "destination": {
+                        "kind": "channel",
+                        "channel_id": channel.id,
+                        "guild_id": None,
+                    },
+                },
+                created_at=datetime.now(timezone.utc),
+            ),
+        )
+
+    asyncio.run(scenario())
+
+    assert channel.sent_messages == [expected_message]
+
+
 def test_discord_outbox_publisher_raises_for_unknown_admin_operations_notification_kind() -> None:
     channel = FakeDiscordChannel(
         id=900_025,

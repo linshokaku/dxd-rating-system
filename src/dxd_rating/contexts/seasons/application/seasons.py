@@ -18,7 +18,11 @@ from dxd_rating.contexts.common.application.errors import (
     SeasonStateError,
 )
 from dxd_rating.contexts.players.domain import format_player_display_name
-from dxd_rating.contexts.ui.application import enqueue_season_completed_notification
+from dxd_rating.contexts.ui.application import (
+    SeasonTopRankingEntryPayload,
+    SeasonTopRankingsNotification,
+    enqueue_season_completion_notifications,
+)
 from dxd_rating.platform.db.models import (
     INITIAL_RATING,
     ActiveMatchState,
@@ -462,11 +466,16 @@ def update_season_completion(
     season.completed = True
     season.completed_at = resolved_current_time
     session.flush()
-    enqueue_season_completed_notification(
+    enqueue_season_completion_notifications(
         session,
         season_id=season.id,
         season_name=season.name,
         completed_at=resolved_current_time,
+        top_rankings=_build_season_top_rankings_notifications(
+            session,
+            season_id=season.id,
+            current_time=resolved_current_time,
+        ),
     )
     return True
 
@@ -513,6 +522,38 @@ def resolve_active_season_window(current_time: datetime) -> tuple[datetime, date
     end_year, end_month = _shift_month(start_at_jst.year, start_at_jst.month, 1)
     end_at_jst = datetime(end_year, end_month, SEASON_BOUNDARY_DAY, tzinfo=JST)
     return start_at_jst.astimezone(UTC), end_at_jst.astimezone(UTC)
+
+
+def _build_season_top_rankings_notifications(
+    session: Session,
+    *,
+    season_id: int,
+    current_time: datetime,
+) -> tuple[SeasonTopRankingsNotification, ...]:
+    from dxd_rating.contexts.leaderboard.application import get_season_top_rankings
+
+    notifications: list[SeasonTopRankingsNotification] = []
+    for match_format_definition in get_match_format_definitions():
+        rankings = get_season_top_rankings(
+            session,
+            season_id=season_id,
+            match_format=match_format_definition.match_format,
+            current_time=current_time,
+        )
+        notifications.append(
+            SeasonTopRankingsNotification(
+                match_format=rankings.match_format,
+                entries=tuple(
+                    SeasonTopRankingEntryPayload(
+                        rank=entry.rank,
+                        display_name=entry.display_name,
+                        rating=entry.rating,
+                    )
+                    for entry in rankings.entries
+                ),
+            )
+        )
+    return tuple(notifications)
 
 
 def resolve_next_season_window(start_at: datetime) -> tuple[datetime, datetime]:

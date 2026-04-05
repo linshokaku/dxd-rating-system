@@ -156,25 +156,28 @@ def test_run_daily_jobs_enqueues_season_completed_notification_for_past_season(
 
     session.expire_all()
     outbox_events = session.scalars(
-        select(OutboxEvent)
-        .where(OutboxEvent.event_type == OutboxEventType.SEASON_COMPLETED)
-        .order_by(OutboxEvent.id)
+        select(OutboxEvent).order_by(OutboxEvent.id)
     ).all()
     persisted_past_season = session.get(Season, past_season.id)
-    season_completed_event = next(
-        (
-            event
-            for event in outbox_events
-            if event.dedupe_key == f"season_completed:{past_season.id}"
-        ),
-        None,
-    )
+    target_events = [
+        event
+        for event in outbox_events
+        if event.dedupe_key == f"season_completed:{past_season.id}"
+        or event.dedupe_key == f"season_top_rankings:{past_season.id}:1v1"
+        or event.dedupe_key == f"season_top_rankings:{past_season.id}:2v2"
+        or event.dedupe_key == f"season_top_rankings:{past_season.id}:3v3"
+    ]
 
     assert persisted_past_season is not None
     assert persisted_past_season.completed is True
     assert persisted_past_season.completed_at is not None
-    assert season_completed_event is not None
-    assert season_completed_event.payload == {
+    assert [event.event_type for event in target_events] == [
+        OutboxEventType.SEASON_COMPLETED,
+        OutboxEventType.SEASON_TOP_RANKINGS,
+        OutboxEventType.SEASON_TOP_RANKINGS,
+        OutboxEventType.SEASON_TOP_RANKINGS,
+    ]
+    assert target_events[0].payload == {
         "season_id": past_season.id,
         "season_name": "past-worker-season",
         "completed_at": persisted_past_season.completed_at.isoformat(),
@@ -184,3 +187,5 @@ def test_run_daily_jobs_enqueues_season_completed_notification_for_past_season(
             "guild_id": None,
         },
     }
+    assert [event.payload["match_format"] for event in target_events[1:]] == ["1v1", "2v2", "3v3"]
+    assert [event.payload["entries"] for event in target_events[1:]] == [[], [], []]

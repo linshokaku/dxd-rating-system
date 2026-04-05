@@ -200,23 +200,43 @@ Team B
 
 ### `season_completed`
 
-- `season_completed` は、1 シーズンについて「そのシーズン所属の全試合が完了した」ことを表す公開通知 1 件を表す。
+- `season_completed` は、1 シーズンの完了時に送る公開通知群を表す。
 - `season_completed` は、`update_season_completion` が実際に `True` を返したときだけ作成する。
 - 試合 finalize 経由でも日次 worker 経由でも、発火条件は `update_season_completion` の完了遷移に統一する。
-- 同一 `season_id` の `season_completed` は 1 回だけ送る前提とし、重複 enqueue を避ける。
+- 同一 `season_id` の `season_completed` 通知群は 1 回だけ送る前提とし、重複 enqueue を避ける。
 - service 層または worker は、通知先の `system_announcements_channel` が解決できた場合だけ event を作成する。
 - 通知先チャンネルが解決できない場合でも、シーズン完了処理自体は成功扱いのまま継続し、通知だけを warning ログでスキップしてよい。
+- `season_completed` では新しい event type を増やさず、`notification_kind` でメッセージ種別を分ける。
+- `notification_kind` は少なくとも以下を持つ。
+  - `summary`
+  - `top_rankings`
+- 1 outbox event = 1 Discord メッセージの原則を維持する。
+- 1 シーズン完了あたり、`summary` を 1 件、その後に `top_rankings` を `1v1`、`2v2`、`3v3` で各 1 件 enqueue する。
+- 投稿順は `summary` -> `1v1` -> `2v2` -> `3v3` の固定順とし、形式順は `MATCH_FORMAT_DEFINITIONS` に従う。
 - payload には、その時点の送信先スナップショットを含める。
 - 送信先は payload 内の `destination.channel_id`
-- payload は少なくとも以下を含む。
+- payload 共通項目は少なくとも以下を含む。
+  - `notification_kind`
   - `season_id`
   - `season_name`
   - `completed_at`
   - `destination`
-- メッセージは、該当シーズンの全試合が完了したことが分かる簡潔なプレーンテキストとする。
-- メッセージには、少なくとも `season_name` と `season_id` を含める。
-- `completed_at` は簡潔に表示してよい。
-- mention や button は付けない。
+- `notification_kind=summary` では、該当シーズンの全試合が完了したことが分かる簡潔なプレーンテキストを送る。
+- `notification_kind=summary` のメッセージには、少なくとも `season_name` と `season_id` を含める。
+- `notification_kind=summary` では、`completed_at` を簡潔に表示してよい。
+- `notification_kind=top_rankings` では、完了したその `season_id` の `player_format_stats` を参照し、対象 `match_format` の Top 12 ランキングを送る。
+- `notification_kind=top_rankings` の payload は、共通項目に加えて少なくとも以下を含む。
+  - `match_format`
+  - `entries`
+- `entries` は最大 12 件とし、各要素は少なくとも以下を含む。
+  - `rank`
+  - `display_name`
+  - `rating`
+- `notification_kind=top_rankings` の対象プレイヤー、並び順、順位の定義は `leaderboard_season` と同じ規則を使う。
+- `notification_kind=top_rankings` の本文は簡潔形式とし、`season_id`、`season_name`、`match_format` と `順位 / ユーザー名 / rating` の Top 12 を表示する。
+- `notification_kind=top_rankings` では、`1d` / `3d` / `7d` の順位差分、ページング、button、thread は付けない。
+- 各 `match_format` のランキング対象者が 0 人でも、その形式のメッセージは省略せず、`entries=[]` を許容し、本文には `対象者なし` 相当の 1 行を含める。
+- `summary` も `top_rankings` も、mention や button は付けない。
 
 ## outbox payload の要件
 
@@ -257,9 +277,12 @@ Team B
   - `match_operation_thread_parent_channel_id` (試合運営 thread 導線を解決する payload)
   - `create_match_operation_thread` (必要なら試合運営 thread を先に作成できる payload)
 - `season_completed`
+  - `notification_kind`
   - `season_id`
   - `season_name`
   - `completed_at`
+  - `match_format` (`notification_kind=top_rankings` のみ)
+  - `entries` (`notification_kind=top_rankings` のみ)
   - `destination`
 - `admin_operations_notification`
   - `notification_kind`

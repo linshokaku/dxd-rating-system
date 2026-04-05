@@ -148,4 +148,5 @@ snapshot の詳細仕様は [snapshots.md](snapshots.md) を参照する。
 - `/leaderboard` では、本仕様で定義した `rank`、`display_name`、`rating`、`1日前`、`3日前`、`7日前` の順位差分を利用する。
 - `/leaderboard_season` では `rank`、`display_name`、`rating` を利用し、snapshot を使った順位差分表示は行わない。
 - 並び順、対象プレイヤー、ページサイズ、表示名キャッシュ利用は `/leaderboard` と `/leaderboard_season` で共通とする。
+- シーズン終了時に `レート戦アナウンス` へ送る形式別 Top 12 公開通知も、`/leaderboard_season` と同じ対象プレイヤー、並び順、順位規則を使う。
 - Discord 上の表示先は、`レート戦情報` チャンネル配下に作成するユーザーごとの private thread とする。

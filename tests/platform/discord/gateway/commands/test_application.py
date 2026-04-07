@@ -100,6 +100,24 @@ from dxd_rating.shared.constants import MATCH_FORMAT_CHOICES
 
 DEFAULT_MATCH_FORMAT = MatchFormat.THREE_VS_THREE
 DEFAULT_QUEUE_NAME = "beginner"
+DEFAULT_MATCHMAKING_GUIDE_URL = (
+    "https://github.com/linshokaku/dxd-rating-system/blob/main/docs/README.md"
+)
+
+
+def build_expected_matchmaking_guide_message(guide_url: str) -> str:
+    return "\n".join(
+        [
+            "レート戦の遊び方",
+            "下のメッセージで試合形式と階級を選んで、参加ボタンを押すとマッチングを始められます。",
+            "マッチしたら、まず試合を進める人の「親」を1人決めてください。",
+            "試合は3セットで行い、勝ったセットが多いチームの勝ちです。",
+            "勝ったセット数が同じなら引き分けです。",
+            "どちらかが2回続けて勝ったら、その時点で試合終了です。",
+            "試合が終わったら、参加した **全員** が勝敗報告をしてください。",
+            f"くわしい遊び方は [こちらから]({guide_url}) 確認できます。",
+        ]
+    )
 
 
 @dataclass(frozen=True)
@@ -232,6 +250,7 @@ class FakeMessage:
     id: int
     content: str
     view: discord.ui.View | discord.ui.LayoutView | None = None
+    suppress_embeds: bool = False
 
 
 @dataclass
@@ -255,6 +274,7 @@ class FakeThread:
         content: str | None = None,
         *,
         view: discord.ui.View | None = None,
+        suppress_embeds: bool = False,
         **_: Any,
     ) -> discord.Message:
         if self.fail_send_with is not None:
@@ -264,6 +284,7 @@ class FakeThread:
             id=self.parent.guild.next_message_id,
             content="" if content is None else content,
             view=view,
+            suppress_embeds=suppress_embeds,
         )
         self.parent.guild.next_message_id += 1
         self.sent_messages.append(message)
@@ -285,17 +306,24 @@ class FakeTextChannel:
     sent_messages: list[FakeMessage] = field(default_factory=list)
     created_threads: list[FakeThread] = field(default_factory=list)
     fail_send_with: Exception | None = None
+    fail_send_call_errors: dict[int, Exception] = field(default_factory=dict)
     fail_create_thread_with: Exception | None = None
     fail_delete_with: Exception | None = None
     deleted: bool = False
+    send_call_count: int = 0
 
     async def send(
         self,
         content: str | None = None,
         *,
         view: discord.ui.View | None = None,
+        suppress_embeds: bool = False,
         **_: Any,
     ) -> discord.Message:
+        self.send_call_count += 1
+        call_error = self.fail_send_call_errors.get(self.send_call_count)
+        if call_error is not None:
+            raise call_error
         if self.fail_send_with is not None:
             raise self.fail_send_with
 
@@ -303,6 +331,7 @@ class FakeTextChannel:
             id=self.guild.next_message_id,
             content="" if content is None else content,
             view=view,
+            suppress_embeds=suppress_embeds,
         )
         self.guild.next_message_id += 1
         self.sent_messages.append(message)
@@ -359,6 +388,7 @@ class FakeGuild:
     create_channel_error: Exception | None = None
     create_role_error: Exception | None = None
     next_channel_fail_send_with: Exception | None = None
+    next_channel_fail_send_call_errors: dict[int, Exception] = field(default_factory=dict)
     next_channel_fail_delete_with: Exception | None = None
 
     def __post_init__(self) -> None:
@@ -383,10 +413,12 @@ class FakeGuild:
             guild=self,
             overwrites={} if overwrites is None else dict(overwrites),
             fail_send_with=self.next_channel_fail_send_with,
+            fail_send_call_errors=dict(self.next_channel_fail_send_call_errors),
             fail_delete_with=self.next_channel_fail_delete_with,
         )
         self.next_channel_id += 1
         self.next_channel_fail_send_with = None
+        self.next_channel_fail_send_call_errors = {}
         self.next_channel_fail_delete_with = None
         self.channels.append(channel)
         return cast(discord.TextChannel, channel)
@@ -564,11 +596,13 @@ def create_settings(
     *,
     super_admin_user_ids: frozenset[int] = frozenset(),
     development_mode: bool = False,
+    matchmaking_guide_url: str = DEFAULT_MATCHMAKING_GUIDE_URL,
 ) -> BotSettings:
     return BotSettings.model_construct(
         discord_bot_token="discord-token",
         database_url="postgresql+psycopg://user:password@localhost:5432/dxd_rating",
         log_level="INFO",
+        matchmaking_guide_url=matchmaking_guide_url,
         development_mode=development_mode,
         super_admin_user_ids=super_admin_user_ids,
     )
@@ -579,6 +613,7 @@ def create_handlers(
     *,
     super_admin_user_ids: frozenset[int] = frozenset(),
     development_mode: bool = False,
+    matchmaking_guide_url: str = DEFAULT_MATCHMAKING_GUIDE_URL,
     matching_queue_service: MatchingQueueService | MatchRuntime | None = None,
 ) -> BotCommandHandlers:
     resolved_matching_queue_service = matching_queue_service
@@ -592,6 +627,7 @@ def create_handlers(
         settings=create_settings(
             super_admin_user_ids=super_admin_user_ids,
             development_mode=development_mode,
+            matchmaking_guide_url=matchmaking_guide_url,
         ),
         session_factory=session_factory,
         matching_queue_service=resolved_matching_queue_service,
@@ -6368,6 +6404,80 @@ def test_admin_setup_custom_ui_channel_creates_info_channel_buttons(
     assert all(button.style is discord.ButtonStyle.primary for button in info_buttons)
 
 
+def test_admin_setup_custom_ui_channel_creates_matchmaking_channel_with_guide_message(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    executor_discord_user_id = 10
+    matchmaking_guide_url = "https://example.com/guide"
+    registered_role = FakeRole(id=55_010_5, name=REGISTERED_PLAYER_ROLE_NAME)
+    guild = FakeGuild(id=2_108_05, roles=[registered_role])
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({executor_discord_user_id}),
+        matchmaking_guide_url=matchmaking_guide_url,
+    )
+    interaction = FakeInteraction(
+        user=FakeUser(id=executor_discord_user_id),
+        guild_id=guild.id,
+        guild=guild,
+    )
+
+    asyncio.run(
+        handlers.admin_setup_custom_ui_channel(
+            as_interaction(interaction),
+            ManagedUiType.MATCHMAKING_CHANNEL.value,
+            "レート戦マッチング",
+        )
+    )
+
+    session.expire_all()
+    managed_ui_channel = session.scalar(select(ManagedUiChannel))
+    persisted_channel = guild.channels[0]
+
+    assert_response(interaction, ["UI 設置チャンネルを作成しました。"], ephemeral=True)
+    assert managed_ui_channel is not None
+    assert managed_ui_channel.ui_type == ManagedUiType.MATCHMAKING_CHANNEL
+    assert managed_ui_channel.channel_id == persisted_channel.id
+    assert managed_ui_channel.message_id == persisted_channel.sent_messages[1].id
+    assert managed_ui_channel.created_by_discord_user_id == executor_discord_user_id
+    assert persisted_channel.overwrites[guild.default_role].view_channel is False
+    assert persisted_channel.overwrites[guild.default_role].send_messages is False
+    assert persisted_channel.overwrites[registered_role].view_channel is True
+    assert persisted_channel.overwrites[registered_role].send_messages is False
+    assert len(persisted_channel.sent_messages) == 2
+    assert (
+        persisted_channel.sent_messages[0].content
+        == build_expected_matchmaking_guide_message(matchmaking_guide_url)
+    )
+    assert persisted_channel.sent_messages[0].view is None
+    assert persisted_channel.sent_messages[0].suppress_embeds is True
+    assert persisted_channel.sent_messages[1].content == MATCHMAKING_CHANNEL_MESSAGE
+    assert persisted_channel.sent_messages[1].view is not None
+    assert persisted_channel.sent_messages[1].suppress_embeds is False
+    match_format_select = cast(
+        discord.ui.Select[Any],
+        persisted_channel.sent_messages[1].view.children[0],
+    )
+    queue_name_select = cast(
+        discord.ui.Select[Any],
+        persisted_channel.sent_messages[1].view.children[1],
+    )
+    join_button = cast(
+        discord.ui.Button[Any],
+        persisted_channel.sent_messages[1].view.children[2],
+    )
+    assert match_format_select.placeholder == MATCHMAKING_CHANNEL_MATCH_FORMAT_PLACEHOLDER
+    assert [option.value for option in match_format_select.options] == ["1v1", "2v2", "3v3"]
+    assert queue_name_select.placeholder == MATCHMAKING_CHANNEL_QUEUE_NAME_PLACEHOLDER
+    assert [option.value for option in queue_name_select.options] == [
+        "beginner",
+        "regular",
+        "master",
+    ]
+    assert join_button.label == MATCHMAKING_CHANNEL_JOIN_BUTTON_LABEL
+
+
 def test_admin_setup_custom_ui_channel_creates_admin_operations_channel_for_super_admins(
     session: Session,
     session_factory: sessionmaker[Session],
@@ -6555,6 +6665,40 @@ def test_admin_setup_custom_ui_channel_rolls_back_created_channel_when_ui_send_f
             as_interaction(interaction),
             ManagedUiType.REGISTER_PANEL.value,
             "レート戦はこちらから",
+        )
+    )
+
+    session.expire_all()
+
+    assert interaction.response.messages == [
+        "UI 設置チャンネルの作成に失敗しました。管理者に確認してください。"
+    ]
+    assert interaction.response.ephemeral_flags == [True]
+    assert guild.channels == []
+    assert session.scalar(select(ManagedUiChannel)) is None
+
+
+def test_admin_setup_custom_ui_channel_rolls_back_when_second_matchmaking_message_fails(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    guild = FakeGuild(
+        id=2_101_1,
+        next_channel_fail_send_call_errors={2: RuntimeError("boom")},
+    )
+    registered_role = FakeRole(id=55_010_6, name=REGISTERED_PLAYER_ROLE_NAME)
+    guild.roles.append(registered_role)
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({10}),
+    )
+    interaction = FakeInteraction(user=FakeUser(id=10), guild_id=guild.id, guild=guild)
+
+    asyncio.run(
+        handlers.admin_setup_custom_ui_channel(
+            as_interaction(interaction),
+            ManagedUiType.MATCHMAKING_CHANNEL.value,
+            "レート戦マッチング",
         )
     )
 
@@ -6774,19 +6918,27 @@ def test_admin_setup_ui_channels_creates_registered_channel_set(
     assert matchmaking_channel.overwrites[registered_role].send_messages is False
     assert matchmaking_channel.overwrites[guild.me].create_private_threads is True
     assert matchmaking_channel.overwrites[guild.me].send_messages_in_threads is True
-    assert matchmaking_channel.sent_messages[0].content == MATCHMAKING_CHANNEL_MESSAGE
-    assert matchmaking_channel.sent_messages[0].view is not None
+    assert len(matchmaking_channel.sent_messages) == 2
+    assert (
+        matchmaking_channel.sent_messages[0].content
+        == build_expected_matchmaking_guide_message(DEFAULT_MATCHMAKING_GUIDE_URL)
+    )
+    assert matchmaking_channel.sent_messages[0].view is None
+    assert matchmaking_channel.sent_messages[0].suppress_embeds is True
+    assert matchmaking_channel.sent_messages[1].content == MATCHMAKING_CHANNEL_MESSAGE
+    assert matchmaking_channel.sent_messages[1].view is not None
+    assert matchmaking_channel.sent_messages[1].suppress_embeds is False
     match_format_select = cast(
         discord.ui.Select[Any],
-        matchmaking_channel.sent_messages[0].view.children[0],
+        matchmaking_channel.sent_messages[1].view.children[0],
     )
     queue_name_select = cast(
         discord.ui.Select[Any],
-        matchmaking_channel.sent_messages[0].view.children[1],
+        matchmaking_channel.sent_messages[1].view.children[1],
     )
     join_button = cast(
         discord.ui.Button[Any],
-        matchmaking_channel.sent_messages[0].view.children[2],
+        matchmaking_channel.sent_messages[1].view.children[2],
     )
     assert match_format_select.placeholder == MATCHMAKING_CHANNEL_MATCH_FORMAT_PLACEHOLDER
     assert [option.value for option in match_format_select.options] == ["1v1", "2v2", "3v3"]

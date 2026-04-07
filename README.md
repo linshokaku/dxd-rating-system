@@ -53,6 +53,7 @@ AGENTS.md
 Bot service:
 - `DISCORD_BOT_TOKEN`
 - `DATABASE_URL`
+- `MATCHMAKING_GUIDE_URL` (必須。例: `https://github.com/linshokaku/dxd-rating-system/blob/main/docs/README.md`)
 - `DEVELOPMENT_MODE` (任意。`true` にすると Bot は開発モードで起動)
 - `SUPER_ADMIN_USER_IDS` (任意。カンマ区切りの Discord user ID。例: `123456789012345678,234567890123456789`)
 - `LOG_LEVEL` (任意。未指定時は `INFO`)

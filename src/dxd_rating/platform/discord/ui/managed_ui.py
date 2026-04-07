@@ -160,6 +160,21 @@ class MatchmakingPanelSelectionState:
     queue_name: str | None = None
 
 
+def build_matchmaking_guide_message(guide_url: str) -> str:
+    return "\n".join(
+        [
+            "レート戦の遊び方",
+            "下のメッセージで試合形式と階級を選んで、参加ボタンを押すとマッチングを始められます。",
+            "マッチしたら、まず試合を進める人の「親」を1人決めてください。",
+            "試合は3セットで行い、勝ったセットが多いチームの勝ちです。",
+            "勝ったセット数が同じなら引き分けです。",
+            "どちらかが2回続けて勝ったら、その時点で試合終了です。",
+            "試合が終わったら、参加した **全員** が勝敗報告をしてください。",
+            f"くわしい遊び方は [こちらから]({guide_url}) 確認できます。",
+        ]
+    )
+
+
 def _build_matchmaking_match_format_options() -> list[discord.SelectOption]:
     return [
         discord.SelectOption(label=definition.description, value=definition.match_format.value)
@@ -615,6 +630,7 @@ async def send_initial_managed_ui_message(
     *,
     ui_type: ManagedUiType,
     interaction_handler: ManagedUiInteractionHandler,
+    matchmaking_guide_url: str,
 ) -> discord.Message:
     if ui_type is ManagedUiType.REGISTER_PANEL:
         return await channel.send(
@@ -622,6 +638,10 @@ async def send_initial_managed_ui_message(
             view=RegisterPanelView(interaction_handler),
         )
     if ui_type is ManagedUiType.MATCHMAKING_CHANNEL:
+        await channel.send(
+            content=build_matchmaking_guide_message(matchmaking_guide_url),
+            suppress_embeds=True,
+        )
         return await channel.send(
             content=MATCHMAKING_CHANNEL_MESSAGE,
             view=MatchmakingPanelView(interaction_handler),

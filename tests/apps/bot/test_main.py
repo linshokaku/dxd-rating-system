@@ -1,11 +1,13 @@
 import asyncio
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import discord
+import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
-from dxd_rating.apps.bot.main import create_client, initialize_seasons
+from dxd_rating.apps.bot.main import create_client, initialize_seasons, load_settings
 from dxd_rating.platform.config.bot import BotSettings
 from dxd_rating.platform.db.models import ManagedUiChannel, ManagedUiType, Season
 from dxd_rating.platform.discord.ui import (
@@ -26,6 +28,10 @@ from dxd_rating.platform.discord.ui import (
     MatchOperationThreadParentButton,
     MatchOperationThreadVoidButton,
     MatchOperationThreadWinButton,
+)
+
+DEFAULT_MATCHMAKING_GUIDE_URL = (
+    "https://github.com/linshokaku/dxd-rating-system/blob/main/docs/README.md"
 )
 
 
@@ -51,6 +57,41 @@ def test_initialize_seasons_creates_active_and_upcoming_seasons(
     assert seasons[0].end_at == seasons[1].start_at
 
 
+def test_load_settings_reads_matchmaking_guide_url(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    bot_settings_dir = tmp_path / "bot-settings"
+    bot_settings_dir.mkdir()
+    monkeypatch.chdir(bot_settings_dir)
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "discord-token")
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://example")
+    monkeypatch.setenv("MATCHMAKING_GUIDE_URL", DEFAULT_MATCHMAKING_GUIDE_URL)
+
+    settings = load_settings()
+
+    assert isinstance(settings, BotSettings)
+    assert settings.matchmaking_guide_url == DEFAULT_MATCHMAKING_GUIDE_URL
+
+
+def test_load_settings_requires_matchmaking_guide_url(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    bot_settings_dir = tmp_path / "bot-settings-missing-guide-url"
+    bot_settings_dir.mkdir()
+    monkeypatch.chdir(bot_settings_dir)
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "discord-token")
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://example")
+    monkeypatch.delenv("MATCHMAKING_GUIDE_URL", raising=False)
+
+    with pytest.raises(
+        SystemExit,
+        match="Missing required environment variables: MATCHMAKING_GUIDE_URL",
+    ):
+        load_settings()
+
+
 def test_setup_hook_restores_persistent_register_panel_view(
     session: Session,
     session_factory: sessionmaker[Session],
@@ -60,6 +101,7 @@ def test_setup_hook_restores_persistent_register_panel_view(
         discord_bot_token="discord-token",
         database_url="postgresql+psycopg://user:password@localhost:5432/dxd_rating",
         log_level="INFO",
+        matchmaking_guide_url=DEFAULT_MATCHMAKING_GUIDE_URL,
         development_mode=False,
         super_admin_user_ids=frozenset(),
     )
@@ -123,6 +165,7 @@ def test_setup_hook_skips_managed_channels_without_persistent_view(
         discord_bot_token="discord-token",
         database_url="postgresql+psycopg://user:password@localhost:5432/dxd_rating",
         log_level="INFO",
+        matchmaking_guide_url=DEFAULT_MATCHMAKING_GUIDE_URL,
         development_mode=False,
         super_admin_user_ids=frozenset(),
     )

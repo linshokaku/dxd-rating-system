@@ -155,9 +155,7 @@ def test_run_daily_jobs_enqueues_season_completed_notification_for_past_season(
     )
 
     session.expire_all()
-    outbox_events = session.scalars(
-        select(OutboxEvent).order_by(OutboxEvent.id)
-    ).all()
+    outbox_events = session.scalars(select(OutboxEvent).order_by(OutboxEvent.id)).all()
     persisted_past_season = session.get(Season, past_season.id)
     target_events = [
         event

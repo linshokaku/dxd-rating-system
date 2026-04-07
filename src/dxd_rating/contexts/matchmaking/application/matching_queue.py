@@ -4,7 +4,7 @@ import logging
 import random
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, TypedDict
 
 import psycopg
@@ -174,6 +174,13 @@ class MatchingQueueNotificationContext:
     channel_id: int
     guild_id: int | None
     mention_discord_user_id: int
+
+
+@dataclass(frozen=True, slots=True)
+class MatchmakingStatusSnapshotEntry:
+    match_format: MatchFormat
+    queue_name: str
+    active_count: int
 
 
 class NotificationDestinationPayload(TypedDict, total=False):
@@ -413,6 +420,39 @@ class MatchingQueueService:
                     MatchQueueEntry.status == MatchQueueEntryStatus.WAITING,
                 )
             )
+
+    def get_matchmaking_status_snapshot(self) -> tuple[MatchmakingStatusSnapshotEntry, ...]:
+        with session_scope(self.session_factory) as session:
+            current_time = self._get_database_now(session)
+            window_start = current_time - timedelta(minutes=30)
+            joined_counts = self._count_queue_entries_by_class(
+                session,
+                joined_after=window_start,
+            )
+            left_counts = self._count_queue_entries_by_class(
+                session,
+                status=MatchQueueEntryStatus.LEFT,
+                removed_after=window_start,
+            )
+            expired_counts = self._count_queue_entries_by_class(
+                session,
+                status=MatchQueueEntryStatus.EXPIRED,
+                removed_after=window_start,
+            )
+
+        return tuple(
+            MatchmakingStatusSnapshotEntry(
+                match_format=definition.match_format,
+                queue_name=definition.queue_name,
+                active_count=max(
+                    joined_counts.get(definition.queue_class_id, 0)
+                    - left_counts.get(definition.queue_class_id, 0)
+                    - expired_counts.get(definition.queue_class_id, 0),
+                    0,
+                ),
+            )
+            for definition in self._queue_class_definitions
+        )
 
     def leave(self, player_id: int) -> LeaveQueueResult:
         result: LeaveQueueResult | None = None
@@ -1119,6 +1159,31 @@ class MatchingQueueService:
         if definition is None:
             raise ValueError(f"Unknown match_format: {match_format.value}")
         return definition
+
+    def _count_queue_entries_by_class(
+        self,
+        session: Session,
+        *,
+        joined_after: datetime | None = None,
+        status: MatchQueueEntryStatus | None = None,
+        removed_after: datetime | None = None,
+    ) -> dict[str, int]:
+        query = select(
+            MatchQueueEntry.queue_class_id,
+            func.count(MatchQueueEntry.id),
+        ).group_by(MatchQueueEntry.queue_class_id)
+
+        if joined_after is not None:
+            query = query.where(MatchQueueEntry.joined_at >= joined_after)
+        if status is not None:
+            query = query.where(MatchQueueEntry.status == status)
+        if removed_after is not None:
+            query = query.where(
+                MatchQueueEntry.removed_at.is_not(None),
+                MatchQueueEntry.removed_at >= removed_after,
+            )
+
+        return {queue_class_id: count for queue_class_id, count in session.execute(query).all()}
 
     def _raise_retryable_task_error(self, exc: Exception, *, operation: str) -> None:
         if isinstance(exc, RetryableTaskError):

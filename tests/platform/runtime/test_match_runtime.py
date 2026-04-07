@@ -40,6 +40,7 @@ from dxd_rating.contexts.matchmaking.application import (
     LeaveQueueResult,
     MatchingQueueNotificationContext,
     MatchingQueueService,
+    MatchmakingStatusSnapshotEntry,
     PresenceReminderResult,
     PresentQueueResult,
     WaitingEntryTimerState,
@@ -808,6 +809,24 @@ def test_match_runtime_leave_calls_service_and_cancels_timers(
         runtime._presence_reminder_task_key(leave_result.queue_entry_id),
         runtime._expire_task_key(leave_result.queue_entry_id),
     ]
+
+
+def test_match_runtime_get_matchmaking_status_snapshot_calls_service() -> None:
+    service = Mock()
+    snapshot = (
+        MatchmakingStatusSnapshotEntry(
+            match_format=MatchFormat.THREE_VS_THREE,
+            queue_name="beginner",
+            active_count=2,
+        ),
+    )
+    service.get_matchmaking_status_snapshot.return_value = snapshot
+    runtime = MatchRuntime(service=service)
+
+    result = asyncio.run(runtime.get_matchmaking_status_snapshot())
+
+    assert result == snapshot
+    service.get_matchmaking_status_snapshot.assert_called_once_with()
 
 
 def test_match_runtime_process_expire_calls_service_and_cancels_timers(

@@ -7,6 +7,7 @@ from typing import Any, Protocol
 
 import discord
 
+from dxd_rating.contexts.matchmaking.application import MatchmakingStatusSnapshotEntry
 from dxd_rating.contexts.ui.application import (
     InfoThreadCommandName,
     ManagedUiType,
@@ -66,20 +67,14 @@ INFO_CHANNEL_MESSAGE = "\n".join(
 INFO_CHANNEL_LEADERBOARD_BUTTON_LABEL = "現在シーズンのランキング"
 INFO_CHANNEL_LEADERBOARD_BUTTON_CUSTOM_ID = "dxd_rating:info_channel:leaderboard"
 INFO_CHANNEL_LEADERBOARD_SEASON_BUTTON_LABEL = "シーズン別ランキング"
-INFO_CHANNEL_LEADERBOARD_SEASON_BUTTON_CUSTOM_ID = (
-    "dxd_rating:info_channel:leaderboard_season"
-)
+INFO_CHANNEL_LEADERBOARD_SEASON_BUTTON_CUSTOM_ID = "dxd_rating:info_channel:leaderboard_season"
 INFO_CHANNEL_PLAYER_INFO_BUTTON_LABEL = "現在シーズンのプレイヤー情報"
 INFO_CHANNEL_PLAYER_INFO_BUTTON_CUSTOM_ID = "dxd_rating:info_channel:player_info"
 INFO_CHANNEL_PLAYER_INFO_SEASON_BUTTON_LABEL = "シーズン別プレイヤー情報"
-INFO_CHANNEL_PLAYER_INFO_SEASON_BUTTON_CUSTOM_ID = (
-    "dxd_rating:info_channel:player_info_season"
-)
+INFO_CHANNEL_PLAYER_INFO_SEASON_BUTTON_CUSTOM_ID = "dxd_rating:info_channel:player_info_season"
 SYSTEM_ANNOUNCEMENTS_CHANNEL_MESSAGE = "このチャンネルは運営からのシステムアナウンス専用です。"
 ADMIN_CONTACT_CHANNEL_MESSAGE = "運営への連絡やフィードバックはこちらへどうぞ。"
-ADMIN_OPERATIONS_CHANNEL_MESSAGE = (
-    "このチャンネルは super admin 専用の運用連絡チャンネルです。"
-)
+ADMIN_OPERATIONS_CHANNEL_MESSAGE = "このチャンネルは super admin 専用の運用連絡チャンネルです。"
 MAX_MANAGED_UI_CHANNEL_NAME_LENGTH = 100
 REGISTER_PANEL_FALLBACK_ERROR_MESSAGE = "登録に失敗しました。管理者に確認してください。"
 MATCHMAKING_CHANNEL_FALLBACK_ERROR_MESSAGE = "操作に失敗しました。管理者に確認してください。"
@@ -166,6 +161,12 @@ class MatchmakingPanelSelectionState:
     queue_name: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class InitialManagedUiMessages:
+    primary_message: discord.Message
+    status_message: discord.Message | None = None
+
+
 def build_matchmaking_guide_message(guide_url: str) -> str:
     return "\n".join(
         [
@@ -179,6 +180,16 @@ def build_matchmaking_guide_message(guide_url: str) -> str:
             f"くわしい遊び方は [こちらから]({guide_url}) 確認できます。",
         ]
     )
+
+
+def build_matchmaking_status_message(
+    snapshot: Sequence[MatchmakingStatusSnapshotEntry],
+) -> str:
+    lines = ["直近30分の参加状況"]
+    lines.extend(
+        f"{entry.match_format.value}-{entry.queue_name}: {entry.active_count}" for entry in snapshot
+    )
+    return "\n".join(lines)
 
 
 def _build_matchmaking_match_format_options() -> list[discord.SelectOption]:
@@ -637,34 +648,49 @@ async def send_initial_managed_ui_message(
     ui_type: ManagedUiType,
     interaction_handler: ManagedUiInteractionHandler,
     matchmaking_guide_url: str,
-) -> discord.Message:
+) -> InitialManagedUiMessages:
     if ui_type is ManagedUiType.REGISTER_PANEL:
-        return await channel.send(
-            content=REGISTER_PANEL_MESSAGE,
-            view=RegisterPanelView(interaction_handler),
+        return InitialManagedUiMessages(
+            primary_message=await channel.send(
+                content=REGISTER_PANEL_MESSAGE,
+                view=RegisterPanelView(interaction_handler),
+            )
         )
     if ui_type is ManagedUiType.MATCHMAKING_CHANNEL:
         await channel.send(
             content=build_matchmaking_guide_message(matchmaking_guide_url),
             suppress_embeds=True,
         )
-        await channel.send(content=MATCHMAKING_CHANNEL_STATUS_PLACEHOLDER_MESSAGE)
-        return await channel.send(
-            content=MATCHMAKING_CHANNEL_MESSAGE,
-            view=MatchmakingPanelView(interaction_handler),
+        status_message = await channel.send(content=MATCHMAKING_CHANNEL_STATUS_PLACEHOLDER_MESSAGE)
+        return InitialManagedUiMessages(
+            primary_message=await channel.send(
+                content=MATCHMAKING_CHANNEL_MESSAGE,
+                view=MatchmakingPanelView(interaction_handler),
+            ),
+            status_message=status_message,
         )
     if ui_type is ManagedUiType.MATCHMAKING_NEWS_CHANNEL:
-        return await channel.send(content=MATCHMAKING_NEWS_CHANNEL_MESSAGE)
+        return InitialManagedUiMessages(
+            primary_message=await channel.send(content=MATCHMAKING_NEWS_CHANNEL_MESSAGE)
+        )
     if ui_type is ManagedUiType.INFO_CHANNEL:
-        return await channel.send(
-            content=INFO_CHANNEL_MESSAGE,
-            view=InfoChannelView(interaction_handler),
+        return InitialManagedUiMessages(
+            primary_message=await channel.send(
+                content=INFO_CHANNEL_MESSAGE,
+                view=InfoChannelView(interaction_handler),
+            )
         )
     if ui_type is ManagedUiType.SYSTEM_ANNOUNCEMENTS_CHANNEL:
-        return await channel.send(content=SYSTEM_ANNOUNCEMENTS_CHANNEL_MESSAGE)
+        return InitialManagedUiMessages(
+            primary_message=await channel.send(content=SYSTEM_ANNOUNCEMENTS_CHANNEL_MESSAGE)
+        )
     if ui_type is ManagedUiType.ADMIN_CONTACT_CHANNEL:
-        return await channel.send(content=ADMIN_CONTACT_CHANNEL_MESSAGE)
+        return InitialManagedUiMessages(
+            primary_message=await channel.send(content=ADMIN_CONTACT_CHANNEL_MESSAGE)
+        )
     if ui_type is ManagedUiType.ADMIN_OPERATIONS_CHANNEL:
-        return await channel.send(content=ADMIN_OPERATIONS_CHANNEL_MESSAGE)
+        return InitialManagedUiMessages(
+            primary_message=await channel.send(content=ADMIN_OPERATIONS_CHANNEL_MESSAGE)
+        )
 
     raise ValueError(f"Unsupported ui_type: {ui_type}")

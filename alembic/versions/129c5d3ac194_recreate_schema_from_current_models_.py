@@ -1,8 +1,8 @@
-"""recreate schema from current models with brin queue indexes
+"""recreate schema from current models with matchmaking status message persistence
 
-Revision ID: 1d629212dd60
+Revision ID: 129c5d3ac194
 Revises: 
-Create Date: 2026-04-07 22:09:59.348957
+Create Date: 2026-04-07 22:36:27.028021
 """
 
 from collections.abc import Sequence
@@ -13,7 +13,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = '1d629212dd60'
+revision: str = '129c5d3ac194'
 down_revision: str | None = None
 branch_labels: Sequence[str] | None = None
 depends_on: Sequence[str] | None = None
@@ -26,11 +26,13 @@ def upgrade() -> None:
     sa.Column('ui_type', sa.Enum('register_panel', 'matchmaking_channel', 'matchmaking_news_channel', 'info_channel', 'system_announcements_channel', 'admin_contact_channel', 'admin_operations_channel', name='managed_ui_type', native_enum=False, create_constraint=True), nullable=False),
     sa.Column('channel_id', sa.BigInteger(), nullable=False),
     sa.Column('message_id', sa.BigInteger(), nullable=False),
+    sa.Column('status_message_id', sa.BigInteger(), nullable=True),
     sa.Column('created_by_discord_user_id', sa.BigInteger(), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('channel_id'),
-    sa.UniqueConstraint('message_id')
+    sa.UniqueConstraint('message_id'),
+    sa.UniqueConstraint('status_message_id')
     )
     op.create_index(op.f('ix_managed_ui_channels_ui_type'), 'managed_ui_channels', ['ui_type'], unique=False)
     op.create_table('outbox_events',

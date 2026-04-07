@@ -1217,7 +1217,7 @@ class DiscordOutboxEventPublisher:
                     discord_user_id=discord_user_id,
                     rating=float(rating),
                 )
-                )
+            )
         return entries
 
     def _get_season_top_ranking_entries(
@@ -1242,9 +1242,7 @@ class DiscordOutboxEventPublisher:
             display_name = item.get("display_name")
             rating = item.get("rating")
             if not isinstance(rank, int) or isinstance(rank, bool):
-                self._raise_publish_error(
-                    f"Outbox payload '{key}.rank' must be an int: {rank!r}"
-                )
+                self._raise_publish_error(f"Outbox payload '{key}.rank' must be an int: {rank!r}")
             if not isinstance(display_name, str):
                 self._raise_publish_error(
                     f"Outbox payload '{key}.display_name' must be a str: {display_name!r}"

@@ -270,8 +270,7 @@ def enqueue_season_completion_notifications(
             session,
             event_type=OutboxEventType.SEASON_TOP_RANKINGS,
             dedupe_key=(
-                "season_top_rankings:"
-                f"{season_id}:{season_top_rankings.match_format.value}"
+                f"season_top_rankings:{season_id}:{season_top_rankings.match_format.value}"
             ),
             payload={
                 "season_id": season_id,
@@ -315,6 +314,7 @@ class ManagedUiService:
         ui_type: ManagedUiType,
         channel_id: int,
         message_id: int,
+        status_message_id: int | None = None,
         created_by_discord_user_id: int,
     ) -> ManagedUiChannel:
         with session_scope(self.session_factory) as session:
@@ -323,6 +323,7 @@ class ManagedUiService:
                 ui_type=ui_type,
                 channel_id=channel_id,
                 message_id=message_id,
+                status_message_id=status_message_id,
                 created_by_discord_user_id=created_by_discord_user_id,
             )
 
@@ -362,12 +363,14 @@ def _create_managed_ui_channel(
     ui_type: ManagedUiType,
     channel_id: int,
     message_id: int,
+    status_message_id: int | None,
     created_by_discord_user_id: int,
 ) -> ManagedUiChannel:
     managed_ui_channel = ManagedUiChannel(
         ui_type=ui_type,
         channel_id=channel_id,
         message_id=message_id,
+        status_message_id=status_message_id,
         created_by_discord_user_id=created_by_discord_user_id,
     )
     session.add(managed_ui_channel)

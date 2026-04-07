@@ -51,6 +51,7 @@ from dxd_rating.shared.constants import (
     MatchQueueClassDefinition,
     get_match_queue_class_definition_by_id,
     get_match_queue_class_definition_by_name,
+    get_match_queue_class_definitions,
 )
 
 DEFAULT_MATCH_FORMAT = MatchFormat.THREE_VS_THREE
@@ -727,6 +728,70 @@ def test_leave_expires_stale_waiting_entry_without_creating_outbox_event(
     assert entries[0].status == MatchQueueEntryStatus.EXPIRED
     assert entries[0].removal_reason == MatchQueueRemovalReason.TIMEOUT
     assert get_outbox_events(session) == []
+
+
+def test_get_matchmaking_status_snapshot_counts_join_leave_expired_and_clamps_to_zero(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    service = create_matching_queue_service(session_factory)
+    now = get_database_now(session)
+    players = create_players(session, 5, start_discord_user_id=20_000)
+
+    create_queue_entry(
+        session,
+        player_id=players[0].id,
+        queue_class_id=DEFAULT_QUEUE_CLASS_ID,
+        status=MatchQueueEntryStatus.WAITING,
+        joined_at=now - timedelta(minutes=10),
+    )
+    create_queue_entry(
+        session,
+        player_id=players[1].id,
+        queue_class_id=DEFAULT_QUEUE_CLASS_ID,
+        status=MatchQueueEntryStatus.LEFT,
+        joined_at=now - timedelta(minutes=20),
+        removed_at=now - timedelta(minutes=5),
+        removal_reason=MatchQueueRemovalReason.USER_LEAVE,
+    )
+    create_queue_entry(
+        session,
+        player_id=players[2].id,
+        queue_class_id=DEFAULT_QUEUE_CLASS_ID,
+        status=MatchQueueEntryStatus.EXPIRED,
+        joined_at=now - timedelta(minutes=25),
+        removed_at=now - timedelta(minutes=3),
+        removal_reason=MatchQueueRemovalReason.TIMEOUT,
+    )
+    create_queue_entry(
+        session,
+        player_id=players[3].id,
+        queue_class_id=DEFAULT_QUEUE_CLASS_ID,
+        status=MatchQueueEntryStatus.MATCHED,
+        joined_at=now - timedelta(minutes=15),
+    )
+    create_queue_entry(
+        session,
+        player_id=players[4].id,
+        queue_class_id=SECOND_QUEUE_CLASS_ID,
+        status=MatchQueueEntryStatus.LEFT,
+        joined_at=now - timedelta(minutes=40),
+        removed_at=now - timedelta(minutes=2),
+        removal_reason=MatchQueueRemovalReason.USER_LEAVE,
+    )
+
+    snapshot = service.get_matchmaking_status_snapshot()
+
+    assert [(entry.match_format, entry.queue_name) for entry in snapshot] == [
+        (definition.match_format, definition.queue_name)
+        for definition in get_match_queue_class_definitions()
+    ]
+    active_count_by_queue_class = {
+        definition.queue_class_id: entry.active_count
+        for definition, entry in zip(get_match_queue_class_definitions(), snapshot, strict=True)
+    }
+    assert active_count_by_queue_class[DEFAULT_QUEUE_CLASS_ID] == 2
+    assert active_count_by_queue_class[SECOND_QUEUE_CLASS_ID] == 0
 
 
 # `expire_at - 1分` に達した `waiting` 行に対して在席確認リマインドが

@@ -28,8 +28,7 @@ INFO_THREAD_PLAYER_INFO_SEASON_SHOW_BUTTON_CUSTOM_ID = (
     "dxd_rating:info_thread:player_info_season:show"
 )
 INFO_THREAD_PLAYER_INFO_SEASON_SELECT_SEASON_MESSAGE = (
-    "シーズンを選択してください。"
-    f"{INFO_THREAD_RETRY_INFO_THREAD_MESSAGE_SUFFIX}"
+    f"シーズンを選択してください。{INFO_THREAD_RETRY_INFO_THREAD_MESSAGE_SUFFIX}"
 )
 INFO_THREAD_PLAYER_INFO_SEASON_FALLBACK_ERROR_MESSAGE = (
     "シーズン別プレイヤー情報の取得に失敗しました。管理者に確認してください。"
@@ -41,8 +40,7 @@ INFO_THREAD_LEADERBOARD_MATCH_FORMAT_SELECT_CUSTOM_ID = (
 INFO_THREAD_LEADERBOARD_SHOW_BUTTON_LABEL = "ランキングを表示"
 INFO_THREAD_LEADERBOARD_SHOW_BUTTON_CUSTOM_ID = "dxd_rating:info_thread:leaderboard:show"
 INFO_THREAD_LEADERBOARD_SELECT_MATCH_FORMAT_MESSAGE = (
-    "試合形式を選択してください。"
-    f"{INFO_THREAD_RETRY_INFO_THREAD_MESSAGE_SUFFIX}"
+    f"試合形式を選択してください。{INFO_THREAD_RETRY_INFO_THREAD_MESSAGE_SUFFIX}"
 )
 INFO_THREAD_LEADERBOARD_NEXT_PAGE_BUTTON_LABEL = "次のページ"
 INFO_THREAD_LEADERBOARD_NEXT_PAGE_BUTTON_CUSTOM_ID_PREFIX = (
@@ -66,12 +64,10 @@ INFO_THREAD_LEADERBOARD_SEASON_SHOW_BUTTON_CUSTOM_ID = (
     "dxd_rating:info_thread:leaderboard_season:show"
 )
 INFO_THREAD_LEADERBOARD_SEASON_SELECT_SEASON_MESSAGE = (
-    "シーズンを選択してください。"
-    f"{INFO_THREAD_RETRY_INFO_THREAD_MESSAGE_SUFFIX}"
+    f"シーズンを選択してください。{INFO_THREAD_RETRY_INFO_THREAD_MESSAGE_SUFFIX}"
 )
 INFO_THREAD_LEADERBOARD_SEASON_SELECT_BOTH_MESSAGE = (
-    "シーズンと試合形式を選択してください。"
-    f"{INFO_THREAD_RETRY_INFO_THREAD_MESSAGE_SUFFIX}"
+    f"シーズンと試合形式を選択してください。{INFO_THREAD_RETRY_INFO_THREAD_MESSAGE_SUFFIX}"
 )
 INFO_THREAD_LEADERBOARD_SEASON_NEXT_PAGE_BUTTON_CUSTOM_ID_PREFIX = (
     "dxd_rating:info_thread:leaderboard_season:next"
@@ -273,9 +269,7 @@ async def _disable_interaction_message_components(
     if message is None:
         raise RuntimeError("Info thread interaction is missing source message")
 
-    await interaction.response.edit_message(
-        view=_build_disabled_message_component_view(message)
-    )
+    await interaction.response.edit_message(view=_build_disabled_message_component_view(message))
 
 
 @dataclass(slots=True)
@@ -338,9 +332,7 @@ class InfoThreadPlayerInfoInitialView(discord.ui.View):
         await _send_player_info_fallback_error_message(interaction)
 
 
-class InfoThreadPlayerInfoSeasonSelect(
-    discord.ui.Select["InfoThreadPlayerInfoSeasonInitialView"]
-):
+class InfoThreadPlayerInfoSeasonSelect(discord.ui.Select["InfoThreadPlayerInfoSeasonInitialView"]):
     def __init__(self, seasons: Sequence[SeasonInfo]) -> None:
         super().__init__(
             placeholder=INFO_THREAD_PLAYER_INFO_SEASON_PLACEHOLDER,
@@ -438,9 +430,7 @@ class InfoThreadPlayerInfoSeasonInitialView(discord.ui.View):
         await _send_player_info_season_fallback_error_message(interaction)
 
 
-class InfoThreadLeaderboardMatchFormatSelect(
-    discord.ui.Select["InfoThreadLeaderboardInitialView"]
-):
+class InfoThreadLeaderboardMatchFormatSelect(discord.ui.Select["InfoThreadLeaderboardInitialView"]):
     def __init__(self) -> None:
         super().__init__(
             placeholder=INFO_THREAD_LEADERBOARD_MATCH_FORMAT_PLACEHOLDER,
@@ -691,9 +681,7 @@ class InfoThreadLeaderboardNextPageButton(
     discord.ui.DynamicItem[discord.ui.Button[discord.ui.View]],
     template=INFO_THREAD_LEADERBOARD_NEXT_PAGE_BUTTON_TEMPLATE,
 ):
-    _registered_interaction_handler: ClassVar[
-        InfoThreadLeaderboardInteractionHandler | None
-    ] = None
+    _registered_interaction_handler: ClassVar[InfoThreadLeaderboardInteractionHandler | None] = None
 
     def __init__(
         self,
@@ -790,9 +778,7 @@ class InfoThreadLeaderboardSeasonNextPageButton(
     discord.ui.DynamicItem[discord.ui.Button[discord.ui.View]],
     template=INFO_THREAD_LEADERBOARD_SEASON_NEXT_PAGE_BUTTON_TEMPLATE,
 ):
-    _registered_interaction_handler: ClassVar[
-        InfoThreadLeaderboardInteractionHandler | None
-    ] = None
+    _registered_interaction_handler: ClassVar[InfoThreadLeaderboardInteractionHandler | None] = None
 
     def __init__(
         self,

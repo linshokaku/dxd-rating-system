@@ -71,15 +71,15 @@ from dxd_rating.platform.discord.ui import (
     INFO_CHANNEL_PLAYER_INFO_SEASON_BUTTON_LABEL,
     INFO_THREAD_LEADERBOARD_MATCH_FORMAT_PLACEHOLDER,
     INFO_THREAD_LEADERBOARD_NEXT_PAGE_BUTTON_LABEL,
-    INFO_THREAD_PLAYER_INFO_SHOW_BUTTON_LABEL,
-    INFO_THREAD_PLAYER_INFO_SEASON_PLACEHOLDER,
-    INFO_THREAD_PLAYER_INFO_SEASON_SELECT_SEASON_MESSAGE,
     INFO_THREAD_LEADERBOARD_SEASON_MAX_OPTIONS,
     INFO_THREAD_LEADERBOARD_SEASON_PLACEHOLDER,
     INFO_THREAD_LEADERBOARD_SEASON_SELECT_BOTH_MESSAGE,
     INFO_THREAD_LEADERBOARD_SEASON_SELECT_SEASON_MESSAGE,
     INFO_THREAD_LEADERBOARD_SELECT_MATCH_FORMAT_MESSAGE,
     INFO_THREAD_LEADERBOARD_SHOW_BUTTON_LABEL,
+    INFO_THREAD_PLAYER_INFO_SEASON_PLACEHOLDER,
+    INFO_THREAD_PLAYER_INFO_SEASON_SELECT_SEASON_MESSAGE,
+    INFO_THREAD_PLAYER_INFO_SHOW_BUTTON_LABEL,
     MATCHMAKING_CHANNEL_JOIN_BUTTON_LABEL,
     MATCHMAKING_CHANNEL_MATCH_FORMAT_PLACEHOLDER,
     MATCHMAKING_CHANNEL_MESSAGE,
@@ -95,9 +95,10 @@ from dxd_rating.platform.discord.ui import (
     SYSTEM_ANNOUNCEMENTS_CHANNEL_MESSAGE,
     MatchmakingPanelView,
     build_info_thread_initial_message,
+    build_matchmaking_status_message,
 )
 from dxd_rating.platform.runtime import MatchRuntime
-from dxd_rating.shared.constants import MATCH_FORMAT_CHOICES
+from dxd_rating.shared.constants import MATCH_FORMAT_CHOICES, get_match_queue_class_definitions
 
 DEFAULT_MATCH_FORMAT = MatchFormat.THREE_VS_THREE
 DEFAULT_QUEUE_NAME = "beginner"
@@ -252,6 +253,25 @@ class FakeMessage:
     content: str
     view: discord.ui.View | discord.ui.LayoutView | None = None
     suppress_embeds: bool = False
+    fail_edit_with: Exception | None = None
+
+    async def edit(
+        self,
+        *,
+        content: str | None = None,
+        view: discord.ui.View | discord.ui.LayoutView | None = None,
+        suppress_embeds: bool | None = None,
+        **_: Any,
+    ) -> discord.Message:
+        if self.fail_edit_with is not None:
+            raise self.fail_edit_with
+        if content is not None:
+            self.content = content
+        if view is not None:
+            self.view = view
+        if suppress_embeds is not None:
+            self.suppress_embeds = suppress_embeds
+        return cast(discord.Message, self)
 
 
 @dataclass
@@ -308,6 +328,7 @@ class FakeTextChannel:
     created_threads: list[FakeThread] = field(default_factory=list)
     fail_send_with: Exception | None = None
     fail_send_call_errors: dict[int, Exception] = field(default_factory=dict)
+    fail_fetch_message_with: Exception | None = None
     fail_create_thread_with: Exception | None = None
     fail_delete_with: Exception | None = None
     deleted: bool = False
@@ -337,6 +358,14 @@ class FakeTextChannel:
         self.guild.next_message_id += 1
         self.sent_messages.append(message)
         return cast(discord.Message, message)
+
+    async def fetch_message(self, message_id: int) -> discord.Message:
+        if self.fail_fetch_message_with is not None:
+            raise self.fail_fetch_message_with
+        for message in self.sent_messages:
+            if message.id == message_id:
+                return cast(discord.Message, message)
+        raise make_not_found()
 
     async def create_thread(
         self,
@@ -578,8 +607,7 @@ def assert_all_controls_disabled(view: discord.ui.View | discord.ui.LayoutView |
     assert view is not None
     assert len(view.children) > 0
     assert all(
-        getattr(getattr(child, "item", child), "disabled", False) is True
-        for child in view.children
+        getattr(getattr(child, "item", child), "disabled", False) is True for child in view.children
     )
 
 
@@ -669,11 +697,13 @@ def setup_matchmaking_managed_ui_channel(
     *,
     created_by_discord_user_id: int = 10,
     message_id: int = 70_001,
+    status_message_id: int | None = 70_000,
 ) -> None:
     handlers.managed_ui_service.create_managed_ui_channel(
         ui_type=ManagedUiType.MATCHMAKING_CHANNEL,
         channel_id=channel_id,
         message_id=message_id,
+        status_message_id=status_message_id,
         created_by_discord_user_id=created_by_discord_user_id,
     )
 
@@ -1778,6 +1808,255 @@ def test_leave_command_is_idempotent_for_registered_player_without_waiting_entry
     assert_response(interaction, ["キューから退出しました。"], ephemeral=True)
 
 
+def test_update_matchmaking_status_command_updates_second_message(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    executor_discord_user_id = 123_456_789_012_345_684_1
+    queued_discord_user_id = 123_456_789_012_345_684_2
+    create_player(session, executor_discord_user_id)
+    queued_player = create_player(session, queued_discord_user_id)
+    matching_queue_service = MatchingQueueService(session_factory)
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({executor_discord_user_id}),
+        matching_queue_service=matching_queue_service,
+    )
+    guild = FakeGuild(id=9_201)
+    command_channel = FakeTextChannel(id=9_202, name="雑談", guild=guild)
+    guild.channels.append(command_channel)
+    setup_interaction = FakeInteraction(
+        user=FakeUser(id=executor_discord_user_id),
+        channel_id=command_channel.id,
+        guild_id=guild.id,
+        guild=guild,
+    )
+
+    asyncio.run(
+        handlers.admin_setup_custom_ui_channel(
+            as_interaction(setup_interaction),
+            ManagedUiType.MATCHMAKING_CHANNEL.value,
+            "レート戦マッチング",
+        )
+    )
+
+    matchmaking_channel = find_channel_by_name(guild, "レート戦マッチング")
+    matching_queue_service.join_queue(
+        queued_player.id,
+        DEFAULT_MATCH_FORMAT,
+        DEFAULT_QUEUE_NAME,
+    )
+    expected_message = build_matchmaking_status_message(
+        matching_queue_service.get_matchmaking_status_snapshot()
+    )
+    interaction = FakeInteraction(
+        user=FakeUser(id=executor_discord_user_id),
+        channel_id=command_channel.id,
+        guild_id=guild.id,
+        guild=guild,
+    )
+
+    asyncio.run(handlers.update_matchmaking_status(as_interaction(interaction)))
+
+    session.expire_all()
+    managed_ui_channel = session.scalar(
+        select(ManagedUiChannel).where(
+            ManagedUiChannel.ui_type == ManagedUiType.MATCHMAKING_CHANNEL
+        )
+    )
+
+    assert managed_ui_channel is not None
+    assert_response(interaction, ["参加状況を更新しました。"], ephemeral=True)
+    assert matchmaking_channel.sent_messages[1].content == expected_message
+    assert len(matchmaking_channel.sent_messages[1].content.splitlines()) == (
+        len(get_match_queue_class_definitions()) + 1
+    )
+    assert matchmaking_channel.sent_messages[2].content == MATCHMAKING_CHANNEL_MESSAGE
+    assert managed_ui_channel.status_message_id == matchmaking_channel.sent_messages[1].id
+    assert managed_ui_channel.message_id == matchmaking_channel.sent_messages[2].id
+
+
+def test_update_matchmaking_status_command_requires_registered_player(
+    session_factory: sessionmaker[Session],
+) -> None:
+    handlers = create_handlers(
+        session_factory,
+        matching_queue_service=MatchingQueueService(session_factory),
+    )
+    guild = FakeGuild(id=9_211)
+    matchmaking_channel = FakeTextChannel(
+        id=9_212,
+        name="レート戦マッチング",
+        guild=guild,
+    )
+    guild.channels.append(matchmaking_channel)
+    setup_matchmaking_managed_ui_channel(handlers, matchmaking_channel.id)
+    interaction = FakeInteraction(
+        user=FakeUser(id=123_456_789_012_345_684_3),
+        channel_id=9_299,
+        guild_id=guild.id,
+        guild=guild,
+    )
+
+    asyncio.run(handlers.update_matchmaking_status(as_interaction(interaction)))
+
+    assert_response(
+        interaction,
+        ["プレイヤー登録が必要です。先に /register を実行してください。"],
+        ephemeral=True,
+    )
+
+
+def test_update_matchmaking_status_command_returns_generic_failure_when_matchmaking_channel_is_missing(  # noqa: E501
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    discord_user_id = 123_456_789_012_345_684_4
+    create_player(session, discord_user_id)
+    handlers = create_handlers(
+        session_factory,
+        matching_queue_service=MatchingQueueService(session_factory),
+    )
+    guild = FakeGuild(id=9_221)
+    command_channel = FakeTextChannel(id=9_222, name="雑談", guild=guild)
+    guild.channels.append(command_channel)
+    interaction = FakeInteraction(
+        user=FakeUser(id=discord_user_id),
+        channel_id=command_channel.id,
+        guild_id=guild.id,
+        guild=guild,
+    )
+
+    asyncio.run(handlers.update_matchmaking_status(as_interaction(interaction)))
+
+    assert_response(
+        interaction,
+        ["参加状況の更新に失敗しました。管理者に確認してください。"],
+        ephemeral=True,
+    )
+
+
+def test_update_matchmaking_status_command_returns_generic_failure_when_status_message_id_is_missing(  # noqa: E501
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    discord_user_id = 123_456_789_012_345_684_5
+    create_player(session, discord_user_id)
+    handlers = create_handlers(
+        session_factory,
+        matching_queue_service=MatchingQueueService(session_factory),
+    )
+    guild = FakeGuild(id=9_231)
+    matchmaking_channel = FakeTextChannel(
+        id=9_232,
+        name="レート戦マッチング",
+        guild=guild,
+    )
+    guild.channels.append(matchmaking_channel)
+    setup_matchmaking_managed_ui_channel(
+        handlers,
+        matchmaking_channel.id,
+        status_message_id=None,
+    )
+    interaction = FakeInteraction(
+        user=FakeUser(id=discord_user_id),
+        channel_id=9_299_1,
+        guild_id=guild.id,
+        guild=guild,
+    )
+
+    asyncio.run(handlers.update_matchmaking_status(as_interaction(interaction)))
+
+    assert_response(
+        interaction,
+        ["参加状況の更新に失敗しました。管理者に確認してください。"],
+        ephemeral=True,
+    )
+
+
+def test_update_matchmaking_status_command_returns_generic_failure_when_fetch_message_fails(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    discord_user_id = 123_456_789_012_345_684_6
+    create_player(session, discord_user_id)
+    handlers = create_handlers(
+        session_factory,
+        matching_queue_service=MatchingQueueService(session_factory),
+    )
+    guild = FakeGuild(id=9_241)
+    matchmaking_channel = FakeTextChannel(
+        id=9_242,
+        name="レート戦マッチング",
+        guild=guild,
+        fail_fetch_message_with=RuntimeError("boom"),
+    )
+    guild.channels.append(matchmaking_channel)
+    setup_matchmaking_managed_ui_channel(
+        handlers,
+        matchmaking_channel.id,
+        status_message_id=70_242,
+    )
+    interaction = FakeInteraction(
+        user=FakeUser(id=discord_user_id),
+        channel_id=9_299_2,
+        guild_id=guild.id,
+        guild=guild,
+    )
+
+    asyncio.run(handlers.update_matchmaking_status(as_interaction(interaction)))
+
+    assert_response(
+        interaction,
+        ["参加状況の更新に失敗しました。管理者に確認してください。"],
+        ephemeral=True,
+    )
+
+
+def test_update_matchmaking_status_command_returns_generic_failure_when_edit_fails(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    discord_user_id = 123_456_789_012_345_684_7
+    create_player(session, discord_user_id)
+    handlers = create_handlers(
+        session_factory,
+        matching_queue_service=MatchingQueueService(session_factory),
+    )
+    guild = FakeGuild(id=9_251)
+    matchmaking_channel = FakeTextChannel(
+        id=9_252,
+        name="レート戦マッチング",
+        guild=guild,
+    )
+    guild.channels.append(matchmaking_channel)
+    guide_message = asyncio.run(matchmaking_channel.send(content="guide"))
+    status_message = asyncio.run(matchmaking_channel.send(content="status"))
+    ui_message = asyncio.run(matchmaking_channel.send(content=MATCHMAKING_CHANNEL_MESSAGE))
+    del guide_message
+    status_message.fail_edit_with = RuntimeError("boom")
+    setup_matchmaking_managed_ui_channel(
+        handlers,
+        matchmaking_channel.id,
+        message_id=ui_message.id,
+        status_message_id=status_message.id,
+    )
+    interaction = FakeInteraction(
+        user=FakeUser(id=discord_user_id),
+        channel_id=9_299_3,
+        guild_id=guild.id,
+        guild=guild,
+    )
+
+    asyncio.run(handlers.update_matchmaking_status(as_interaction(interaction)))
+
+    assert_response(
+        interaction,
+        ["参加状況の更新に失敗しました。管理者に確認してください。"],
+        ephemeral=True,
+    )
+
+
 def test_player_info_command_returns_requesting_player_stats_in_active_info_thread(
     session: Session,
     session_factory: sessionmaker[Session],
@@ -2194,7 +2473,9 @@ def test_info_thread_player_info_season_button_posts_requested_season_stats_to_a
     asyncio.run(season_select.callback(as_interaction(season_interaction)))
 
     assert initial_message.view is not None
-    assert all(getattr(child, "disabled", False) is False for child in initial_message.view.children)
+    assert all(
+        getattr(child, "disabled", False) is False for child in initial_message.view.children
+    )
 
     interaction = FakeInteraction(
         user=FakeUser(id=discord_user_id),
@@ -2904,7 +3185,9 @@ def test_info_thread_leaderboard_button_posts_page_one_to_active_thread(
     asyncio.run(match_format_select.callback(as_interaction(select_interaction)))
 
     assert initial_message.view is not None
-    assert all(getattr(child, "disabled", False) is False for child in initial_message.view.children)
+    assert all(
+        getattr(child, "disabled", False) is False for child in initial_message.view.children
+    )
 
     interaction = FakeInteraction(
         user=user,
@@ -3756,7 +4039,9 @@ def test_info_thread_leaderboard_season_button_posts_page_one_to_active_thread(
     asyncio.run(match_format_select.callback(as_interaction(match_format_interaction)))
 
     assert initial_message.view is not None
-    assert all(getattr(child, "disabled", False) is False for child in initial_message.view.children)
+    assert all(
+        getattr(child, "disabled", False) is False for child in initial_message.view.children
+    )
 
     interaction = FakeInteraction(
         user=user,
@@ -3870,7 +4155,11 @@ def test_leaderboard_season_command_adds_next_page_button_when_next_page_exists(
         match_format=MatchFormat.THREE_VS_THREE,
         page=1,
         entries=[
-            (index + 1, f"Player {index + 1}", float(2000 - index),)
+            (
+                index + 1,
+                f"Player {index + 1}",
+                float(2000 - index),
+            )
             for index in range(20)
         ],
     )
@@ -6440,6 +6729,7 @@ def test_admin_setup_custom_ui_channel_creates_matchmaking_channel_with_placehol
     assert managed_ui_channel is not None
     assert managed_ui_channel.ui_type == ManagedUiType.MATCHMAKING_CHANNEL
     assert managed_ui_channel.channel_id == persisted_channel.id
+    assert managed_ui_channel.status_message_id == persisted_channel.sent_messages[1].id
     assert managed_ui_channel.message_id == persisted_channel.sent_messages[2].id
     assert managed_ui_channel.created_by_discord_user_id == executor_discord_user_id
     assert persisted_channel.overwrites[guild.default_role].view_channel is False
@@ -6447,15 +6737,13 @@ def test_admin_setup_custom_ui_channel_creates_matchmaking_channel_with_placehol
     assert persisted_channel.overwrites[registered_role].view_channel is True
     assert persisted_channel.overwrites[registered_role].send_messages is False
     assert len(persisted_channel.sent_messages) == 3
-    assert (
-        persisted_channel.sent_messages[0].content
-        == build_expected_matchmaking_guide_message(matchmaking_guide_url)
+    assert persisted_channel.sent_messages[0].content == build_expected_matchmaking_guide_message(
+        matchmaking_guide_url
     )
     assert persisted_channel.sent_messages[0].view is None
     assert persisted_channel.sent_messages[0].suppress_embeds is True
     assert (
-        persisted_channel.sent_messages[1].content
-        == MATCHMAKING_CHANNEL_STATUS_PLACEHOLDER_MESSAGE
+        persisted_channel.sent_messages[1].content == MATCHMAKING_CHANNEL_STATUS_PLACEHOLDER_MESSAGE
     )
     assert persisted_channel.sent_messages[1].view is None
     assert persisted_channel.sent_messages[1].suppress_embeds is False
@@ -6960,9 +7248,8 @@ def test_admin_setup_ui_channels_creates_registered_channel_set(
     assert matchmaking_channel.overwrites[guild.me].create_private_threads is True
     assert matchmaking_channel.overwrites[guild.me].send_messages_in_threads is True
     assert len(matchmaking_channel.sent_messages) == 3
-    assert (
-        matchmaking_channel.sent_messages[0].content
-        == build_expected_matchmaking_guide_message(DEFAULT_MATCHMAKING_GUIDE_URL)
+    assert matchmaking_channel.sent_messages[0].content == build_expected_matchmaking_guide_message(
+        DEFAULT_MATCHMAKING_GUIDE_URL
     )
     assert matchmaking_channel.sent_messages[0].view is None
     assert matchmaking_channel.sent_messages[0].suppress_embeds is True
@@ -6975,6 +7262,13 @@ def test_admin_setup_ui_channels_creates_registered_channel_set(
     assert matchmaking_channel.sent_messages[2].content == MATCHMAKING_CHANNEL_MESSAGE
     assert matchmaking_channel.sent_messages[2].view is not None
     assert matchmaking_channel.sent_messages[2].suppress_embeds is False
+    matchmaking_channel_record = next(
+        managed_ui_channel
+        for managed_ui_channel in managed_ui_channels
+        if managed_ui_channel.ui_type == ManagedUiType.MATCHMAKING_CHANNEL
+    )
+    assert matchmaking_channel_record.status_message_id == matchmaking_channel.sent_messages[1].id
+    assert matchmaking_channel_record.message_id == matchmaking_channel.sent_messages[2].id
     match_format_select = cast(
         discord.ui.Select[Any],
         matchmaking_channel.sent_messages[2].view.children[0],
@@ -7010,8 +7304,7 @@ def test_admin_setup_ui_channels_creates_registered_channel_set(
     assert info_channel.sent_messages[0].content == INFO_CHANNEL_MESSAGE
     assert info_channel.sent_messages[0].view is not None
     info_buttons = [
-        cast(discord.ui.Button[Any], child)
-        for child in info_channel.sent_messages[0].view.children
+        cast(discord.ui.Button[Any], child) for child in info_channel.sent_messages[0].view.children
     ]
     assert [(button.label, button.custom_id) for button in info_buttons] == [
         (
@@ -7050,10 +7343,7 @@ def test_admin_setup_ui_channels_creates_registered_channel_set(
     assert admin_operations_channel.overwrites[guild.default_role].view_channel is False
     assert admin_operations_channel.overwrites[interaction.user].view_channel is True
     assert admin_operations_channel.overwrites[interaction.user].send_messages is True
-    assert (
-        admin_operations_channel.sent_messages[0].content
-        == ADMIN_OPERATIONS_CHANNEL_MESSAGE
-    )
+    assert admin_operations_channel.sent_messages[0].content == ADMIN_OPERATIONS_CHANNEL_MESSAGE
 
 
 def test_admin_setup_ui_channels_creates_private_channels_in_development_mode(
@@ -7715,6 +8005,22 @@ def test_admin_managed_ui_commands_are_registered_with_expected_parameters() -> 
     assert [parameter.name for parameter in setup_all_command.parameters] == []
     assert [parameter.name for parameter in cleanup_command.parameters] == ["confirm"]
     assert [parameter.name for parameter in teardown_command.parameters] == ["confirm"]
+
+
+def test_update_matchmaking_status_command_is_registered_without_parameters() -> None:
+    handlers = BotCommandHandlers(
+        settings=create_settings(),
+        session_factory=sessionmaker(),
+    )
+    client = discord.Client(intents=discord.Intents.none())
+    tree = discord.app_commands.CommandTree(client)
+
+    register_app_commands(tree, handlers)
+
+    command = tree.get_command("update_matchmaking_status")
+
+    assert command is not None
+    assert [parameter.name for parameter in command.parameters] == []
 
 
 def test_info_thread_command_is_registered_with_expected_parameters_and_choices() -> None:

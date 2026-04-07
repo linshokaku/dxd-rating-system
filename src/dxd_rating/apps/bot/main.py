@@ -13,10 +13,10 @@ from dxd_rating.platform.db.session import create_db_engine, create_session_fact
 from dxd_rating.platform.discord.gateway.commands import BotCommandHandlers, register_app_commands
 from dxd_rating.platform.discord.rest import DiscordOutboxEventPublisher
 from dxd_rating.platform.discord.ui import (
-    create_info_thread_player_info_initial_view,
-    create_info_thread_player_info_season_initial_view,
     create_info_thread_leaderboard_initial_view,
     create_info_thread_leaderboard_season_initial_view,
+    create_info_thread_player_info_initial_view,
+    create_info_thread_player_info_season_initial_view,
     create_managed_ui_view,
     create_matchmaking_presence_thread_view,
     has_persistent_managed_ui_view,

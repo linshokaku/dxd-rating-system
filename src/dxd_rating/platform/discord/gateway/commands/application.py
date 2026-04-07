@@ -47,6 +47,7 @@ from dxd_rating.contexts.matchmaking.application import (
     JoinQueueResult,
     LeaveQueueResult,
     MatchingQueueNotificationContext,
+    MatchmakingStatusSnapshotEntry,
     PresentQueueResult,
 )
 from dxd_rating.contexts.players.application import (
@@ -85,12 +86,13 @@ from dxd_rating.platform.discord.ui import (
     INFO_THREAD_LEADERBOARD_SEASON_MAX_OPTIONS,
     build_info_thread_initial_message,
     build_managed_ui_channel_overwrites,
-    create_info_thread_player_info_initial_view,
-    create_info_thread_player_info_season_initial_view,
+    build_matchmaking_status_message,
     create_info_thread_leaderboard_initial_view,
     create_info_thread_leaderboard_next_page_view,
     create_info_thread_leaderboard_season_initial_view,
     create_info_thread_leaderboard_season_next_page_view,
+    create_info_thread_player_info_initial_view,
+    create_info_thread_player_info_season_initial_view,
     create_matchmaking_presence_thread_view,
     is_valid_managed_ui_channel_name,
     send_initial_managed_ui_message,
@@ -125,6 +127,10 @@ MATCHMAKING_PRESENCE_THREAD_MISMATCH_MESSAGE = (
 JOIN_FAILED_MESSAGE = "キュー参加に失敗しました。管理者に確認してください。"
 PRESENT_FAILED_MESSAGE = "在席更新に失敗しました。管理者に確認してください。"
 LEAVE_FAILED_MESSAGE = "キュー退出に失敗しました。管理者に確認してください。"
+UPDATE_MATCHMAKING_STATUS_SUCCESS_MESSAGE = "参加状況を更新しました。"
+UPDATE_MATCHMAKING_STATUS_FAILED_MESSAGE = (
+    "参加状況の更新に失敗しました。管理者に確認してください。"
+)
 PLAYER_INFO_SUCCESS_MESSAGE = "プレイヤー情報を表示しました。"
 PLAYER_INFO_FAILED_MESSAGE = "プレイヤー情報の取得に失敗しました。管理者に確認してください。"
 PLAYER_SEASON_INFO_SUCCESS_MESSAGE = "シーズン別プレイヤー情報を表示しました。"
@@ -335,6 +341,10 @@ class MatchingQueueCommandService(Protocol):
     ) -> bool: ...
 
     async def get_waiting_entry_notification_channel_id(self, player_id: int) -> int | None: ...
+
+    async def get_matchmaking_status_snapshot(
+        self,
+    ) -> tuple[MatchmakingStatusSnapshotEntry, ...]: ...
 
     async def present(
         self,
@@ -730,6 +740,36 @@ class BotCommandHandlers:
             return
 
         await self._send_player_operation_message(interaction, result.message)
+
+    async def update_matchmaking_status(self, interaction: discord.Interaction[Any]) -> None:
+        await self._sync_requesting_user_identity(interaction)
+        try:
+            await asyncio.to_thread(self._lookup_player_id, interaction.user.id)
+            await self._refresh_matchmaking_status_message(interaction)
+        except PlayerNotRegisteredError:
+            await self._send_player_operation_message(
+                interaction,
+                PLAYER_REGISTRATION_REQUIRED_MESSAGE,
+            )
+            return
+        except Exception:
+            self.logger.exception(
+                "Failed to execute /update_matchmaking_status command "
+                "discord_user_id=%s channel_id=%s guild_id=%s",
+                interaction.user.id,
+                interaction.channel_id,
+                interaction.guild_id,
+            )
+            await self._send_player_operation_message(
+                interaction,
+                UPDATE_MATCHMAKING_STATUS_FAILED_MESSAGE,
+            )
+            return
+
+        await self._send_player_operation_message(
+            interaction,
+            UPDATE_MATCHMAKING_STATUS_SUCCESS_MESSAGE,
+        )
 
     async def player_info(self, interaction: discord.Interaction[Any]) -> None:
         await self._run_player_info(
@@ -2977,12 +3017,14 @@ class BotCommandHandlers:
         ui_type: ManagedUiType,
         channel_id: int,
         message_id: int,
+        status_message_id: int | None,
         created_by_discord_user_id: int,
     ) -> ManagedUiChannel:
         return self.managed_ui_service.create_managed_ui_channel(
             ui_type=ui_type,
             channel_id=channel_id,
             message_id=message_id,
+            status_message_id=status_message_id,
             created_by_discord_user_id=created_by_discord_user_id,
         )
 
@@ -3063,6 +3105,67 @@ class BotCommandHandlers:
             mention_discord_user_id=mention_discord_user_id,
             channel_id=parent_channel_id if isinstance(parent_channel_id, int) else None,
         )
+
+    async def _refresh_matchmaking_status_message(
+        self,
+        interaction: discord.Interaction[Any],
+    ) -> None:
+        message = await self._fetch_required_matchmaking_status_message(interaction)
+        service = self._require_matching_queue_service()
+        snapshot = await service.get_matchmaking_status_snapshot()
+        edit = getattr(message, "edit", None)
+        if not callable(edit):
+            raise RequiredManagedUiChannelUnavailableError(
+                ui_type=ManagedUiType.MATCHMAKING_CHANNEL,
+                reason="status message is not editable",
+            )
+
+        await edit(content=build_matchmaking_status_message(snapshot))
+
+    async def _fetch_required_matchmaking_status_message(
+        self,
+        interaction: discord.Interaction[Any],
+    ) -> object:
+        guild = interaction.guild
+        if guild is None:
+            raise RequiredManagedUiChannelUnavailableError(
+                ui_type=ManagedUiType.MATCHMAKING_CHANNEL,
+                reason="interaction guild is unavailable",
+            )
+
+        managed_ui_channel = await asyncio.to_thread(
+            self._get_managed_ui_channel_by_type,
+            ManagedUiType.MATCHMAKING_CHANNEL,
+        )
+        if managed_ui_channel is None:
+            raise RequiredManagedUiChannelUnavailableError(
+                ui_type=ManagedUiType.MATCHMAKING_CHANNEL,
+                reason="managed UI channel is not setup",
+            )
+        if managed_ui_channel.status_message_id is None:
+            raise RequiredManagedUiChannelUnavailableError(
+                ui_type=ManagedUiType.MATCHMAKING_CHANNEL,
+                reason="status message id is not persisted",
+                channel_id=managed_ui_channel.channel_id,
+            )
+
+        channel = self._find_guild_channel_by_id(guild, managed_ui_channel.channel_id)
+        if channel is None:
+            raise RequiredManagedUiChannelUnavailableError(
+                ui_type=ManagedUiType.MATCHMAKING_CHANNEL,
+                reason="managed UI channel is missing from guild",
+                channel_id=managed_ui_channel.channel_id,
+            )
+
+        fetch_message = getattr(channel, "fetch_message", None)
+        if not callable(fetch_message):
+            raise RequiredManagedUiChannelUnavailableError(
+                ui_type=ManagedUiType.MATCHMAKING_CHANNEL,
+                reason="managed UI channel does not support message fetch",
+                channel_id=managed_ui_channel.channel_id,
+            )
+
+        return await fetch_message(managed_ui_channel.status_message_id)
 
     async def _ensure_admin(self, interaction: discord.Interaction[Any]) -> bool:
         await self._sync_requesting_user_identity(interaction)
@@ -4210,7 +4313,7 @@ class BotCommandHandlers:
             channel=channel,
         )
         try:
-            message = await send_initial_managed_ui_message(
+            messages = await send_initial_managed_ui_message(
                 cast(discord.TextChannel, channel),
                 ui_type=definition.ui_type,
                 interaction_handler=self,
@@ -4220,7 +4323,8 @@ class BotCommandHandlers:
                 self._create_managed_ui_channel_record,
                 definition.ui_type,
                 channel.id,
-                message.id,
+                messages.primary_message.id,
+                None if messages.status_message is None else messages.status_message.id,
                 created_by_discord_user_id,
             )
         except Exception as exc:
@@ -4401,6 +4505,13 @@ def register_app_commands(
     @tree.command(name="leave", description="マッチングキューから退出します")
     async def leave_command(interaction: discord.Interaction[Any]) -> None:
         await handlers.leave(interaction)
+
+    @tree.command(
+        name="update_matchmaking_status",
+        description="レート戦マッチングの参加状況表示を更新します",
+    )
+    async def update_matchmaking_status_command(interaction: discord.Interaction[Any]) -> None:
+        await handlers.update_matchmaking_status(interaction)
 
     @tree.command(name="player_info", description="自分のプレイヤー情報を表示します")
     async def player_info_command(interaction: discord.Interaction[Any]) -> None:

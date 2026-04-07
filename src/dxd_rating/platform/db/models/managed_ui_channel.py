@@ -40,6 +40,7 @@ class ManagedUiChannel(Base):
     )
     channel_id: Mapped[int] = mapped_column(BigInteger, nullable=False, unique=True)
     message_id: Mapped[int] = mapped_column(BigInteger, nullable=False, unique=True)
+    status_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, unique=True)
     created_by_discord_user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

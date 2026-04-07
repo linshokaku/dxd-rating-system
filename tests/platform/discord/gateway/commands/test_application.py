@@ -5632,7 +5632,11 @@ def test_match_spectate_command_registers_requesting_player_as_spectator(
         )
     )
 
-    assert interaction.response.messages == ["観戦応募を受け付けました。現在 1 / 6 人です。"]
+    assert_response(
+        interaction,
+        ["観戦応募を受け付けました。現在 1 / 6 人です。"],
+        ephemeral=True,
+    )
     assert persisted_spectator is not None
 
 
@@ -5686,7 +5690,11 @@ def test_match_spectate_command_invites_requesting_player_to_match_operation_thr
         )
     )
 
-    assert interaction.response.messages == ["観戦応募を受け付けました。現在 1 / 6 人です。"]
+    assert_response(
+        interaction,
+        ["観戦応募を受け付けました。現在 1 / 6 人です。"],
+        ephemeral=True,
+    )
     assert persisted_spectator is not None
     assert match_operation_thread.added_user_ids == [spectator_discord_user_id]
 
@@ -5755,9 +5763,17 @@ def test_matchmaking_news_match_announcement_spectate_button_responds_ephemerall
     assert match_operation_thread.added_user_ids == [spectator_discord_user_id]
 
 
-def test_match_operation_thread_void_button_responds_ephemerally(
+@pytest.mark.parametrize(
+    "handler_name",
+    [
+        "match_void",
+        "void_from_match_operation_thread",
+    ],
+)
+def test_match_void_actions_respond_ephemerally(
     session: Session,
     session_factory: sessionmaker[Session],
+    handler_name: str,
 ) -> None:
     match_id, players = create_match(
         session,
@@ -5776,12 +5792,7 @@ def test_match_operation_thread_void_button_responds_ephemerally(
         guild_id=14_014,
     )
 
-    asyncio.run(
-        handlers.void_from_match_operation_thread(
-            as_interaction(interaction),
-            match_id,
-        )
-    )
+    asyncio.run(getattr(handlers, handler_name)(as_interaction(interaction), match_id))
 
     latest_report = session.scalar(
         select(MatchReport)
@@ -5805,12 +5816,15 @@ def test_match_operation_thread_void_button_responds_ephemerally(
 @pytest.mark.parametrize(
     ("handler_name", "reported_input_result"),
     [
+        ("match_win", MatchReportInputResult.WIN),
         ("win_from_match_operation_thread", MatchReportInputResult.WIN),
+        ("match_draw", MatchReportInputResult.DRAW),
         ("draw_from_match_operation_thread", MatchReportInputResult.DRAW),
+        ("match_lose", MatchReportInputResult.LOSE),
         ("lose_from_match_operation_thread", MatchReportInputResult.LOSE),
     ],
 )
-def test_match_operation_thread_report_buttons_respond_ephemerally(
+def test_match_report_actions_respond_ephemerally(
     session: Session,
     session_factory: sessionmaker[Session],
     handler_name: str,
@@ -5874,9 +5888,17 @@ def test_match_operation_thread_report_buttons_respond_ephemerally(
     )
 
 
-def test_match_operation_thread_parent_button_responds_ephemerally(
+@pytest.mark.parametrize(
+    "handler_name",
+    [
+        "match_parent",
+        "parent_from_match_operation_thread",
+    ],
+)
+def test_match_parent_actions_respond_ephemerally(
     session: Session,
     session_factory: sessionmaker[Session],
+    handler_name: str,
 ) -> None:
     match_id, players = create_match(
         session,
@@ -5896,12 +5918,7 @@ def test_match_operation_thread_parent_button_responds_ephemerally(
         guild_id=14_015,
     )
 
-    asyncio.run(
-        handlers.parent_from_match_operation_thread(
-            as_interaction(interaction),
-            match_id,
-        )
-    )
+    asyncio.run(getattr(handlers, handler_name)(as_interaction(interaction), match_id))
 
     active_state = session.scalar(
         select(ActiveMatchState).where(ActiveMatchState.match_id == match_id)
@@ -5917,9 +5934,17 @@ def test_match_operation_thread_parent_button_responds_ephemerally(
     )
 
 
-def test_match_operation_thread_approve_button_responds_ephemerally(
+@pytest.mark.parametrize(
+    "handler_name",
+    [
+        "match_approve",
+        "approve_from_match_operation_thread",
+    ],
+)
+def test_match_approve_actions_respond_ephemerally(
     session: Session,
     session_factory: sessionmaker[Session],
+    handler_name: str,
 ) -> None:
     match_id, players = create_match(
         session,
@@ -5973,12 +5998,7 @@ def test_match_operation_thread_approve_button_responds_ephemerally(
         guild_id=14_016,
     )
 
-    asyncio.run(
-        handlers.approve_from_match_operation_thread(
-            as_interaction(interaction),
-            match_id,
-        )
-    )
+    asyncio.run(getattr(handlers, handler_name)(as_interaction(interaction), match_id))
 
     session.expire_all()
     active_state = session.get(ActiveMatchState, match_id)
@@ -5991,9 +6011,17 @@ def test_match_operation_thread_approve_button_responds_ephemerally(
     )
 
 
-def test_match_operation_thread_approve_button_returns_business_error_ephemerally(
+@pytest.mark.parametrize(
+    "handler_name",
+    [
+        "match_approve",
+        "approve_from_match_operation_thread",
+    ],
+)
+def test_match_approve_actions_return_business_error_ephemerally(
     session: Session,
     session_factory: sessionmaker[Session],
+    handler_name: str,
 ) -> None:
     match_id, players = create_match(
         session,
@@ -6012,12 +6040,7 @@ def test_match_operation_thread_approve_button_returns_business_error_ephemerall
         guild_id=14_017,
     )
 
-    asyncio.run(
-        handlers.approve_from_match_operation_thread(
-            as_interaction(interaction),
-            match_id,
-        )
-    )
+    asyncio.run(getattr(handlers, handler_name)(as_interaction(interaction), match_id))
 
     assert_response(
         interaction,
@@ -6037,9 +6060,11 @@ def test_match_spectate_command_requires_registered_player(
 
     asyncio.run(handlers.match_spectate(as_interaction(interaction), 1))
 
-    assert interaction.response.messages == [
-        "プレイヤー登録が必要です。先に /register を実行してください。"
-    ]
+    assert_response(
+        interaction,
+        ["プレイヤー登録が必要です。先に /register を実行してください。"],
+        ephemeral=True,
+    )
 
 
 def test_match_spectate_command_returns_restricted_message_for_restricted_player(
@@ -6070,7 +6095,7 @@ def test_match_spectate_command_returns_restricted_message_for_restricted_player
 
     asyncio.run(handlers.match_spectate(as_interaction(interaction), match_id))
 
-    assert interaction.response.messages == ["現在観戦を制限されています。"]
+    assert_response(interaction, ["現在観戦を制限されています。"], ephemeral=True)
 
 
 def test_dev_match_spectate_registers_target_dummy_user_as_spectator(
@@ -6126,7 +6151,11 @@ def test_dev_match_spectate_registers_target_dummy_user_as_spectator(
         )
     )
 
-    assert interaction.response.messages == ["指定したユーザーの観戦応募を受け付けました。"]
+    assert_response(
+        interaction,
+        ["指定したユーザーの観戦応募を受け付けました。"],
+        ephemeral=True,
+    )
     assert persisted_spectator is not None
 
 
@@ -6183,7 +6212,227 @@ def test_dev_match_spectate_returns_restricted_message_for_restricted_target(
         )
     )
 
-    assert interaction.response.messages == ["指定したユーザーは現在観戦を制限されています。"]
+    assert_response(
+        interaction,
+        ["指定したユーザーは現在観戦を制限されています。"],
+        ephemeral=True,
+    )
+
+
+def test_dev_match_parent_responds_ephemerally(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    executor_discord_user_id = 10
+    target_discord_user_id = 777
+    match_id, players = create_match(
+        session,
+        session_factory,
+        start_discord_user_id=target_discord_user_id,
+        channel_id=13_018,
+        guild_id=14_018,
+    )
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({executor_discord_user_id}),
+        matching_queue_service=MatchingQueueService(session_factory),
+    )
+    setup_matchmaking_managed_ui_channel(handlers, 13_018)
+    interaction = FakeInteraction(
+        user=FakeUser(id=executor_discord_user_id),
+        channel_id=13_118,
+        guild_id=14_018,
+    )
+
+    asyncio.run(
+        handlers.dev_match_parent(
+            as_interaction(interaction),
+            match_id,
+            str(target_discord_user_id),
+        )
+    )
+
+    active_state = session.scalar(
+        select(ActiveMatchState).where(ActiveMatchState.match_id == match_id)
+    )
+
+    assert active_state is not None
+    assert active_state.parent_player_id == players[0].id
+    assert active_state.parent_decided_at is not None
+    assert_response(
+        interaction,
+        ["指定したユーザーを親に立候補させました。"],
+        ephemeral=True,
+    )
+
+
+@pytest.mark.parametrize(
+    ("handler_name", "reported_input_result"),
+    [
+        ("dev_match_win", MatchReportInputResult.WIN),
+        ("dev_match_lose", MatchReportInputResult.LOSE),
+        ("dev_match_draw", MatchReportInputResult.DRAW),
+        ("dev_match_void", MatchReportInputResult.VOID),
+    ],
+)
+def test_dev_match_report_actions_respond_ephemerally(
+    session: Session,
+    session_factory: sessionmaker[Session],
+    handler_name: str,
+    reported_input_result: MatchReportInputResult,
+) -> None:
+    executor_discord_user_id = 10
+    target_discord_user_id = 777
+    match_id, players = create_match(
+        session,
+        session_factory,
+        start_discord_user_id=target_discord_user_id,
+        channel_id=13_019,
+        guild_id=14_019,
+    )
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({executor_discord_user_id}),
+        matching_queue_service=MatchingQueueService(session_factory),
+    )
+    setup_matchmaking_managed_ui_channel(handlers, 13_019)
+    match_service = MatchFlowService(session_factory)
+    match_service.volunteer_parent(match_id, players[0].id)
+
+    session.expire_all()
+    active_state = session.scalar(
+        select(ActiveMatchState).where(ActiveMatchState.match_id == match_id)
+    )
+    assert active_state is not None
+    now = datetime.now(timezone.utc)
+    active_state.report_open_at = now - timedelta(minutes=1)
+    active_state.report_deadline_at = now + timedelta(minutes=10)
+    session.commit()
+    assert match_service.process_report_open(match_id) is True
+
+    interaction = FakeInteraction(
+        user=FakeUser(id=executor_discord_user_id),
+        channel_id=13_119,
+        guild_id=14_019,
+    )
+
+    asyncio.run(
+        getattr(handlers, handler_name)(
+            as_interaction(interaction),
+            match_id,
+            str(target_discord_user_id),
+        )
+    )
+
+    latest_report = session.scalar(
+        select(MatchReport)
+        .where(
+            MatchReport.match_id == match_id,
+            MatchReport.player_id == players[0].id,
+            MatchReport.is_latest.is_(True),
+        )
+        .order_by(MatchReport.id.desc())
+    )
+
+    assert latest_report is not None
+    assert latest_report.reported_input_result == reported_input_result
+    assert_response(
+        interaction,
+        ["指定したユーザーの勝敗報告を受け付けました。"],
+        ephemeral=True,
+    )
+
+
+def test_dev_match_approve_responds_ephemerally(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    executor_discord_user_id = 10
+    match_id, players = create_match(
+        session,
+        session_factory,
+        start_discord_user_id=777,
+        channel_id=13_020,
+        guild_id=14_020,
+    )
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({executor_discord_user_id}),
+        matching_queue_service=MatchingQueueService(session_factory),
+    )
+    setup_matchmaking_managed_ui_channel(handlers, 13_020)
+    match_service = MatchFlowService(session_factory)
+    match_service.volunteer_parent(match_id, players[0].id)
+
+    session.expire_all()
+    active_state = session.scalar(
+        select(ActiveMatchState).where(ActiveMatchState.match_id == match_id)
+    )
+    assert active_state is not None
+    now = datetime.now(timezone.utc)
+    active_state.report_open_at = now - timedelta(minutes=1)
+    active_state.report_deadline_at = now + timedelta(minutes=10)
+    session.commit()
+    assert match_service.process_report_open(match_id) is True
+
+    participants = session.scalars(
+        select(MatchParticipant).where(MatchParticipant.match_id == match_id)
+    ).all()
+    participant_by_player_id = {participant.player_id: participant for participant in participants}
+    dissenting_player = next(
+        player
+        for player in players
+        if participant_by_player_id[player.id].team == MatchParticipantTeam.TEAM_B
+    )
+
+    for player in players:
+        participant = participant_by_player_id[player.id]
+        if participant.team == MatchParticipantTeam.TEAM_A:
+            input_result = MatchReportInputResult.WIN
+        elif player.id == dissenting_player.id:
+            input_result = MatchReportInputResult.DRAW
+        else:
+            input_result = MatchReportInputResult.LOSE
+        match_service.submit_report(match_id, player.id, input_result)
+
+    interaction = FakeInteraction(
+        user=FakeUser(id=executor_discord_user_id),
+        channel_id=13_120,
+        guild_id=14_020,
+    )
+
+    asyncio.run(
+        handlers.dev_match_approve(
+            as_interaction(interaction),
+            match_id,
+            str(dissenting_player.discord_user_id),
+        )
+    )
+
+    session.expire_all()
+    active_state = session.get(ActiveMatchState, match_id)
+    assert active_state is not None
+    assert active_state.state == MatchState.FINALIZED
+    assert_response(
+        interaction,
+        ["指定したユーザーが仮決定結果を承認しました。"],
+        ephemeral=True,
+    )
+
+
+def test_dev_match_approve_validates_dummy_user_id_ephemerally(
+    session_factory: sessionmaker[Session],
+) -> None:
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({10}),
+        matching_queue_service=MatchingQueueService(session_factory),
+    )
+    interaction = FakeInteraction(user=FakeUser(id=10))
+
+    asyncio.run(handlers.dev_match_approve(as_interaction(interaction), 1, "not-a-number"))
+
+    assert_response(interaction, ["discord_user_id が不正です。"], ephemeral=True)
 
 
 def test_dev_register_requires_admin(

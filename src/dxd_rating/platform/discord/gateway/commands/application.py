@@ -1262,15 +1262,7 @@ class BotCommandHandlers:
         interaction: discord.Interaction[Any],
         match_id: int,
     ) -> None:
-        await self._sync_requesting_user_identity(interaction)
-        await self._run_match_parent(
-            interaction=interaction,
-            match_id=match_id,
-            executor_discord_user_id=interaction.user.id,
-            success_message=MATCH_PARENT_SUCCESS_MESSAGE,
-            failure_message=MATCH_ACTION_FAILED_MESSAGE,
-            ephemeral=True,
-        )
+        await self.match_parent(interaction, match_id)
 
     async def match_spectate(self, interaction: discord.Interaction[Any], match_id: int) -> None:
         await self._sync_requesting_user_identity(interaction)
@@ -1280,7 +1272,6 @@ class BotCommandHandlers:
             executor_discord_user_id=interaction.user.id,
             success_message=None,
             failure_message=MATCH_SPECTATE_FAILED_MESSAGE,
-            ephemeral=False,
         )
 
     async def spectate_from_matchmaking_news_match_announcement(
@@ -1288,15 +1279,7 @@ class BotCommandHandlers:
         interaction: discord.Interaction[Any],
         match_id: int,
     ) -> None:
-        await self._sync_requesting_user_identity(interaction)
-        await self._run_match_spectate(
-            interaction=interaction,
-            match_id=match_id,
-            executor_discord_user_id=interaction.user.id,
-            success_message=None,
-            failure_message=MATCH_SPECTATE_FAILED_MESSAGE,
-            ephemeral=True,
-        )
+        await self.match_spectate(interaction, match_id)
 
     async def match_win(self, interaction: discord.Interaction[Any], match_id: int) -> None:
         await self._sync_requesting_user_identity(interaction)
@@ -1314,16 +1297,7 @@ class BotCommandHandlers:
         interaction: discord.Interaction[Any],
         match_id: int,
     ) -> None:
-        await self._sync_requesting_user_identity(interaction)
-        await self._run_match_report(
-            interaction=interaction,
-            match_id=match_id,
-            executor_discord_user_id=interaction.user.id,
-            input_result=MatchReportInputResult.WIN,
-            success_message=MATCH_REPORT_SUCCESS_MESSAGE,
-            failure_message=MATCH_ACTION_FAILED_MESSAGE,
-            ephemeral=True,
-        )
+        await self.match_win(interaction, match_id)
 
     async def match_lose(self, interaction: discord.Interaction[Any], match_id: int) -> None:
         await self._sync_requesting_user_identity(interaction)
@@ -1341,16 +1315,7 @@ class BotCommandHandlers:
         interaction: discord.Interaction[Any],
         match_id: int,
     ) -> None:
-        await self._sync_requesting_user_identity(interaction)
-        await self._run_match_report(
-            interaction=interaction,
-            match_id=match_id,
-            executor_discord_user_id=interaction.user.id,
-            input_result=MatchReportInputResult.LOSE,
-            success_message=MATCH_REPORT_SUCCESS_MESSAGE,
-            failure_message=MATCH_ACTION_FAILED_MESSAGE,
-            ephemeral=True,
-        )
+        await self.match_lose(interaction, match_id)
 
     async def match_draw(self, interaction: discord.Interaction[Any], match_id: int) -> None:
         await self._sync_requesting_user_identity(interaction)
@@ -1368,16 +1333,7 @@ class BotCommandHandlers:
         interaction: discord.Interaction[Any],
         match_id: int,
     ) -> None:
-        await self._sync_requesting_user_identity(interaction)
-        await self._run_match_report(
-            interaction=interaction,
-            match_id=match_id,
-            executor_discord_user_id=interaction.user.id,
-            input_result=MatchReportInputResult.DRAW,
-            success_message=MATCH_REPORT_SUCCESS_MESSAGE,
-            failure_message=MATCH_ACTION_FAILED_MESSAGE,
-            ephemeral=True,
-        )
+        await self.match_draw(interaction, match_id)
 
     async def match_void(self, interaction: discord.Interaction[Any], match_id: int) -> None:
         await self._sync_requesting_user_identity(interaction)
@@ -1395,16 +1351,7 @@ class BotCommandHandlers:
         interaction: discord.Interaction[Any],
         match_id: int,
     ) -> None:
-        await self._sync_requesting_user_identity(interaction)
-        await self._run_match_report(
-            interaction=interaction,
-            match_id=match_id,
-            executor_discord_user_id=interaction.user.id,
-            input_result=MatchReportInputResult.VOID,
-            success_message=MATCH_REPORT_SUCCESS_MESSAGE,
-            failure_message=MATCH_ACTION_FAILED_MESSAGE,
-            ephemeral=True,
-        )
+        await self.match_void(interaction, match_id)
 
     async def match_approve(self, interaction: discord.Interaction[Any], match_id: int) -> None:
         await self._sync_requesting_user_identity(interaction)
@@ -1421,15 +1368,7 @@ class BotCommandHandlers:
         interaction: discord.Interaction[Any],
         match_id: int,
     ) -> None:
-        await self._sync_requesting_user_identity(interaction)
-        await self._run_match_approve(
-            interaction=interaction,
-            match_id=match_id,
-            executor_discord_user_id=interaction.user.id,
-            success_message=MATCH_APPROVE_SUCCESS_MESSAGE,
-            failure_message=MATCH_ACTION_FAILED_MESSAGE,
-            ephemeral=True,
-        )
+        await self.match_approve(interaction, match_id)
 
     async def admin_match_result(
         self,
@@ -2551,7 +2490,11 @@ class BotCommandHandlers:
         try:
             target_discord_user_id = self._parse_dummy_discord_user_id(discord_user_id)
         except ValueError:
-            await self._send_message(interaction, INVALID_DISCORD_USER_ID_MESSAGE)
+            await self._send_message(
+                interaction,
+                INVALID_DISCORD_USER_ID_MESSAGE,
+                ephemeral=True,
+            )
             return
         await self._run_match_parent(
             interaction=interaction,
@@ -2573,7 +2516,11 @@ class BotCommandHandlers:
         try:
             target_discord_user_id = self._parse_dummy_discord_user_id(discord_user_id)
         except ValueError:
-            await self._send_message(interaction, INVALID_DISCORD_USER_ID_MESSAGE)
+            await self._send_message(
+                interaction,
+                INVALID_DISCORD_USER_ID_MESSAGE,
+                ephemeral=True,
+            )
             return
 
         await self._run_match_spectate(
@@ -2582,7 +2529,6 @@ class BotCommandHandlers:
             executor_discord_user_id=target_discord_user_id,
             success_message=DEV_MATCH_SPECTATE_SUCCESS_MESSAGE,
             failure_message=DEV_MATCH_ACTION_FAILED_MESSAGE,
-            ephemeral=False,
         )
 
     async def dev_match_win(
@@ -2648,38 +2594,20 @@ class BotCommandHandlers:
 
         try:
             target_discord_user_id = self._parse_dummy_discord_user_id(discord_user_id)
-            notification_context = self._build_notification_context(
-                interaction,
-                mention_discord_user_id=target_discord_user_id,
-            )
-            player_id = await asyncio.to_thread(self._lookup_player_id, target_discord_user_id)
-            service = self._require_match_service()
-            await service.approve_match_result(
-                match_id,
-                player_id,
-                notification_context=notification_context,
-            )
         except ValueError:
-            await self._send_message(interaction, INVALID_DISCORD_USER_ID_MESSAGE)
-            return
-        except PlayerNotRegisteredError:
-            await self._send_message(interaction, DEV_TARGET_NOT_REGISTERED_MESSAGE)
-            return
-        except MatchFlowError as exc:
-            await self._send_message(interaction, str(exc))
-            return
-        except Exception:
-            self.logger.exception(
-                "Failed to execute /dev_match_approve command "
-                "executor_discord_user_id=%s target_discord_user_id=%s match_id=%s",
-                interaction.user.id,
-                discord_user_id,
-                match_id,
+            await self._send_message(
+                interaction,
+                INVALID_DISCORD_USER_ID_MESSAGE,
+                ephemeral=True,
             )
-            await self._send_message(interaction, DEV_MATCH_ACTION_FAILED_MESSAGE)
             return
-
-        await self._send_message(interaction, DEV_MATCH_APPROVE_SUCCESS_MESSAGE)
+        await self._run_match_approve(
+            interaction=interaction,
+            match_id=match_id,
+            executor_discord_user_id=target_discord_user_id,
+            success_message=DEV_MATCH_APPROVE_SUCCESS_MESSAGE,
+            failure_message=DEV_MATCH_ACTION_FAILED_MESSAGE,
+        )
 
     async def dev_is_admin(self, interaction: discord.Interaction[Any]) -> None:
         await self._sync_requesting_user_identity(interaction)
@@ -2703,7 +2631,7 @@ class BotCommandHandlers:
         executor_discord_user_id: int | None,
         success_message: str,
         failure_message: str,
-        ephemeral: bool = False,
+        ephemeral: bool = True,
     ) -> None:
         if executor_discord_user_id is None:
             return
@@ -2750,7 +2678,7 @@ class BotCommandHandlers:
         executor_discord_user_id: int,
         success_message: str | None,
         failure_message: str,
-        ephemeral: bool,
+        ephemeral: bool = True,
     ) -> None:
         try:
             player_id = await asyncio.to_thread(self._lookup_player_id, executor_discord_user_id)
@@ -2812,7 +2740,7 @@ class BotCommandHandlers:
         input_result: MatchReportInputResult,
         success_message: str,
         failure_message: str,
-        ephemeral: bool = False,
+        ephemeral: bool = True,
     ) -> None:
         try:
             notification_context = self._build_notification_context(
@@ -2859,7 +2787,7 @@ class BotCommandHandlers:
         executor_discord_user_id: int,
         success_message: str,
         failure_message: str,
-        ephemeral: bool = False,
+        ephemeral: bool = True,
     ) -> None:
         try:
             notification_context = self._build_notification_context(
@@ -2909,7 +2837,11 @@ class BotCommandHandlers:
         try:
             target_discord_user_id = self._parse_dummy_discord_user_id(discord_user_id)
         except ValueError:
-            await self._send_message(interaction, INVALID_DISCORD_USER_ID_MESSAGE)
+            await self._send_message(
+                interaction,
+                INVALID_DISCORD_USER_ID_MESSAGE,
+                ephemeral=True,
+            )
             return
 
         await self._run_match_report(

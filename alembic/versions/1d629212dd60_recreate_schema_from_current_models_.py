@@ -1,8 +1,8 @@
-"""recreate schema with season top rankings notification
+"""recreate schema from current models with brin queue indexes
 
-Revision ID: d43953b4ead9
+Revision ID: 1d629212dd60
 Revises: 
-Create Date: 2026-04-05 14:09:41.778759
+Create Date: 2026-04-07 22:09:59.348957
 """
 
 from collections.abc import Sequence
@@ -13,7 +13,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = 'd43953b4ead9'
+revision: str = '1d629212dd60'
 down_revision: str | None = None
 branch_labels: Sequence[str] | None = None
 depends_on: Sequence[str] | None = None
@@ -113,9 +113,12 @@ def upgrade() -> None:
     sa.ForeignKeyConstraint(['player_id'], ['players.id'], ),
     sa.PrimaryKeyConstraint('id')
     )
+    op.create_index('ix_match_queue_entries_joined_at_brin', 'match_queue_entries', ['joined_at'], unique=False, postgresql_using='brin')
     op.create_index(op.f('ix_match_queue_entries_match_format'), 'match_queue_entries', ['match_format'], unique=False)
     op.create_index(op.f('ix_match_queue_entries_player_id'), 'match_queue_entries', ['player_id'], unique=False)
     op.create_index(op.f('ix_match_queue_entries_queue_class_id'), 'match_queue_entries', ['queue_class_id'], unique=False)
+    op.create_index('ix_match_queue_entries_removed_at_expired_brin', 'match_queue_entries', ['removed_at'], unique=False, postgresql_using='brin', postgresql_where=sa.text("status = 'expired'"))
+    op.create_index('ix_match_queue_entries_removed_at_left_brin', 'match_queue_entries', ['removed_at'], unique=False, postgresql_using='brin', postgresql_where=sa.text("status = 'left'"))
     op.create_index('uq_match_queue_entries_waiting_player_id', 'match_queue_entries', ['player_id'], unique=True, postgresql_where=sa.text("status = 'waiting'"))
     op.create_table('matches',
     sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
@@ -387,9 +390,12 @@ def downgrade() -> None:
     op.drop_index(op.f('ix_matches_match_format'), table_name='matches')
     op.drop_table('matches')
     op.drop_index('uq_match_queue_entries_waiting_player_id', table_name='match_queue_entries', postgresql_where=sa.text("status = 'waiting'"))
+    op.drop_index('ix_match_queue_entries_removed_at_left_brin', table_name='match_queue_entries', postgresql_using='brin', postgresql_where=sa.text("status = 'left'"))
+    op.drop_index('ix_match_queue_entries_removed_at_expired_brin', table_name='match_queue_entries', postgresql_using='brin', postgresql_where=sa.text("status = 'expired'"))
     op.drop_index(op.f('ix_match_queue_entries_queue_class_id'), table_name='match_queue_entries')
     op.drop_index(op.f('ix_match_queue_entries_player_id'), table_name='match_queue_entries')
     op.drop_index(op.f('ix_match_queue_entries_match_format'), table_name='match_queue_entries')
+    op.drop_index('ix_match_queue_entries_joined_at_brin', table_name='match_queue_entries', postgresql_using='brin')
     op.drop_table('match_queue_entries')
     op.drop_table('leaderboard_snapshots')
     op.drop_index(op.f('ix_seasons_name'), table_name='seasons')

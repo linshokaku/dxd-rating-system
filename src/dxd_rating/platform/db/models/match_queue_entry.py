@@ -39,6 +39,23 @@ class MatchQueueEntry(Base):
             unique=True,
             postgresql_where=text("status = 'waiting'"),
         ),
+        Index(
+            "ix_match_queue_entries_joined_at_brin",
+            "joined_at",
+            postgresql_using="brin",
+        ),
+        Index(
+            "ix_match_queue_entries_removed_at_left_brin",
+            "removed_at",
+            postgresql_using="brin",
+            postgresql_where=text("status = 'left'"),
+        ),
+        Index(
+            "ix_match_queue_entries_removed_at_expired_brin",
+            "removed_at",
+            postgresql_using="brin",
+            postgresql_where=text("status = 'expired'"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)

@@ -36,6 +36,12 @@ MATCHMAKING_CHANNEL_MESSAGE = "\n".join(
         "在席更新とキュー退出は /present と /leave を使ってください。",
     ]
 )
+MATCHMAKING_CHANNEL_STATUS_PLACEHOLDER_MESSAGE = "\n".join(
+    [
+        "直近30分の参加状況",
+        "参加状況はまだ取得されていません",
+    ]
+)
 MATCHMAKING_CHANNEL_MATCH_FORMAT_PLACEHOLDER = "試合形式を選択"
 MATCHMAKING_CHANNEL_QUEUE_NAME_PLACEHOLDER = "階級を選択"
 MATCHMAKING_CHANNEL_JOIN_BUTTON_LABEL = "参加"
@@ -642,6 +648,7 @@ async def send_initial_managed_ui_message(
             content=build_matchmaking_guide_message(matchmaking_guide_url),
             suppress_embeds=True,
         )
+        await channel.send(content=MATCHMAKING_CHANNEL_STATUS_PLACEHOLDER_MESSAGE)
         return await channel.send(
             content=MATCHMAKING_CHANNEL_MESSAGE,
             view=MatchmakingPanelView(interaction_handler),

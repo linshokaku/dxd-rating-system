@@ -16,6 +16,7 @@
   - `/join`
   - `/present`
   - `/leave`
+  - `/update_matchmaking_status`
   - `/player_info`
   - `/player_info_season`
   - `/info_thread`
@@ -183,6 +184,36 @@
 - `match_format` や `queue_name` の入力は取らず、現在参加中のキューを対象にする。
 - 在席確認 thread の `離席` ボタンでも同じ業務処理を実行する。
 - 在席確認 thread UI の詳細は [../ui/matchmaking_presence_thread.md](../ui/matchmaking_presence_thread.md) を参照する。
+
+### `/update_matchmaking_status`
+
+#### 目的
+
+`レート戦マッチング` チャンネルの 2 通目にある参加状況メッセージを最新状態へ更新する。
+
+#### 入力
+
+- なし。
+
+#### 正常時の挙動
+
+- 同じ guild の `レート戦マッチング` チャンネルに設置された 2 通目の参加状況メッセージを対象にする。
+- その時点の参加状況を再取得し、対象メッセージ本文を編集で更新する。
+- 公開チャンネルに新しい参加状況メッセージは追加送信しない。
+- レスポンスは interaction 宛てに、実行ユーザーにだけ見えるプレーンテキストで返す。
+- 成功時のレスポンス:
+  - `参加状況を更新しました。`
+
+#### エラー時の挙動
+
+- `レート戦マッチング` チャンネルまたは対象メッセージが見つからない、参照できない、または内部エラー:
+  - `参加状況の更新に失敗しました。管理者に確認してください。`
+
+#### 備考
+
+- 実行するチャンネル自体は問わず、同じ guild にある管理対象の `matchmaking_channel` を更新対象とする。
+- `更新する` ボタンは、このコマンドと同じ業務処理と結果を使う UI 導線として扱う。
+- 参加状況メッセージ UI の詳細は [../ui/matchmaking_channel.md](../ui/matchmaking_channel.md) を参照する。
 
 ### `/player_info`
 

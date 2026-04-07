@@ -1,0 +1,421 @@
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Any
+
+from sqlalchemy import delete, func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.orm import Session, sessionmaker
+
+from dxd_rating.platform.db.models import (
+    ManagedUiChannel,
+    ManagedUiType,
+    MatchFormat,
+    OutboxEvent,
+    OutboxEventType,
+)
+from dxd_rating.platform.db.session import session_scope
+from dxd_rating.shared.constants import OUTBOX_NOTIFY_CHANNEL
+
+logger = logging.getLogger(__name__)
+
+REGISTER_PANEL_RECOMMENDED_CHANNEL_NAME = "レート戦はこちらから"
+MATCHMAKING_CHANNEL_RECOMMENDED_CHANNEL_NAME = "レート戦マッチング"
+MATCHMAKING_NEWS_CHANNEL_RECOMMENDED_CHANNEL_NAME = "レート戦マッチ速報"
+INFO_CHANNEL_RECOMMENDED_CHANNEL_NAME = "レート戦情報"
+SYSTEM_ANNOUNCEMENTS_CHANNEL_RECOMMENDED_CHANNEL_NAME = "レート戦アナウンス"
+ADMIN_CONTACT_CHANNEL_RECOMMENDED_CHANNEL_NAME = "運営連絡・フィードバック"
+ADMIN_OPERATIONS_CHANNEL_RECOMMENDED_CHANNEL_NAME = "運営専用"
+ADMIN_OPERATIONS_NOTIFICATION_KIND_DAILY_WORKER_STARTED = "daily_worker_started"
+ADMIN_OPERATIONS_NOTIFICATION_WORKER_NAME_DAILY_WORKER = "daily_worker"
+REGISTERED_PLAYER_ROLE_NAME = "レート戦参加者"
+
+
+@dataclass(frozen=True, slots=True)
+class ManagedUiDefinition:
+    ui_type: ManagedUiType
+    recommended_channel_name: str
+    singleton: bool
+    requires_registered_player_role: bool
+    installs_persistent_view: bool
+
+
+@dataclass(frozen=True, slots=True)
+class SeasonTopRankingEntryPayload:
+    rank: int
+    display_name: str
+    rating: float
+
+
+@dataclass(frozen=True, slots=True)
+class SeasonTopRankingsNotification:
+    match_format: MatchFormat
+    entries: tuple[SeasonTopRankingEntryPayload, ...]
+
+
+MANAGED_UI_DEFINITIONS = {
+    ManagedUiType.REGISTER_PANEL: ManagedUiDefinition(
+        ui_type=ManagedUiType.REGISTER_PANEL,
+        recommended_channel_name=REGISTER_PANEL_RECOMMENDED_CHANNEL_NAME,
+        singleton=True,
+        requires_registered_player_role=False,
+        installs_persistent_view=True,
+    ),
+    ManagedUiType.MATCHMAKING_CHANNEL: ManagedUiDefinition(
+        ui_type=ManagedUiType.MATCHMAKING_CHANNEL,
+        recommended_channel_name=MATCHMAKING_CHANNEL_RECOMMENDED_CHANNEL_NAME,
+        singleton=True,
+        requires_registered_player_role=True,
+        installs_persistent_view=True,
+    ),
+    ManagedUiType.MATCHMAKING_NEWS_CHANNEL: ManagedUiDefinition(
+        ui_type=ManagedUiType.MATCHMAKING_NEWS_CHANNEL,
+        recommended_channel_name=MATCHMAKING_NEWS_CHANNEL_RECOMMENDED_CHANNEL_NAME,
+        singleton=True,
+        requires_registered_player_role=True,
+        installs_persistent_view=False,
+    ),
+    ManagedUiType.INFO_CHANNEL: ManagedUiDefinition(
+        ui_type=ManagedUiType.INFO_CHANNEL,
+        recommended_channel_name=INFO_CHANNEL_RECOMMENDED_CHANNEL_NAME,
+        singleton=True,
+        requires_registered_player_role=True,
+        installs_persistent_view=True,
+    ),
+    ManagedUiType.SYSTEM_ANNOUNCEMENTS_CHANNEL: ManagedUiDefinition(
+        ui_type=ManagedUiType.SYSTEM_ANNOUNCEMENTS_CHANNEL,
+        recommended_channel_name=SYSTEM_ANNOUNCEMENTS_CHANNEL_RECOMMENDED_CHANNEL_NAME,
+        singleton=True,
+        requires_registered_player_role=True,
+        installs_persistent_view=False,
+    ),
+    ManagedUiType.ADMIN_CONTACT_CHANNEL: ManagedUiDefinition(
+        ui_type=ManagedUiType.ADMIN_CONTACT_CHANNEL,
+        recommended_channel_name=ADMIN_CONTACT_CHANNEL_RECOMMENDED_CHANNEL_NAME,
+        singleton=True,
+        requires_registered_player_role=False,
+        installs_persistent_view=False,
+    ),
+    ManagedUiType.ADMIN_OPERATIONS_CHANNEL: ManagedUiDefinition(
+        ui_type=ManagedUiType.ADMIN_OPERATIONS_CHANNEL,
+        recommended_channel_name=ADMIN_OPERATIONS_CHANNEL_RECOMMENDED_CHANNEL_NAME,
+        singleton=True,
+        requires_registered_player_role=False,
+        installs_persistent_view=False,
+    ),
+}
+REQUIRED_MANAGED_UI_TYPES = (
+    ManagedUiType.REGISTER_PANEL,
+    ManagedUiType.MATCHMAKING_CHANNEL,
+    ManagedUiType.MATCHMAKING_NEWS_CHANNEL,
+    ManagedUiType.INFO_CHANNEL,
+    ManagedUiType.SYSTEM_ANNOUNCEMENTS_CHANNEL,
+    ManagedUiType.ADMIN_CONTACT_CHANNEL,
+    ManagedUiType.ADMIN_OPERATIONS_CHANNEL,
+)
+
+
+def get_managed_ui_definition(ui_type: ManagedUiType) -> ManagedUiDefinition:
+    return MANAGED_UI_DEFINITIONS[ui_type]
+
+
+def get_required_managed_ui_definitions() -> tuple[ManagedUiDefinition, ...]:
+    return tuple(MANAGED_UI_DEFINITIONS[ui_type] for ui_type in REQUIRED_MANAGED_UI_TYPES)
+
+
+def enqueue_daily_worker_started_admin_operations_notification(
+    session: Session,
+    *,
+    occurred_at: datetime,
+) -> bool:
+    if occurred_at.tzinfo is None or occurred_at.utcoffset() is None:
+        raise ValueError("occurred_at must be timezone-aware")
+
+    admin_operations_channel = _get_managed_ui_channel_by_type(
+        session,
+        ui_type=ManagedUiType.ADMIN_OPERATIONS_CHANNEL,
+    )
+    if admin_operations_channel is None:
+        logger.warning(
+            "Skipping daily worker startup notification because admin_operations_channel "
+            "is not configured"
+        )
+        return False
+
+    payload: dict[str, Any] = {
+        "notification_kind": ADMIN_OPERATIONS_NOTIFICATION_KIND_DAILY_WORKER_STARTED,
+        "worker_name": ADMIN_OPERATIONS_NOTIFICATION_WORKER_NAME_DAILY_WORKER,
+        "occurred_at": occurred_at.isoformat(),
+        "destination": {
+            "kind": "channel",
+            "channel_id": admin_operations_channel.channel_id,
+            "guild_id": None,
+        },
+    }
+    dedupe_key = (
+        "admin_operations_notification:"
+        f"{ADMIN_OPERATIONS_NOTIFICATION_KIND_DAILY_WORKER_STARTED}:"
+        f"{ADMIN_OPERATIONS_NOTIFICATION_WORKER_NAME_DAILY_WORKER}:"
+        f"{occurred_at.isoformat()}"
+    )
+    inserted_event_id = _insert_outbox_event(
+        session,
+        event_type=OutboxEventType.ADMIN_OPERATIONS_NOTIFICATION,
+        dedupe_key=dedupe_key,
+        payload=payload,
+    )
+
+    if inserted_event_id is None:
+        return False
+
+    _notify_outbox(session, inserted_event_id)
+    return True
+
+
+def enqueue_season_completed_notification(
+    session: Session,
+    *,
+    season_id: int,
+    season_name: str,
+    completed_at: datetime,
+) -> bool:
+    if completed_at.tzinfo is None or completed_at.utcoffset() is None:
+        raise ValueError("completed_at must be timezone-aware")
+
+    system_announcements_channel = _get_managed_ui_channel_by_type(
+        session,
+        ui_type=ManagedUiType.SYSTEM_ANNOUNCEMENTS_CHANNEL,
+    )
+    if system_announcements_channel is None:
+        logger.warning(
+            "Skipping season completed notification because system_announcements_channel "
+            "is not configured season_id=%s",
+            season_id,
+        )
+        return False
+
+    payload: dict[str, Any] = {
+        "season_id": season_id,
+        "season_name": season_name,
+        "completed_at": completed_at.isoformat(),
+        "destination": {
+            "kind": "channel",
+            "channel_id": system_announcements_channel.channel_id,
+            "guild_id": None,
+        },
+    }
+    dedupe_key = f"season_completed:{season_id}"
+    inserted_event_id = _insert_outbox_event(
+        session,
+        event_type=OutboxEventType.SEASON_COMPLETED,
+        dedupe_key=dedupe_key,
+        payload=payload,
+    )
+
+    if inserted_event_id is None:
+        return False
+
+    _notify_outbox(session, inserted_event_id)
+    return True
+
+
+def enqueue_season_completion_notifications(
+    session: Session,
+    *,
+    season_id: int,
+    season_name: str,
+    completed_at: datetime,
+    top_rankings: tuple[SeasonTopRankingsNotification, ...],
+) -> bool:
+    if completed_at.tzinfo is None or completed_at.utcoffset() is None:
+        raise ValueError("completed_at must be timezone-aware")
+
+    system_announcements_channel = _get_managed_ui_channel_by_type(
+        session,
+        ui_type=ManagedUiType.SYSTEM_ANNOUNCEMENTS_CHANNEL,
+    )
+    if system_announcements_channel is None:
+        logger.warning(
+            "Skipping season completion notifications because system_announcements_channel "
+            "is not configured season_id=%s",
+            season_id,
+        )
+        return False
+
+    destination = {
+        "kind": "channel",
+        "channel_id": system_announcements_channel.channel_id,
+        "guild_id": None,
+    }
+    event_ids: list[int] = []
+
+    inserted_season_completed_event_id = _insert_outbox_event(
+        session,
+        event_type=OutboxEventType.SEASON_COMPLETED,
+        dedupe_key=f"season_completed:{season_id}",
+        payload={
+            "season_id": season_id,
+            "season_name": season_name,
+            "completed_at": completed_at.isoformat(),
+            "destination": destination,
+        },
+    )
+    if inserted_season_completed_event_id is not None:
+        event_ids.append(inserted_season_completed_event_id)
+
+    for season_top_rankings in top_rankings:
+        inserted_event_id = _insert_outbox_event(
+            session,
+            event_type=OutboxEventType.SEASON_TOP_RANKINGS,
+            dedupe_key=(
+                f"season_top_rankings:{season_id}:{season_top_rankings.match_format.value}"
+            ),
+            payload={
+                "season_id": season_id,
+                "season_name": season_name,
+                "completed_at": completed_at.isoformat(),
+                "match_format": season_top_rankings.match_format.value,
+                "entries": [
+                    {
+                        "rank": entry.rank,
+                        "display_name": entry.display_name,
+                        "rating": entry.rating,
+                    }
+                    for entry in season_top_rankings.entries
+                ],
+                "destination": destination,
+            },
+        )
+        if inserted_event_id is not None:
+            event_ids.append(inserted_event_id)
+
+    for event_id in event_ids:
+        _notify_outbox(session, event_id)
+    return bool(event_ids)
+
+
+class ManagedUiService:
+    def __init__(self, session_factory: sessionmaker[Session]) -> None:
+        self.session_factory = session_factory
+
+    def list_managed_ui_channels(self) -> list[ManagedUiChannel]:
+        with session_scope(self.session_factory) as session:
+            return _list_managed_ui_channels(session)
+
+    def get_managed_ui_channel_by_type(self, ui_type: ManagedUiType) -> ManagedUiChannel | None:
+        with session_scope(self.session_factory) as session:
+            return _get_managed_ui_channel_by_type(session, ui_type=ui_type)
+
+    def create_managed_ui_channel(
+        self,
+        *,
+        ui_type: ManagedUiType,
+        channel_id: int,
+        message_id: int,
+        status_message_id: int | None = None,
+        created_by_discord_user_id: int,
+    ) -> ManagedUiChannel:
+        with session_scope(self.session_factory) as session:
+            return _create_managed_ui_channel(
+                session,
+                ui_type=ui_type,
+                channel_id=channel_id,
+                message_id=message_id,
+                status_message_id=status_message_id,
+                created_by_discord_user_id=created_by_discord_user_id,
+            )
+
+    def delete_managed_ui_channel_by_channel_id(self, channel_id: int) -> bool:
+        return self.delete_managed_ui_channels_by_channel_ids([channel_id]) > 0
+
+    def delete_managed_ui_channels_by_channel_ids(self, channel_ids: list[int]) -> int:
+        if not channel_ids:
+            return 0
+
+        with session_scope(self.session_factory) as session:
+            return _delete_managed_ui_channels_by_channel_ids(
+                session,
+                channel_ids=channel_ids,
+            )
+
+
+def _list_managed_ui_channels(session: Session) -> list[ManagedUiChannel]:
+    return list(session.scalars(select(ManagedUiChannel).order_by(ManagedUiChannel.id.asc())).all())
+
+
+def _get_managed_ui_channel_by_type(
+    session: Session,
+    *,
+    ui_type: ManagedUiType,
+) -> ManagedUiChannel | None:
+    return session.scalar(
+        select(ManagedUiChannel)
+        .where(ManagedUiChannel.ui_type == ui_type)
+        .order_by(ManagedUiChannel.id.asc())
+    )
+
+
+def _create_managed_ui_channel(
+    session: Session,
+    *,
+    ui_type: ManagedUiType,
+    channel_id: int,
+    message_id: int,
+    status_message_id: int | None,
+    created_by_discord_user_id: int,
+) -> ManagedUiChannel:
+    managed_ui_channel = ManagedUiChannel(
+        ui_type=ui_type,
+        channel_id=channel_id,
+        message_id=message_id,
+        status_message_id=status_message_id,
+        created_by_discord_user_id=created_by_discord_user_id,
+    )
+    session.add(managed_ui_channel)
+    session.flush()
+    return managed_ui_channel
+
+
+def _delete_managed_ui_channels_by_channel_ids(
+    session: Session,
+    *,
+    channel_ids: list[int],
+) -> int:
+    deleted_channel_ids = session.scalars(
+        delete(ManagedUiChannel)
+        .where(ManagedUiChannel.channel_id.in_(channel_ids))
+        .returning(ManagedUiChannel.channel_id)
+    ).all()
+    return len(deleted_channel_ids)
+
+
+def _insert_outbox_event(
+    session: Session,
+    *,
+    event_type: OutboxEventType,
+    dedupe_key: str,
+    payload: dict[str, Any],
+) -> int | None:
+    return session.execute(
+        pg_insert(OutboxEvent)
+        .values(
+            event_type=event_type,
+            dedupe_key=dedupe_key,
+            payload=payload,
+        )
+        .on_conflict_do_nothing(index_elements=[OutboxEvent.dedupe_key])
+        .returning(OutboxEvent.id)
+    ).scalar_one_or_none()
+
+
+def _notify_outbox(session: Session, event_id: int) -> None:
+    session.execute(
+        select(
+            func.pg_notify(
+                OUTBOX_NOTIFY_CHANNEL,
+                str(event_id),
+            )
+        )
+    )

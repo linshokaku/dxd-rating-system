@@ -29,6 +29,7 @@ from dxd_rating.contexts.matchmaking.application import (
     LeaveQueueResult,
     MatchingQueueNotificationContext,
     MatchingQueueService,
+    MatchmakingStatusSnapshotEntry,
     PresenceReminderResult,
     PresentQueueResult,
     WaitingEntryTimerState,
@@ -41,7 +42,11 @@ from dxd_rating.platform.db.models import (
     PenaltyType,
 )
 from dxd_rating.platform.runtime.outbox import retry_delay_for_failure_count
-from dxd_rating.shared.constants import MATCH_PARENT_SELECTION_WINDOW, PRESENCE_REMINDER_LEAD_TIME
+from dxd_rating.shared.constants import (
+    MATCH_PARENT_SELECTION_WINDOW,
+    MATCH_QUEUE_TTL,
+    PRESENCE_REMINDER_LEAD_TIME,
+)
 
 DEFAULT_RECONCILE_INTERVAL = timedelta(minutes=5)
 P = ParamSpec("P")
@@ -57,6 +62,22 @@ class MatchRuntimeService(Protocol):
         *,
         notification_context: MatchingQueueNotificationContext | None = None,
     ) -> JoinQueueResult: ...
+
+    def update_waiting_notification_context(
+        self,
+        queue_entry_id: int,
+        notification_context: MatchingQueueNotificationContext,
+    ) -> bool: ...
+
+    def update_waiting_presence_thread_channel_id(
+        self,
+        queue_entry_id: int,
+        presence_thread_channel_id: int,
+    ) -> bool: ...
+
+    def get_waiting_entry_notification_channel_id(self, player_id: int) -> int | None: ...
+
+    def get_matchmaking_status_snapshot(self) -> tuple[MatchmakingStatusSnapshotEntry, ...]: ...
 
     def present(
         self,
@@ -212,6 +233,7 @@ class MatchRuntime:
         self._scheduled_tasks: dict[ScheduledTaskKey, asyncio.Task[None]] = {}
         self._scheduled_match_tasks: dict[MatchScheduledTaskKey, asyncio.Task[None]] = {}
         self._reconcile_task: asyncio.Task[None] | None = None
+        self._database_clock_offset = timedelta()
         self._closed = False
         self._state_lock = asyncio.Lock()
 
@@ -247,6 +269,7 @@ class MatchRuntime:
         queue_name: str,
         *,
         notification_context: MatchingQueueNotificationContext | None = None,
+        after_join: Callable[[JoinQueueResult], Awaitable[None]] | None = None,
     ) -> JoinQueueResult:
         self._ensure_open()
         self._bind_current_loop_if_needed()
@@ -257,6 +280,7 @@ class MatchRuntime:
             queue_name,
             notification_context=notification_context,
         )
+        self._observe_database_time(result.expire_at - MATCH_QUEUE_TTL)
         self._schedule_task(
             key=self._presence_reminder_task_key(result.queue_entry_id),
             task_name="presence reminder",
@@ -279,6 +303,8 @@ class MatchRuntime:
                 result.revision,
             ),
         )
+        if after_join is not None:
+            await after_join(result)
         await self._try_create_matches_safely(
             context="join",
             queue_class_id=result.queue_class_id,
@@ -308,6 +334,7 @@ class MatchRuntime:
                 "present result for waiting entry must include revision and expire_at"
             )
 
+        self._observe_database_time(result.expire_at - MATCH_QUEUE_TTL)
         self._cancel_scheduled_task(self._presence_reminder_task_key(result.queue_entry_id))
         self._cancel_scheduled_task(self._expire_task_key(result.queue_entry_id))
         self._schedule_task(
@@ -333,6 +360,47 @@ class MatchRuntime:
             ),
         )
         return result
+
+    async def update_waiting_notification_context(
+        self,
+        queue_entry_id: int,
+        notification_context: MatchingQueueNotificationContext,
+    ) -> bool:
+        self._ensure_open()
+        self._bind_current_loop_if_needed()
+        return await asyncio.to_thread(
+            self.service.update_waiting_notification_context,
+            queue_entry_id,
+            notification_context,
+        )
+
+    async def update_waiting_presence_thread_channel_id(
+        self,
+        queue_entry_id: int,
+        presence_thread_channel_id: int,
+    ) -> bool:
+        self._ensure_open()
+        self._bind_current_loop_if_needed()
+        return await asyncio.to_thread(
+            self.service.update_waiting_presence_thread_channel_id,
+            queue_entry_id,
+            presence_thread_channel_id,
+        )
+
+    async def get_waiting_entry_notification_channel_id(self, player_id: int) -> int | None:
+        self._ensure_open()
+        self._bind_current_loop_if_needed()
+        return await asyncio.to_thread(
+            self.service.get_waiting_entry_notification_channel_id,
+            player_id,
+        )
+
+    async def get_matchmaking_status_snapshot(
+        self,
+    ) -> tuple[MatchmakingStatusSnapshotEntry, ...]:
+        self._ensure_open()
+        self._bind_current_loop_if_needed()
+        return await asyncio.to_thread(self.service.get_matchmaking_status_snapshot)
 
     async def leave(self, player_id: int) -> LeaveQueueResult:
         self._ensure_open()
@@ -360,12 +428,18 @@ class MatchRuntime:
             notification_context=notification_context,
         )
         if result.assigned:
-            self._cancel_match_task(self._parent_deadline_task_key(match_id))
-            self._schedule_match_reporting_tasks(
-                match_id=match_id,
-                report_open_at=result.report_open_at,
-                report_deadline_at=result.report_deadline_at,
-            )
+            if result.finalized:
+                self._cancel_all_match_tasks(match_id)
+            elif result.approval_deadline_at is not None:
+                self._cancel_match_task(self._parent_deadline_task_key(match_id))
+                self._schedule_match_approval_task(match_id, result.approval_deadline_at)
+            else:
+                self._cancel_match_task(self._parent_deadline_task_key(match_id))
+                self._schedule_match_reporting_tasks(
+                    match_id=match_id,
+                    report_open_at=result.report_open_at,
+                    report_deadline_at=result.report_deadline_at,
+                )
         return result
 
     async def spectate_match(
@@ -491,12 +565,18 @@ class MatchRuntime:
         match_service = self._require_match_service()
         result = await asyncio.to_thread(match_service.process_parent_deadline, match_id)
         if result.assigned:
-            self._cancel_match_task(self._parent_deadline_task_key(match_id))
-            self._schedule_match_reporting_tasks(
-                match_id=match_id,
-                report_open_at=result.report_open_at,
-                report_deadline_at=result.report_deadline_at,
-            )
+            if result.finalized:
+                self._cancel_all_match_tasks(match_id)
+            elif result.approval_deadline_at is not None:
+                self._cancel_match_task(self._parent_deadline_task_key(match_id))
+                self._schedule_match_approval_task(match_id, result.approval_deadline_at)
+            else:
+                self._cancel_match_task(self._parent_deadline_task_key(match_id))
+                self._schedule_match_reporting_tasks(
+                    match_id=match_id,
+                    report_open_at=result.report_open_at,
+                    report_deadline_at=result.report_deadline_at,
+                )
         return result
 
     async def process_report_open(self, match_id: int) -> bool:
@@ -590,6 +670,7 @@ class MatchRuntime:
         snapshot_time, waiting_entries = await asyncio.to_thread(
             self.service.load_waiting_entry_timer_states,
         )
+        self._observe_database_time(snapshot_time)
 
         reminded_queue_entry_ids: list[int] = []
         rescheduled_reminder_queue_entry_ids: list[int] = []
@@ -667,6 +748,7 @@ class MatchRuntime:
         snapshot_time, active_matches = await asyncio.to_thread(
             self.match_service.load_active_match_timer_states
         )
+        self._observe_database_time(snapshot_time)
         auto_assigned_parent_match_ids: list[int] = []
         opened_report_match_ids: list[int] = []
         started_approval_match_ids: list[int] = []
@@ -1171,13 +1253,19 @@ class MatchRuntime:
         )
 
     def _seconds_until(self, scheduled_at: datetime) -> float:
-        if scheduled_at.tzinfo is None:
-            current_time = datetime.now()
-        else:
-            current_time = datetime.now(tz=scheduled_at.tzinfo)
+        current_time = self._database_now_for(scheduled_at)
         return max((scheduled_at - current_time).total_seconds(), 0.0)
 
     def _current_time_for(self, reference: datetime) -> datetime:
+        return self._database_now_for(reference)
+
+    def _database_now_for(self, reference: datetime) -> datetime:
+        return self._app_now_for_reference(reference) + self._database_clock_offset
+
+    def _observe_database_time(self, database_time: datetime) -> None:
+        self._database_clock_offset = database_time - self._app_now_for_reference(database_time)
+
+    def _app_now_for_reference(self, reference: datetime) -> datetime:
         if reference.tzinfo is None:
             return datetime.now()
         return datetime.now(tz=reference.tzinfo)

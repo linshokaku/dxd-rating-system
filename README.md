@@ -26,6 +26,7 @@ src/
         main.py
       worker/
         daily.py
+        force_end_season.py
     contexts/
       common/
       players/
@@ -52,6 +53,8 @@ AGENTS.md
 Bot service:
 - `DISCORD_BOT_TOKEN`
 - `DATABASE_URL`
+- `MATCHMAKING_GUIDE_URL` (必須。例: `https://github.com/linshokaku/dxd-rating-system/blob/main/docs/README.md`)
+- `DEVELOPMENT_MODE` (任意。`true` にすると Bot は開発モードで起動)
 - `SUPER_ADMIN_USER_IDS` (任意。カンマ区切りの Discord user ID。例: `123456789012345678,234567890123456789`)
 - `LOG_LEVEL` (任意。未指定時は `INFO`)
 
@@ -79,11 +82,21 @@ DATABASE_URL=postgresql+psycopg://user:password@localhost:5432/dxd_rating
 ## ローカル起動手順
 ```bash
 cp .env.example .env
+docker compose down -v
 docker compose up -d db
-uv sync
+uv sync --extra dev
+sleep 1
 uv run alembic upgrade head
-uv run python -m dxd_rating.apps.bot.main
+DEVELOPMENT_MODE=true uv run python -m dxd_rating.apps.bot.main
 ```
+
+開発モードで Bot を起動する場合:
+
+```bash
+DEVELOPMENT_MODE=true uv run python -m dxd_rating.apps.bot.main
+```
+
+開発モードでは `/admin_setup_ui_channels` が作成する UI チャンネルをすべて private channel として作成します。
 
 ## Cron Job
 定期実行処理は `src/dxd_rating/apps/worker/` 配下に置き、Railway の Cron Job からコマンド実行する想定です。
@@ -96,6 +109,15 @@ uv run python -m dxd_rating.apps.worker.daily
 このジョブは Bot 本体とは別プロセスで動作し、現在は DB 接続確認と今後の定期処理を追加するための雛形を提供します。
 Railway ではこのコマンドを Cron Job に設定し、スケジュール自体は Railway 側で管理してください。
 このジョブは現在、DB 接続確認、シーズン保守、ランキング snapshot の日次生成と古い snapshot の削除を行います。
+
+テスト目的で active season を強制終了する手動 CLI app も用意しています。
+
+```bash
+uv run python -m dxd_rating.apps.worker.force_end_season
+```
+
+このコマンドは DB を直接更新し、実行時点の active season の `end_at` と次 season の `start_at` を同じ時刻へ変更します。
+テスト用途専用であり、season completion 判定、次 season 作成、snapshot 更新、通知 enqueue は行いません。
 
 ## モデル更新
 ```bash

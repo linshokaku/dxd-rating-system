@@ -4,6 +4,7 @@ from dxd_rating.platform.db.models.base import Base
 from dxd_rating.platform.db.models.finalized_match_player_result import FinalizedMatchPlayerResult
 from dxd_rating.platform.db.models.finalized_match_result import FinalizedMatchResult
 from dxd_rating.platform.db.models.leaderboard_snapshot import LeaderboardSnapshot
+from dxd_rating.platform.db.models.managed_ui_channel import ManagedUiChannel, ManagedUiType
 from dxd_rating.platform.db.models.match import Match
 from dxd_rating.platform.db.models.match_admin_override import MatchAdminOverride
 from dxd_rating.platform.db.models.match_format import MatchFormat
@@ -35,6 +36,7 @@ from dxd_rating.platform.db.models.player_format_stats import (
     CarryoverStatus,
     PlayerFormatStats,
 )
+from dxd_rating.platform.db.models.player_info_thread_binding import PlayerInfoThreadBinding
 from dxd_rating.platform.db.models.player_penalty import PlayerPenalty
 from dxd_rating.platform.db.models.player_penalty_adjustment import PlayerPenaltyAdjustment
 from dxd_rating.platform.db.models.season import Season
@@ -48,6 +50,8 @@ __all__ = [
     "FinalizedMatchResult",
     "INITIAL_RATING",
     "LeaderboardSnapshot",
+    "ManagedUiChannel",
+    "ManagedUiType",
     "Match",
     "MatchAdminOverride",
     "MatchApprovalStatus",
@@ -72,6 +76,7 @@ __all__ = [
     "PlayerAccessRestriction",
     "PlayerAccessRestrictionType",
     "PlayerFormatStats",
+    "PlayerInfoThreadBinding",
     "PlayerPenalty",
     "PlayerPenaltyAdjustment",
     "Season",

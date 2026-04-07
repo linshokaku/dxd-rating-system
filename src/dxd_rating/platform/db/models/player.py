@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from dxd_rating.platform.db.models.match_spectator import MatchSpectator
     from dxd_rating.platform.db.models.player_access_restriction import PlayerAccessRestriction
     from dxd_rating.platform.db.models.player_format_stats import PlayerFormatStats
+    from dxd_rating.platform.db.models.player_info_thread_binding import PlayerInfoThreadBinding
     from dxd_rating.platform.db.models.player_penalty import PlayerPenalty
     from dxd_rating.platform.db.models.player_penalty_adjustment import PlayerPenaltyAdjustment
 
@@ -58,4 +59,9 @@ class Player(Base):
     penalties: Mapped[list[PlayerPenalty]] = relationship(back_populates="player")
     penalty_adjustments: Mapped[list[PlayerPenaltyAdjustment]] = relationship(
         back_populates="player"
+    )
+    info_thread_binding: Mapped[PlayerInfoThreadBinding | None] = relationship(
+        back_populates="player",
+        cascade="all, delete-orphan",
+        uselist=False,
     )

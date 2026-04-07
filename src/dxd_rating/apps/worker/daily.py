@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from pydantic import ValidationError
 from sqlalchemy import text
@@ -13,6 +14,9 @@ from dxd_rating.contexts.seasons.application import (
     ensure_active_and_upcoming_seasons,
     get_database_now,
     update_ended_season_completions,
+)
+from dxd_rating.contexts.ui.application import (
+    enqueue_daily_worker_started_admin_operations_notification,
 )
 from dxd_rating.platform.config.common import configure_logging, raise_settings_load_error
 from dxd_rating.platform.config.worker import WorkerSettings
@@ -95,9 +99,27 @@ def registered_daily_jobs() -> tuple[RegisteredDailyJob, ...]:
     )
 
 
-def run_daily_jobs(session_factory: sessionmaker[Session]) -> None:
+def run_daily_jobs(
+    session_factory: sessionmaker[Session],
+    *,
+    started_at: datetime | None = None,
+) -> None:
+    if started_at is None:
+        started_at = datetime.now(timezone.utc)
+
     jobs = registered_daily_jobs()
     logger.info("Starting daily cron job run with %d registered jobs", len(jobs))
+
+    with session_scope(session_factory) as session:
+        notification_enqueued = enqueue_daily_worker_started_admin_operations_notification(
+            session,
+            occurred_at=started_at,
+        )
+    logger.info(
+        "Processed daily worker startup notification enqueue occurred_at=%s enqueued=%s",
+        started_at.isoformat(),
+        notification_enqueued,
+    )
 
     for job in jobs:
         logger.info("Running daily job: %s", job.name)
@@ -113,9 +135,10 @@ def main() -> None:
 
     engine = create_db_engine(settings.database_url)
     session_factory = create_session_factory(engine)
+    started_at = datetime.now(timezone.utc)
 
     try:
-        run_daily_jobs(session_factory)
+        run_daily_jobs(session_factory, started_at=started_at)
     finally:
         engine.dispose()
 

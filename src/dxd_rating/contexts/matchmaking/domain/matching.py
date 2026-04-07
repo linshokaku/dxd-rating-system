@@ -8,7 +8,11 @@ from math import pow
 from typing import Protocol
 
 from dxd_rating.platform.db.models import MatchFormat
-from dxd_rating.shared.constants import MatchFormatDefinition, MatchQueueClassDefinition
+from dxd_rating.shared.constants import (
+    MatchFormatDefinition,
+    MatchQueueClassDefinition,
+    normalize_match_queue_name,
+)
 
 RATING_DIVISOR = 400.0
 
@@ -68,39 +72,24 @@ def is_queue_join_allowed(
 ) -> bool:
     if not definitions_for_format:
         raise ValueError("definitions_for_format must contain at least one queue class definition")
-    if not all(definition.target_rating is not None for definition in definitions_for_format):
-        return True
-    if len(definitions_for_format) == 1:
-        return True
-
-    queue_index = next(
-        (
-            index
-            for index, definition in enumerate(definitions_for_format)
-            if definition.queue_class_id == queue_class_definition.queue_class_id
-        ),
-        None,
-    )
-    if queue_index is None:
+    if not any(
+        definition.queue_class_id == queue_class_definition.queue_class_id
+        for definition in definitions_for_format
+    ):
         raise ValueError(
             f"Unknown queue_class_id for format: {queue_class_definition.queue_class_id}"
         )
-
-    if queue_index == 0:
-        upper_definition = definitions_for_format[1]
-        assert upper_definition.target_rating is not None
-        return rating < upper_definition.target_rating
-
-    if queue_index == len(definitions_for_format) - 1:
-        lower_definition = definitions_for_format[-2]
-        assert lower_definition.target_rating is not None
-        return lower_definition.target_rating <= rating
-
-    lower_definition = definitions_for_format[queue_index - 1]
-    upper_definition = definitions_for_format[queue_index + 1]
-    assert lower_definition.target_rating is not None
-    assert upper_definition.target_rating is not None
-    return lower_definition.target_rating <= rating < upper_definition.target_rating
+    if (
+        queue_class_definition.minimum_rating is not None
+        and rating < queue_class_definition.minimum_rating
+    ):
+        return False
+    if (
+        queue_class_definition.maximum_rating is not None
+        and rating >= queue_class_definition.maximum_rating
+    ):
+        return False
+    return True
 
 
 def validate_queue_class_definitions(
@@ -119,7 +108,7 @@ def validate_queue_class_definitions(
     for definition in normalized_definitions:
         if definition.match_format not in supported_match_formats:
             raise ValueError(f"Unsupported match_format: {definition.match_format.value}")
-        normalized_queue_name = definition.queue_name.strip().casefold()
+        normalized_queue_name = normalize_match_queue_name(definition.queue_name)
         if not normalized_queue_name:
             raise ValueError("queue_name must not be empty")
         if definition.queue_class_id in queue_class_ids:
@@ -136,27 +125,13 @@ def validate_queue_class_definitions(
         definitions_by_format.setdefault(definition.match_format, []).append(definition)
 
     for definitions_for_format in definitions_by_format.values():
-        has_target_ratings = [
-            definition.target_rating is not None for definition in definitions_for_format
-        ]
-        if any(has_target_ratings) and not all(has_target_ratings):
-            raise ValueError(
-                "queue_class_definitions for a match_format must either all define "
-                "target_rating or all omit it"
-            )
-
-        previous_target_rating: float | None = None
         for definition in definitions_for_format:
-            if definition.target_rating is None:
-                continue
             if (
-                previous_target_rating is not None
-                and definition.target_rating <= previous_target_rating
+                definition.minimum_rating is not None
+                and definition.maximum_rating is not None
+                and definition.maximum_rating <= definition.minimum_rating
             ):
-                raise ValueError(
-                    "target_rating values must be strictly increasing within a match_format"
-                )
-            previous_target_rating = definition.target_rating
+                raise ValueError("maximum_rating must be greater than minimum_rating")
 
     return normalized_definitions
 

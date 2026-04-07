@@ -18,6 +18,11 @@ from dxd_rating.contexts.common.application.errors import (
     SeasonStateError,
 )
 from dxd_rating.contexts.players.domain import format_player_display_name
+from dxd_rating.contexts.ui.application import (
+    SeasonTopRankingEntryPayload,
+    SeasonTopRankingsNotification,
+    enqueue_season_completion_notifications,
+)
 from dxd_rating.platform.db.models import (
     INITIAL_RATING,
     ActiveMatchState,
@@ -66,6 +71,15 @@ class ActiveSeasonPair:
 
 
 @dataclass(frozen=True, slots=True)
+class ForceEndSeasonResult:
+    active_season_id: int
+    upcoming_season_id: int
+    forced_at: datetime
+    previous_active_end_at: datetime
+    previous_upcoming_start_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
 class PlayerFormatSeasonInfo:
     match_format: MatchFormat
     rating: float
@@ -98,6 +112,19 @@ class PlayerSeasonInfo:
 class SeasonService:
     def __init__(self, session_factory: sessionmaker[Session]) -> None:
         self.session_factory = session_factory
+
+    def list_started_seasons(
+        self,
+        *,
+        current_time: datetime | None = None,
+        limit: int | None = None,
+    ) -> tuple[SeasonInfo, ...]:
+        with session_scope(self.session_factory) as session:
+            return list_started_seasons(
+                session,
+                current_time=current_time,
+                limit=limit,
+            )
 
     def rename_season(self, season_id: int, name: str) -> SeasonRenameResult:
         with session_scope(self.session_factory) as session:
@@ -186,6 +213,60 @@ def get_active_and_upcoming_seasons(
         raise SeasonStateError("稼働中シーズンに対応する次シーズンが存在しません。")
 
     return ActiveSeasonPair(active=active_season, upcoming=upcoming_season)
+
+
+def force_end_active_season(
+    session: Session,
+    *,
+    current_time: datetime | None = None,
+) -> ForceEndSeasonResult:
+    forced_at = get_database_now(session) if current_time is None else current_time
+    season_pair = get_active_and_upcoming_seasons(session, current_time=forced_at)
+    if forced_at <= season_pair.active.start_at:
+        raise SeasonStateError("稼働中シーズンの開始時刻以前には強制終了できません。")
+
+    previous_active_end_at = season_pair.active.end_at
+    previous_upcoming_start_at = season_pair.upcoming.start_at
+    season_pair.active.end_at = forced_at
+    season_pair.upcoming.start_at = forced_at
+    session.flush()
+
+    return ForceEndSeasonResult(
+        active_season_id=season_pair.active.id,
+        upcoming_season_id=season_pair.upcoming.id,
+        forced_at=forced_at,
+        previous_active_end_at=previous_active_end_at,
+        previous_upcoming_start_at=previous_upcoming_start_at,
+    )
+
+
+def list_started_seasons(
+    session: Session,
+    *,
+    current_time: datetime | None = None,
+    limit: int | None = None,
+) -> tuple[SeasonInfo, ...]:
+    resolved_current_time = get_database_now(session) if current_time is None else current_time
+    statement = (
+        select(Season)
+        .where(Season.start_at <= resolved_current_time)
+        .order_by(Season.start_at.desc(), Season.id.desc())
+    )
+    if limit is not None:
+        statement = statement.limit(limit)
+
+    seasons = session.scalars(statement).all()
+    return tuple(
+        SeasonInfo(
+            season_id=season.id,
+            name=season.name,
+            start_at=season.start_at,
+            end_at=season.end_at,
+            completed=season.completed,
+            completed_at=season.completed_at,
+        )
+        for season in seasons
+    )
 
 
 def ensure_player_stats_for_current_and_future_seasons(
@@ -366,6 +447,10 @@ def update_season_completion(
     if season.end_at > resolved_current_time:
         return False
 
+    # Callers may update related match state in the same transaction while using autoflush=False.
+    # Flush here so the completion check sees those in-transaction changes.
+    session.flush()
+
     remaining_match_exists = session.scalar(
         select(
             exists().where(
@@ -381,6 +466,17 @@ def update_season_completion(
     season.completed = True
     season.completed_at = resolved_current_time
     session.flush()
+    enqueue_season_completion_notifications(
+        session,
+        season_id=season.id,
+        season_name=season.name,
+        completed_at=resolved_current_time,
+        top_rankings=_build_season_top_rankings_notifications(
+            session,
+            season_id=season.id,
+            current_time=resolved_current_time,
+        ),
+    )
     return True
 
 
@@ -426,6 +522,38 @@ def resolve_active_season_window(current_time: datetime) -> tuple[datetime, date
     end_year, end_month = _shift_month(start_at_jst.year, start_at_jst.month, 1)
     end_at_jst = datetime(end_year, end_month, SEASON_BOUNDARY_DAY, tzinfo=JST)
     return start_at_jst.astimezone(UTC), end_at_jst.astimezone(UTC)
+
+
+def _build_season_top_rankings_notifications(
+    session: Session,
+    *,
+    season_id: int,
+    current_time: datetime,
+) -> tuple[SeasonTopRankingsNotification, ...]:
+    from dxd_rating.contexts.leaderboard.application import get_season_top_rankings
+
+    notifications: list[SeasonTopRankingsNotification] = []
+    for match_format_definition in get_match_format_definitions():
+        rankings = get_season_top_rankings(
+            session,
+            season_id=season_id,
+            match_format=match_format_definition.match_format,
+            current_time=current_time,
+        )
+        notifications.append(
+            SeasonTopRankingsNotification(
+                match_format=rankings.match_format,
+                entries=tuple(
+                    SeasonTopRankingEntryPayload(
+                        rank=entry.rank,
+                        display_name=entry.display_name,
+                        rating=entry.rating,
+                    )
+                    for entry in rankings.entries
+                ),
+            )
+        )
+    return tuple(notifications)
 
 
 def resolve_next_season_window(start_at: datetime) -> tuple[datetime, datetime]:

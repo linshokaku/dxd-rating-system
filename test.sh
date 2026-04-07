@@ -8,6 +8,7 @@ cleanup() {
 
 trap cleanup EXIT
 
+docker compose down -v
 docker compose up -d db
 
 until [ "$(docker inspect -f '{{.State.Health.Status}}' dxd-rating-db 2>/dev/null)" = "healthy" ]; do

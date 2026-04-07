@@ -47,9 +47,33 @@
 - [outbox.md](outbox.md)
   - 非同期通知配送
 - [commands/user-commands.md](commands/user-commands.md)
-  - ユーザー向け slash command
+  - ユーザー向け slash command。プレイヤー操作コマンドと試合操作コマンドを含む
 - [commands/dev-commands.md](commands/dev-commands.md)
   - 開発者向け slash command
+- [discord_permissions.md](discord_permissions.md)
+  - Discord Bot の OAuth scope、Gateway Intents、必要権限
+- [ui/common.md](ui/common.md)
+  - Discord UI の共通仕様
+- [ui/registered_channels.md](ui/registered_channels.md)
+  - 登録済みユーザーが利用できるチャンネル構成と権限
+- [ui/admin_operations_channel.md](ui/admin_operations_channel.md)
+  - super admin 専用の運用チャンネルと worker 通知
+- [ui/register.md](ui/register.md)
+  - 公開チャンネルに設置する登録 UI
+- [ui/matchmaking_channel.md](ui/matchmaking_channel.md)
+  - `レート戦マッチング` チャンネルに設置するキュー参加 UI
+- [ui/matchmaking_presence_thread.md](ui/matchmaking_presence_thread.md)
+  - キュー参加後に作成する在席確認 private thread UI
+- [ui/match_operation_thread.md](ui/match_operation_thread.md)
+  - マッチ成立後に作成する試合運営 private thread UI
+- [ui/info_channel.md](ui/info_channel.md)
+  - `レート戦情報` チャンネルに設置する公開 button UI
+- [ui/info_thread.md](ui/info_thread.md)
+  - 情報確認用 private thread UI
+- [ui/matchmaking_news_match_announcement.md](ui/matchmaking_news_match_announcement.md)
+  - `レート戦マッチ速報` に投稿する試合成立アナウンス UI
+- [ui/setup_channel.md](ui/setup_channel.md)
+  - UI 設置チャンネルの作成・撤収コマンド
 
 読み方の推奨順は以下とする。
 
@@ -64,3 +88,16 @@
 9. [rating/common.md](rating/common.md)
 10. [leaderboard/ranking.md](leaderboard/ranking.md)
 11. [leaderboard/snapshots.md](leaderboard/snapshots.md)
+12. [commands/user-commands.md](commands/user-commands.md)
+13. [discord_permissions.md](discord_permissions.md)
+14. [ui/common.md](ui/common.md)
+15. [ui/registered_channels.md](ui/registered_channels.md)
+16. [ui/admin_operations_channel.md](ui/admin_operations_channel.md)
+17. [ui/setup_channel.md](ui/setup_channel.md)
+18. [ui/register.md](ui/register.md)
+19. [ui/matchmaking_channel.md](ui/matchmaking_channel.md)
+20. [ui/matchmaking_presence_thread.md](ui/matchmaking_presence_thread.md)
+21. [ui/match_operation_thread.md](ui/match_operation_thread.md)
+22. [ui/info_channel.md](ui/info_channel.md)
+23. [ui/info_thread.md](ui/info_thread.md)
+24. [ui/matchmaking_news_match_announcement.md](ui/matchmaking_news_match_announcement.md)

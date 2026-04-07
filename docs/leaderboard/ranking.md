@@ -2,7 +2,7 @@
 
 ## 目的
 
-- read-only な Web サービスおよび Web UI から、現在のランキングを表示できるようにする
+- 現在のランキングを参照できるようにする
 - `1日前`、`3日前`、`7日前` からの順位変化量を、実装を複雑にしすぎずに表示できるようにする
 
 ## スコープ
@@ -15,9 +15,12 @@
 
 本仕様では、以下は扱わない。
 
-- HTTP API の具体設計
-- Web UI の画面デザイン
+- 参照インターフェースの具体設計
 - Discord 上でのランキング通知
+
+補足:
+
+- Discord 上のコマンド入出力と private thread への表示形式は [../commands/user-commands.md](../commands/user-commands.md) と [../ui/info_thread.md](../ui/info_thread.md) で定義する。
 
 ## 基本方針
 
@@ -126,11 +129,24 @@ rank_change = past_rank - current_rank
 補足:
 
 - 初登場プレイヤーに対して特別な `NEW` 表示は必須としない
-- 必要になった場合のみ、UI 側の追加表現として扱う
+- 必要になった場合のみ、参照側の追加表現として扱う
 
 ## 参照先
 
 - 現在ランキング: 稼働中シーズンの `player_format_stats`
+- シーズン別ランキング: 指定 `season_id` の `player_format_stats`
 - 過去比較: `leaderboard_snapshots`
 
 snapshot の詳細仕様は [snapshots.md](snapshots.md) を参照する。
+
+## Discord 上の参照導線
+
+- `/leaderboard` は、現在シーズンかつ指定 `match_format` の current leaderboard を参照する。
+- `/leaderboard_season` は、開始済みの指定 `season_id` かつ指定 `match_format` の leaderboard を参照する。
+- `/leaderboard` のページングは 1 ページ 20 件とする。
+- `/leaderboard_season` のページングも 1 ページ 20 件とする。
+- `/leaderboard` では、本仕様で定義した `rank`、`display_name`、`rating`、`1日前`、`3日前`、`7日前` の順位差分を利用する。
+- `/leaderboard_season` では `rank`、`display_name`、`rating` を利用し、snapshot を使った順位差分表示は行わない。
+- 並び順、対象プレイヤー、ページサイズ、表示名キャッシュ利用は `/leaderboard` と `/leaderboard_season` で共通とする。
+- シーズン終了時に `レート戦アナウンス` へ送る形式別 Top 12 公開通知も、`/leaderboard_season` と同じ対象プレイヤー、並び順、順位規則を使う。
+- Discord 上の表示先は、`レート戦情報` チャンネル配下に作成するユーザーごとの private thread とする。

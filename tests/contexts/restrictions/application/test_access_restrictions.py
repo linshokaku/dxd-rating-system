@@ -30,7 +30,7 @@ from dxd_rating.platform.db.models import (
 )
 
 DEFAULT_MATCH_FORMAT = MatchFormat.THREE_VS_THREE
-DEFAULT_QUEUE_NAME = "low"
+DEFAULT_QUEUE_NAME = "beginner"
 
 
 def get_database_now(session: Session) -> datetime:

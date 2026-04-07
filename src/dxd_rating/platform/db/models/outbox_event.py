@@ -18,9 +18,13 @@ class OutboxEventType(StrEnum):
     QUEUE_EXPIRED = "queue_expired"
     MATCH_CREATED = "match_created"
     MATCH_PARENT_ASSIGNED = "match_parent_assigned"
+    MATCH_REPORT_OPENED = "match_report_opened"
     MATCH_APPROVAL_REQUESTED = "match_approval_requested"
     MATCH_FINALIZED = "match_finalized"
     MATCH_ADMIN_REVIEW_REQUIRED = "match_admin_review_required"
+    SEASON_COMPLETED = "season_completed"
+    SEASON_TOP_RANKINGS = "season_top_rankings"
+    ADMIN_OPERATIONS_NOTIFICATION = "admin_operations_notification"
 
 
 class OutboxEvent(Base):
@@ -54,3 +58,4 @@ class OutboxEvent(Base):
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    discarded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

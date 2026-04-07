@@ -2,7 +2,7 @@
 
 ## 目的
 
-- マッチングキュー関連の後続通知を Discord へ非同期に送る
+- マッチングキュー関連、公開アナウンス、運用通知の後続通知を Discord へ非同期に送る
 - Bot プロセスのクラッシュや再起動があっても、通知の二重送信と送信漏れを避ける
 - commands 層と通知実行層を疎結合に保つ
 - 常時 polling による待機コストを抑える
@@ -14,10 +14,14 @@
 - `presence_reminder`
 - `queue_expired`
 - `match_created`
+- `season_completed`
+- `season_top_rankings`
+- `admin_operations_notification`
 
 ## 基本方針
 
 - 通知の発火判断は service 層で行う
+- worker のような command 起点ではない処理も、必要なら outbox event を作成してよい
 - 通知の実行は runtime 層で行う
 - commands 層は通知先コンテキストを取得して service 層へ渡す
 - 通知先コンテキストは DB に保存し、再起動後も復元できるようにする
@@ -60,16 +64,23 @@
 
 現時点では、後続通知の配送先は以下の方針とする。
 
-- 通知は、関連するマッチングキュー系コマンドを打った channel に送る
-- `presence_reminder` と `queue_expired` は、そのコマンドを実行した人への mention を付ける
-- `match_created` は特定プレイヤーへの mention を付けない
+- 通常ユーザー操作の `presence_reminder` と `queue_expired` は、参加時に作成された在席確認 thread の `channel_id` 宛てに送る
+- 通常ユーザー操作の `presence_reminder` と `queue_expired` の UI は [ui/matchmaking_presence_thread.md](ui/matchmaking_presence_thread.md) に従う
+- 開発者コマンド操作の `presence_reminder` と `queue_expired` も、`/dev_join` 成功時に作成された在席確認 thread の `channel_id` 宛てに送る
+- 開発者コマンド操作の `presence_reminder` と `queue_expired` も、公開チャンネルではなく在席確認 thread 内で行う
+- `match_created` は、公開の `レート戦マッチ速報` チャンネル通知を維持したうえで、在席確認 thread がある参加者にだけその thread へ送る
+- `season_completed` は、`system_announcements_channel` が設置済みのときだけその channel へ送る
+- `season_top_rankings` は、`system_announcements_channel` が設置済みのときだけその channel へ送る
+- `admin_operations_notification` は、`admin_operations_channel` が設置済みのときだけその channel へ送る
+- 在席確認 thread 向けの `match_created` には、対象参加者への mention を付ける
+- `match_created` を `レート戦マッチング` 親チャンネルや通常通知先 channel へフォールバックして送らない
 - mention 形式は `<@discord_user_id>` を用いる
 
 補足:
 
 - thread も Discord 上では channel として扱い、`channel_id` で識別する
 - `guild_id` は送信先の検証やログ用途のため保持してよい
-- このポリシーは暫定であり、将来は固定通知 channel や DM へ拡張する可能性がある
+- `レート戦マッチング` チャンネルの UI から参加した場合は、参加成功後に同チャンネル配下へ作成された在席確認 thread をタイマー通知の最新送信先として扱う
 
 ## 通知先コンテキスト
 
@@ -80,10 +91,17 @@
 
 ### 最低限必要な情報
 
+タイマー通知と `match_created` を channel 宛てに送るため、通知先コンテキストは少なくとも以下を保持できる必要がある。
+
 - `channel_id`
 - `guild_id` または `NULL`
 - `mention_discord_user_id`
 - `recorded_at`
+
+補足:
+
+- `channel_id` は、`presence_reminder`、`queue_expired`、`match_created` の配送先決定に使う。
+- `mention_discord_user_id` は、開発者コマンド操作の `presence_reminder` と `queue_expired` の先頭 mention、または通常ユーザー向け UI の対象者識別に使う。
 
 ### 保存単位
 
@@ -101,13 +119,17 @@
 ### join
 
 - `join` 成功時に、新しく作成された `waiting` 行へ通知先コンテキストを保存する
-- 保存する `channel_id` は `join` を実行した channel とする
-- 保存する `mention_discord_user_id` は `join` を実行した Discord user ID とする
+- 通常ユーザーの `join` では、`presence_reminder` と `queue_expired` の送信先として、参加時に `レート戦マッチング` チャンネル配下へ作成された在席確認 thread の `channel_id` を保存する
+- 開発者コマンドの `join` でも、`presence_reminder` と `queue_expired` の送信先として、参加時に `レート戦マッチング` チャンネル配下へ作成された在席確認 thread の `channel_id` を保存する
+- `match_created` の送信先としては、その時点で保存されている通知先コンテキストの `channel_id` を保存する
+- 保存する `mention_discord_user_id` は、通常ユーザー操作では `join` を実行した Discord user ID、開発者コマンド操作では対象ユーザーの Discord user ID とする
+- `レート戦マッチング` チャンネルの UI から参加した場合も、参加成功後に作成した在席確認 thread の `channel_id` を同じ形式で保存する
 
 ### present
 
 - `present` 成功時に、対象の `waiting` 行の通知先コンテキストを上書きする
-- 上書き後は、新しい reminder / expire はその最新コンテキストを使う
+- 通常ユーザーの待機では、上書き後も `presence_reminder` と `queue_expired` の送信先は既存の在席確認 thread の `channel_id` を維持する
+- 開発者コマンドの `present` でも、`presence_reminder` と `queue_expired` の送信先は既存の在席確認 thread の `channel_id` を維持する
 
 ### leave
 
@@ -118,35 +140,41 @@
 
 ### `presence_reminder`
 
-- service 層は、対象 `queue_entry_id` に紐づく最新の通知先コンテキストを使って event を作成する
+- service 層は、対象 `queue_entry_id` に紐づく最新の通知先コンテキストの `channel_id` を使って event を作成する
 - outbox payload には、その時点の送信先スナップショットを含める
 - 送信先は payload 内の `destination.channel_id`
-- mention 対象は payload 内の `mention_discord_user_id`
+- 表示対象ユーザーは payload 内の `mention_discord_user_id`
+- 通常ユーザー操作では、通知は在席確認 thread に送る
+- 開発者コマンド操作でも、通知は在席確認 thread に送る
 - メッセージ例:
-  - `<@123456789012345678> 在席確認です。1分以内に在席更新がない場合はマッチングキューから外れます。`
+  - `在席確認です。1分以内に在席更新がない場合はマッチングキューから外れます。`
 
 ### `queue_expired`
 
-- service 層は、対象 `queue_entry_id` に紐づく最新の通知先コンテキストを使って event を作成する
+- service 層は、対象 `queue_entry_id` に紐づく最新の通知先コンテキストの `channel_id` を使って event を作成する
 - outbox payload には、その時点の送信先スナップショットを含める
 - 送信先は payload 内の `destination.channel_id`
-- mention 対象は payload 内の `mention_discord_user_id`
+- 表示対象ユーザーは payload 内の `mention_discord_user_id`
+- 通常ユーザー操作では、通知は在席確認 thread に送る
+- 開発者コマンド操作でも、通知は在席確認 thread に送る
 - メッセージ例:
-  - `<@123456789012345678> 期限切れでマッチングキューから外れました。`
+  - `期限切れでマッチングキューから外れました。`
 
 ### `match_created`
 
-- `match_created` は 1 件の `match_id` ごとに 1 event を作成する
-- `1v1` の 1 バッチ 2 試合は、2 件の `match_created` event として扱う
+- `match_created` は 1 件の `match_id` ごとに 1 回のマッチ成立通知を表す
+- `1v1` の 1 バッチ 2 試合は、2 件の `match_created` 通知として扱う
 - service 層は、参加した各 `queue_entry` の通知先コンテキストをもとに配送先を集約する
 - 実際の Discord 送信 1 件ごとに 1 outbox event を作成する
 - 各 event の payload には、送信先スナップショット、`match_format`、表示用チーム情報を含める
 
 現時点の配送方針:
 
-- 同じ match について、参加者ごとに「その人が最後にコマンドを打った channel」へ送ってよい
-- 同じ `channel_id` に重複する配送先があれば 1 回にまとめてよい
-- `match_created` のメッセージ先頭には mention を付けない
+- 同じ match について、公開のマッチ速報チャンネルへ 1 回送る
+- 在席確認 thread がある参加者ごとに、その thread へ 1 回送る
+- `match_created` を `レート戦マッチング` 親チャンネルへ直接送らない
+- 公開チャンネル向け `match_created` のメッセージ先頭には mention を付けない
+- 在席確認 thread 向け `match_created` は、対象プレイヤーへの mention を先頭に付けてよい
 
 メッセージ例:
 
@@ -159,6 +187,72 @@ Team B
 <@345678901234567890>
 <@456789012345678901>
 ```
+
+### `admin_operations_notification`
+
+- `admin_operations_notification` は admin 向け運用通知 1 件を表す。
+- 初期スコープでは `daily worker` の起動通知だけを対象とする。
+- service 層または worker は、通知先の `admin_operations_channel` が解決できた場合だけ event を作成する。
+- 通知先チャンネルが解決できない場合、worker 本体は処理を継続し、通知だけをスキップしてよい。
+- payload には、その時点の送信先スナップショットを含める。
+- 送信先は payload 内の `destination.channel_id`
+- 初期 `notification_kind` は `daily_worker_started` とする。
+- メッセージ例:
+  - `daily worker が起動しました。`
+
+### `season_completed`
+
+- `season_completed` は、1 シーズンの完了時に送る summary 通知 1 件を表す。
+- `season_completed` は、`update_season_completion` が実際に `True` を返したときだけ作成する。
+- 試合 finalize 経由でも日次 worker 経由でも、発火条件は `update_season_completion` の完了遷移に統一する。
+- 同一 `season_id` の `season_completed` は 1 回だけ送る前提とし、重複 enqueue を避ける。
+- service 層または worker は、通知先の `system_announcements_channel` が解決できた場合だけ event を作成する。
+- 通知先チャンネルが解決できない場合でも、シーズン完了処理自体は成功扱いのまま継続し、通知だけを warning ログでスキップしてよい。
+- 1 outbox event = 1 Discord メッセージの原則を維持する。
+- payload には、その時点の送信先スナップショットを含める。
+- 送信先は payload 内の `destination.channel_id`
+- payload は少なくとも以下を含む。
+  - `season_id`
+  - `season_name`
+  - `completed_at`
+  - `destination`
+- 本文は、該当シーズンの全試合が完了したことが分かる簡潔なプレーンテキストとする。
+- メッセージには、少なくとも `season_name` と `season_id` を含める。
+- `completed_at` を簡潔に表示してよい。
+- mention や button は付けない。
+
+### `season_top_rankings`
+
+- `season_top_rankings` は、1 シーズン完了時の形式別 Top 12 順位表通知 1 件を表す。
+- `season_top_rankings` は、`season_completed` と別 event type とする。
+- `admin_operations_notification` のような同一責務内の subtype 分岐とは異なり、season 系は summary 通知と順位表通知で payload、dedupe 単位、renderer の関心事が異なるため event type を分ける。
+- `season_top_rankings` は、`update_season_completion` が実際に `True` を返したときだけ作成する。
+- 試合 finalize 経由でも日次 worker 経由でも、発火条件は `update_season_completion` の完了遷移に統一する。
+- 1 シーズン完了あたり、`season_completed` を 1 件 enqueue した後に、`season_top_rankings` を `1v1`、`2v2`、`3v3` で各 1 件 enqueue する。
+- 投稿順は `season_completed` -> `1v1` -> `2v2` -> `3v3` の固定順とし、形式順は `MATCH_FORMAT_DEFINITIONS` に従う。
+- 同一 `season_id` と `match_format` の組み合わせに対する `season_top_rankings` は 1 回だけ送る前提とし、重複 enqueue を避ける。
+- service 層または worker は、通知先の `system_announcements_channel` が解決できた場合だけ event を作成する。
+- 通知先チャンネルが解決できない場合でも、シーズン完了処理自体は成功扱いのまま継続し、通知だけを warning ログでスキップしてよい。
+- 1 outbox event = 1 Discord メッセージの原則を維持する。
+- payload には、その時点の送信先スナップショットを含める。
+- 送信先は payload 内の `destination.channel_id`
+- payload は少なくとも以下を含む。
+  - `season_id`
+  - `season_name`
+  - `completed_at`
+  - `match_format`
+  - `entries`
+  - `destination`
+- `entries` は最大 12 件とし、各要素は少なくとも以下を含む。
+  - `rank`
+  - `display_name`
+  - `rating`
+- 完了したその `season_id` の `player_format_stats` を参照し、対象 `match_format` の Top 12 ランキングを送る。
+- 対象プレイヤー、並び順、順位の定義は `leaderboard_season` と同じ規則を使う。
+- 本文は簡潔形式とし、`season_id`、`season_name`、`match_format` と `順位 / ユーザー名 / rating` の Top 12 を表示する。
+- `1d` / `3d` / `7d` の順位差分、ページング、button、thread は付けない。
+- 各 `match_format` のランキング対象者が 0 人でも、その形式のメッセージは省略せず、`entries=[]` を許容し、本文には `対象者なし` 相当の 1 行を含める。
+- mention や button は付けない。
 
 ## outbox payload の要件
 
@@ -195,11 +289,32 @@ Team B
   - `destination`
   - `team_a_discord_user_ids`
   - `team_b_discord_user_ids`
+  - `mention_discord_user_id` (在席確認 thread 向け payload のみ)
+  - `match_operation_thread_parent_channel_id` (試合運営 thread 導線を解決する payload)
+  - `create_match_operation_thread` (必要なら試合運営 thread を先に作成できる payload)
+- `season_completed`
+  - `season_id`
+  - `season_name`
+  - `completed_at`
+  - `destination`
+- `season_top_rankings`
+  - `season_id`
+  - `season_name`
+  - `completed_at`
+  - `match_format`
+  - `entries`
+  - `destination`
+- `admin_operations_notification`
+  - `notification_kind`
+  - `worker_name`
+  - `occurred_at`
+  - `destination`
 
 補足:
 
 - `queue_entry` 側の通知先コンテキストは、`present` 後の最新状態管理と startup sync のために引き続き保持する
 - publish 時の Discord 送信先解決は、基本的に outbox payload のスナップショットだけで完結させる
+- `presence_reminder` と `queue_expired` の `destination` には、保存済み通知先コンテキストの channel スナップショットを入れる
 
 ## `LISTEN/NOTIFY` と保険用 polling
 
@@ -321,8 +436,8 @@ warning log の意図:
 
 ## startup sync / 再起動との関係
 
-- startup sync によって reminder / expire / match_created が回収されても、通知先は保存済みコンテキストから決定できる必要がある
-- `join` commit 後にプロセスが落ちた場合でも、通知先コンテキストが DB に残っていれば再起動後に reminder / expire を送れる
+- startup sync によって reminder / expire / match_created が回収されても、`presence_reminder`、`queue_expired`、`match_created` は保存済み通知先コンテキストから通知先を決定できる必要がある
+- `join` commit 後にプロセスが落ちた場合でも、通知先コンテキストが DB に残っていれば、再起動後に reminder / expire を送れる
 - `join` commit 後にマッチング試行前にプロセスが落ちた場合でも、参加者ごとの通知先コンテキストが残っていれば、startup sync が作成した `match_created` 通知を配送できる
 - runtime 再起動時は、listener 待受開始後の catch-up、retry timer の再構築、保険用 polling により未配送 event を回収できるようにする
 
@@ -330,9 +445,10 @@ warning log の意図:
 
 - マッチングキュー系コマンドは、成功時に通知先コンテキストを service 層へ渡す
 - 最低限、以下を取得できること
-  - `interaction.channel_id`
-  - `interaction.guild_id`
   - `interaction.user.id`
+  - `interaction.guild_id`
+- 通常ユーザーの `join` と開発者コマンドの `join` では、参加成功後に作成した在席確認 thread の `channel_id` を保存できること
+- 開発者コマンドと通常ユーザーの `present` では、既存通知先コンテキストを参照し、在席確認 thread の `channel_id` を維持できること
 
 ## 未決定事項
 
@@ -341,4 +457,4 @@ warning log の意図:
 - `match_created` を 1 channel に集約するか、参加者ごとに個別 channel へ送るか
 - 同じ match に対して複数 channel へ送る際の文面を統一するか
 - mention 対象を「コマンド実行者」に固定するか、「プレイヤー本人」に寄せるか
-- 将来 DM 通知を導入するか
+- `admin_operations_notification` の対象イベントを今後どこまで増やすか

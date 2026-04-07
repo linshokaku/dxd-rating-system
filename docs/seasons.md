@@ -20,7 +20,6 @@
 
 本仕様では、以下は扱わない。
 
-- Web UI の画面設計
 - シーズン結果の告知文面
 - 管理者向け権限モデルの詳細
 
@@ -77,6 +76,11 @@
 - `name` は admin による rename で更新できる
 - `start_at` と `end_at` は作成後に変更しない
 - シーズンの追加や削除は Bot コマンドからは行わない
+
+補足:
+
+- テスト用 CLI `dxd_rating.apps.worker.force_end_season` に限り、active season の `end_at` と次 season の `start_at` を実行時刻へ変更してよい
+- この CLI はテスト用途の手動操作であり、通常運用フローには含めない
 
 ## 日次 worker による事前作成
 
@@ -258,6 +262,10 @@ carryover を適用しない場合:
 - 試合結果確定時のレート更新先は、稼働中シーズンではなく `started_season_id` の `player_format_stats` とする
 - したがって、前シーズン開始の試合が次シーズン開始後に finalize されても、前シーズンのレートが更新される
 - 各試合の finalize 処理のたびに、その `started_season_id` について `completed` を立てられる状態かどうかを再判定する
+- `update_season_completion` によって `completed = true` へ遷移した場合は、後続で `season_completed` を 1 件 enqueue し、その後に `season_top_rankings` を `1v1`、`2v2`、`3v3` で各 1 件 enqueue する
+- これらの通知は `system_announcements_channel` (`レート戦アナウンス`) への公開アナウンスとする
+- 投稿順は固定で、最初に `season_completed` の summary メッセージを 1 通、その後に `season_top_rankings` の形式別 Top 12 ランキングメッセージを 1 通ずつ送る
+- 形式別ランキングメッセージは、summary メッセージとは分離し、各 `match_format` ごとにも別 event・別メッセージとして扱う
 
 ### admin 結果修正時
 
@@ -275,17 +283,25 @@ carryover を適用しない場合:
 - 日次 worker では、`end_at <= now()` かつ `completed = false` のシーズンについて、同様に未確定試合の有無を確認する
 - 未確定試合が 0 件であり、かつ `end_at <= now()` を満たす場合に `completed = true` とする
 - `completed_at` は `completed = true` にした時刻を保存する
+- `update_season_completion` が `true` を返したときだけ、該当シーズンの全試合完了を表す `season_completed` を 1 回だけ enqueue する
+- 通知発火条件は caller に依存せず、試合 finalize 経由でも日次 worker 経由でも同じ規則を使う
+- `season_completed` は `season_id` ごとに 1 回だけ送る
+- `season_top_rankings` は `season_id + match_format` ごとに 1 回だけ enqueue し、`1v1`、`2v2`、`3v3` の 3 件で構成する
+- `season_top_rankings` は、完了したその `season_id` の `player_format_stats` を参照し、各形式の上位 12 人までを公開送信する
+- 各形式のランキング対象者が 0 人でも、その形式のメッセージ自体は省略せず、対象者なしであることが分かる 1 行を含めて送る
+- 形式別ランキングの対象プレイヤー、並び順、順位規則は `/leaderboard_season` と同じにする
+- すでに `completed = true` のシーズンでは、後続の再判定や結果修正によって `season_completed` や `season_top_rankings` を再送しない
 - 一度 `completed = true` になったシーズンは、admin による結果修正後も `false` に戻さない
 
 意図:
 
-- Web UI では `completed = true` のシーズンだけを一覧表示対象にできる
+- シーズン一覧を参照する場合、`completed = true` のシーズンだけを表示対象にできる
 - 一方で、完了後の軽微な結果修正は引き続き許容する
 
 ## 表示名の扱い
 
 - 終了済みシーズンの閲覧でも、当時の表示名 snapshot は保持しない
-- シーズン別ランキング表示時の表示名は、現在の `players.display_name` キャッシュを参照してよい
+- シーズン別ランキング参照時の表示名は、現在の `players.display_name` キャッシュを参照してよい
 
 ## Bot コマンド表示方針
 

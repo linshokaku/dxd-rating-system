@@ -32,6 +32,8 @@ from dxd_rating.contexts.restrictions.application import (
 from dxd_rating.contexts.seasons.application import ensure_active_and_upcoming_seasons
 from dxd_rating.platform.db.models import (
     CarryoverStatus,
+    ManagedUiChannel,
+    ManagedUiType,
     Match,
     MatchFormat,
     MatchParticipant,
@@ -49,14 +51,21 @@ from dxd_rating.shared.constants import (
     MatchQueueClassDefinition,
     get_match_queue_class_definition_by_id,
     get_match_queue_class_definition_by_name,
+    get_match_queue_class_definitions,
 )
 
 DEFAULT_MATCH_FORMAT = MatchFormat.THREE_VS_THREE
-DEFAULT_QUEUE_DEFINITION = get_match_queue_class_definition_by_name(DEFAULT_MATCH_FORMAT, "low")
+DEFAULT_QUEUE_DEFINITION = get_match_queue_class_definition_by_name(
+    DEFAULT_MATCH_FORMAT,
+    "beginner",
+)
 assert DEFAULT_QUEUE_DEFINITION is not None
 DEFAULT_QUEUE_NAME = DEFAULT_QUEUE_DEFINITION.queue_name
 DEFAULT_QUEUE_CLASS_ID = DEFAULT_QUEUE_DEFINITION.queue_class_id
-SECOND_QUEUE_DEFINITION = get_match_queue_class_definition_by_name(DEFAULT_MATCH_FORMAT, "high")
+SECOND_QUEUE_DEFINITION = get_match_queue_class_definition_by_name(
+    DEFAULT_MATCH_FORMAT,
+    "master",
+)
 assert SECOND_QUEUE_DEFINITION is not None
 SECOND_QUEUE_CLASS_ID = SECOND_QUEUE_DEFINITION.queue_class_id
 
@@ -88,6 +97,25 @@ def create_player(session: Session, discord_user_id: int) -> Player:
     player = register_player(session=session, discord_user_id=discord_user_id)
     session.commit()
     return player
+
+
+def create_managed_ui_channel(
+    session: Session,
+    *,
+    ui_type: ManagedUiType,
+    channel_id: int,
+    message_id: int,
+    created_by_discord_user_id: int = 999_999,
+) -> ManagedUiChannel:
+    managed_ui_channel = ManagedUiChannel(
+        ui_type=ui_type,
+        channel_id=channel_id,
+        message_id=message_id,
+        created_by_discord_user_id=created_by_discord_user_id,
+    )
+    session.add(managed_ui_channel)
+    session.commit()
+    return managed_ui_channel
 
 
 def get_active_season_id(session: Session) -> int:
@@ -132,7 +160,11 @@ def create_queue_entry(
     revision: int = 1,
     last_reminded_revision: int | None = None,
     notification_channel_id: int | None = None,
+    presence_thread_channel_id: int | None = None,
     notification_guild_id: int | None = None,
+    notification_dm_discord_user_id: int | None = None,
+    notification_interaction_application_id: int | None = None,
+    notification_interaction_token: str | None = None,
     notification_mention_discord_user_id: int | None = None,
     notification_recorded_at: datetime | None = None,
     removed_at: datetime | None = None,
@@ -178,7 +210,11 @@ def create_queue_entry(
         revision=revision,
         last_reminded_revision=last_reminded_revision,
         notification_channel_id=resolved_notification_channel_id,
+        presence_thread_channel_id=presence_thread_channel_id,
         notification_guild_id=resolved_notification_guild_id,
+        notification_dm_discord_user_id=notification_dm_discord_user_id,
+        notification_interaction_application_id=notification_interaction_application_id,
+        notification_interaction_token=notification_interaction_token,
         notification_mention_discord_user_id=resolved_notification_mention_discord_user_id,
         notification_recorded_at=resolved_notification_recorded_at,
         removed_at=removed_at,
@@ -257,36 +293,47 @@ def test_join_queue_raises_for_invalid_queue_name(
         service.join_queue(player.id, DEFAULT_MATCH_FORMAT, "unknown")
 
 
+def test_join_queue_accepts_begginer_alias(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    player = create_player(session, 100_000)
+    service = create_matching_queue_service(session_factory)
+
+    result = service.join_queue(player.id, DEFAULT_MATCH_FORMAT, "begginer")
+
+    assert result.queue_class_id == DEFAULT_QUEUE_CLASS_ID
+
+
 def test_join_queue_rejects_player_when_rating_is_outside_allowed_range(
     session: Session,
     session_factory: sessionmaker[Session],
 ) -> None:
     player = create_player(session, 10_000_1)
     player_format_stats = get_player_format_stats(session, player.id)
-    player_format_stats.rating = 2_100
+    player_format_stats.rating = 1_700
     player_format_stats.carryover_status = CarryoverStatus.NOT_APPLIED
     session.commit()
     queue_class_definitions = (
         MatchQueueClassDefinition(
             match_format=DEFAULT_MATCH_FORMAT,
-            queue_class_id="restricted_low",
-            queue_name="low",
-            description="low",
-            target_rating=1_200,
+            queue_class_id="restricted_beginner",
+            queue_name="beginner",
+            description="beginner",
+            maximum_rating=1_200,
         ),
         MatchQueueClassDefinition(
             match_format=DEFAULT_MATCH_FORMAT,
-            queue_class_id="restricted_mid",
-            queue_name="mid",
-            description="mid",
-            target_rating=1_500,
+            queue_class_id="restricted_regular",
+            queue_name="regular",
+            description="regular",
         ),
         MatchQueueClassDefinition(
             match_format=DEFAULT_MATCH_FORMAT,
-            queue_class_id="restricted_high",
-            queue_name="high",
-            description="high",
-            target_rating=1_800,
+            queue_class_id="restricted_master",
+            queue_name="master",
+            description="master",
+            minimum_rating=1_800,
         ),
     )
     service = create_matching_queue_service(
@@ -295,7 +342,7 @@ def test_join_queue_rejects_player_when_rating_is_outside_allowed_range(
     )
 
     with pytest.raises(QueueJoinNotAllowedError):
-        service.join_queue(player.id, DEFAULT_MATCH_FORMAT, "mid")
+        service.join_queue(player.id, DEFAULT_MATCH_FORMAT, "master")
 
 
 def test_join_queue_raises_when_player_has_active_queue_join_restriction(
@@ -373,8 +420,47 @@ def test_join_queue_stores_notification_context(
     assert result.queue_entry_id == entry.id
     assert entry.notification_channel_id == 333_001
     assert entry.notification_guild_id == 444_001
+    assert entry.notification_dm_discord_user_id is None
+    assert entry.notification_interaction_application_id is None
+    assert entry.notification_interaction_token is None
     assert entry.notification_mention_discord_user_id == 555_001
     assert entry.notification_recorded_at == entry.joined_at
+
+
+def test_update_waiting_notification_context_overwrites_waiting_entry_destination(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    player = create_player(session, 10_001_2)
+    service = create_matching_queue_service(session_factory)
+    joined = service.join_queue(
+        player.id,
+        DEFAULT_MATCH_FORMAT,
+        DEFAULT_QUEUE_NAME,
+        notification_context=MatchingQueueNotificationContext(
+            channel_id=333_002,
+            guild_id=444_002,
+            mention_discord_user_id=555_002,
+        ),
+    )
+
+    updated = service.update_waiting_notification_context(
+        joined.queue_entry_id,
+        MatchingQueueNotificationContext(
+            channel_id=333_003,
+            guild_id=444_003,
+            mention_discord_user_id=555_003,
+        ),
+    )
+
+    entries = get_queue_entries_for_player(session, player.id)
+    entry = entries[0]
+
+    assert updated is True
+    assert entry.notification_channel_id == 333_003
+    assert entry.notification_guild_id == 444_003
+    assert entry.notification_mention_discord_user_id == 555_003
+    assert entry.notification_recorded_at is not None
 
 
 # 有効な `waiting` 行がある状態での重複 `join` が失敗すること
@@ -484,6 +570,9 @@ def test_present_overwrites_notification_context(
     assert result.queue_entry_id == entry.id
     assert entry.notification_channel_id == 333_011
     assert entry.notification_guild_id == 444_011
+    assert entry.notification_dm_discord_user_id is None
+    assert entry.notification_interaction_application_id is None
+    assert entry.notification_interaction_token is None
     assert entry.notification_mention_discord_user_id == 555_011
     assert entry.notification_recorded_at == entry.last_present_at
     assert entry.notification_recorded_at != initial_recorded_at
@@ -641,6 +730,70 @@ def test_leave_expires_stale_waiting_entry_without_creating_outbox_event(
     assert get_outbox_events(session) == []
 
 
+def test_get_matchmaking_status_snapshot_counts_join_leave_expired_and_clamps_to_zero(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    service = create_matching_queue_service(session_factory)
+    now = get_database_now(session)
+    players = create_players(session, 5, start_discord_user_id=20_000)
+
+    create_queue_entry(
+        session,
+        player_id=players[0].id,
+        queue_class_id=DEFAULT_QUEUE_CLASS_ID,
+        status=MatchQueueEntryStatus.WAITING,
+        joined_at=now - timedelta(minutes=10),
+    )
+    create_queue_entry(
+        session,
+        player_id=players[1].id,
+        queue_class_id=DEFAULT_QUEUE_CLASS_ID,
+        status=MatchQueueEntryStatus.LEFT,
+        joined_at=now - timedelta(minutes=20),
+        removed_at=now - timedelta(minutes=5),
+        removal_reason=MatchQueueRemovalReason.USER_LEAVE,
+    )
+    create_queue_entry(
+        session,
+        player_id=players[2].id,
+        queue_class_id=DEFAULT_QUEUE_CLASS_ID,
+        status=MatchQueueEntryStatus.EXPIRED,
+        joined_at=now - timedelta(minutes=25),
+        removed_at=now - timedelta(minutes=3),
+        removal_reason=MatchQueueRemovalReason.TIMEOUT,
+    )
+    create_queue_entry(
+        session,
+        player_id=players[3].id,
+        queue_class_id=DEFAULT_QUEUE_CLASS_ID,
+        status=MatchQueueEntryStatus.MATCHED,
+        joined_at=now - timedelta(minutes=15),
+    )
+    create_queue_entry(
+        session,
+        player_id=players[4].id,
+        queue_class_id=SECOND_QUEUE_CLASS_ID,
+        status=MatchQueueEntryStatus.LEFT,
+        joined_at=now - timedelta(minutes=40),
+        removed_at=now - timedelta(minutes=2),
+        removal_reason=MatchQueueRemovalReason.USER_LEAVE,
+    )
+
+    snapshot = service.get_matchmaking_status_snapshot()
+
+    assert [(entry.match_format, entry.queue_name) for entry in snapshot] == [
+        (definition.match_format, definition.queue_name)
+        for definition in get_match_queue_class_definitions()
+    ]
+    active_count_by_queue_class = {
+        definition.queue_class_id: entry.active_count
+        for definition, entry in zip(get_match_queue_class_definitions(), snapshot, strict=True)
+    }
+    assert active_count_by_queue_class[DEFAULT_QUEUE_CLASS_ID] == 2
+    assert active_count_by_queue_class[SECOND_QUEUE_CLASS_ID] == 0
+
+
 # `expire_at - 1分` に達した `waiting` 行に対して在席確認リマインドが
 # 1 回だけ送られること
 # 同じ `revision` に対して reminder タスクが複数回起きても、実際の通知は
@@ -671,6 +824,69 @@ def test_process_presence_reminder_marks_revision_once_and_creates_single_outbox
     assert entries[0].last_reminded_revision == 3
     assert len(outbox_events) == 1
     assert outbox_events[0].event_type == OutboxEventType.PRESENCE_REMINDER
+
+
+def test_process_presence_reminder_uses_updated_notification_channel_context(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    player = create_player(session, 10_011_1)
+    now = get_database_now(session)
+    entry = create_queue_entry(
+        session,
+        player_id=player.id,
+        expire_at=now + timedelta(seconds=30),
+        notification_channel_id=600_111,
+        notification_guild_id=700_111,
+    )
+    service = create_matching_queue_service(session_factory)
+    service.update_waiting_notification_context(
+        entry.id,
+        MatchingQueueNotificationContext(
+            channel_id=600_112,
+            guild_id=700_112,
+            mention_discord_user_id=player.discord_user_id,
+        ),
+    )
+
+    result = service.process_presence_reminder(entry.id, expected_revision=1)
+
+    outbox_events = get_outbox_events(session)
+
+    assert result.reminded is True
+    assert outbox_events[0].payload["destination"] == {
+        "kind": "channel",
+        "channel_id": 600_112,
+        "guild_id": 700_112,
+    }
+
+
+def test_process_presence_reminder_prefers_presence_thread_channel_when_available(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    player = create_player(session, 10_011_2)
+    now = get_database_now(session)
+    entry = create_queue_entry(
+        session,
+        player_id=player.id,
+        expire_at=now + timedelta(seconds=30),
+        notification_channel_id=600_121,
+        notification_guild_id=700_121,
+    )
+    service = create_matching_queue_service(session_factory)
+    service.update_waiting_presence_thread_channel_id(entry.id, 600_122)
+
+    result = service.process_presence_reminder(entry.id, expected_revision=1)
+
+    outbox_events = get_outbox_events(session)
+
+    assert result.reminded is True
+    assert outbox_events[0].payload["destination"] == {
+        "kind": "channel",
+        "channel_id": 600_122,
+        "guild_id": 700_121,
+    }
 
 
 # `matched`、`left`、`expired` の行にはリマインドが送られないこと
@@ -790,6 +1006,41 @@ def test_process_expire_marks_waiting_entry_expired_creates_outbox_and_logs(
     assert "Expired queue entry" in caplog.text
 
 
+def test_process_expire_uses_updated_notification_channel_context(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    player = create_player(session, 10_013_1)
+    now = get_database_now(session)
+    entry = create_queue_entry(
+        session,
+        player_id=player.id,
+        expire_at=now - timedelta(seconds=1),
+        notification_channel_id=600_131,
+        notification_guild_id=700_131,
+    )
+    service = create_matching_queue_service(session_factory)
+    service.update_waiting_notification_context(
+        entry.id,
+        MatchingQueueNotificationContext(
+            channel_id=600_132,
+            guild_id=700_132,
+            mention_discord_user_id=player.discord_user_id,
+        ),
+    )
+
+    result = service.process_expire(entry.id, expected_revision=1)
+
+    outbox_events = get_outbox_events(session)
+
+    assert result.expired is True
+    assert outbox_events[0].payload["destination"] == {
+        "kind": "channel",
+        "channel_id": 600_132,
+        "guild_id": 700_132,
+    }
+
+
 # `status != 'waiting'`、`revision` 不一致、`expire_at > now()` の場合に
 # expire が no-op になること
 def test_process_expire_is_noop_when_entry_is_not_due_or_not_waiting(
@@ -857,10 +1108,10 @@ def test_try_create_matches_does_not_mix_players_from_different_queue_classes(
     session: Session,
     session_factory: sessionmaker[Session],
 ) -> None:
-    low_players = create_players(session, 3, start_discord_user_id=30_051)
-    high_players = create_players(session, 3, start_discord_user_id=30_061)
-    create_waiting_entries(session, low_players, queue_class_id=DEFAULT_QUEUE_CLASS_ID)
-    create_waiting_entries(session, high_players, queue_class_id=SECOND_QUEUE_CLASS_ID)
+    beginner_players = create_players(session, 3, start_discord_user_id=30_051)
+    master_players = create_players(session, 3, start_discord_user_id=30_061)
+    create_waiting_entries(session, beginner_players, queue_class_id=DEFAULT_QUEUE_CLASS_ID)
+    create_waiting_entries(session, master_players, queue_class_id=SECOND_QUEUE_CLASS_ID)
     service = create_matching_queue_service(session_factory)
 
     created_matches = service.try_create_matches()
@@ -899,9 +1150,265 @@ def test_try_create_matches_creates_single_match_and_marks_entries_matched(
     assert created_matches[0].queue_entry_ids == tuple(entry.id for entry in queue_entries)
     assert len(participants) == 6
     assert all(entry.status == MatchQueueEntryStatus.MATCHED for entry in entries)
-    assert len(outbox_events) == len({entry.notification_channel_id for entry in entries})
+    assert outbox_events == []
     assert all(event.event_type == OutboxEventType.MATCH_CREATED for event in outbox_events)
     assert all("destination" in event.payload for event in outbox_events)
+
+
+def test_try_create_matches_routes_match_created_to_matchmaking_news_channel_when_configured(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    matchmaking_channel = create_managed_ui_channel(
+        session,
+        ui_type=ManagedUiType.MATCHMAKING_CHANNEL,
+        channel_id=880_000,
+        message_id=880_100,
+    )
+    matchmaking_news_channel = create_managed_ui_channel(
+        session,
+        ui_type=ManagedUiType.MATCHMAKING_NEWS_CHANNEL,
+        channel_id=880_001,
+        message_id=880_101,
+    )
+    players = create_players(session, 6, start_discord_user_id=30_111)
+    for index, player in enumerate(players, start=1):
+        player.display_name = f"Player {index}"
+    session.commit()
+    entries = create_waiting_entries(session, players)
+    service = create_matching_queue_service(session_factory)
+
+    created_matches = service.try_create_matches()
+
+    session.expire_all()
+    participants = session.scalars(
+        select(MatchParticipant).order_by(MatchParticipant.team.asc(), MatchParticipant.slot.asc())
+    ).all()
+    players_by_id = {player.id: player for player in session.scalars(select(Player)).all()}
+    outbox_events = get_outbox_events(session)
+
+    assert len(created_matches) == 1
+    assert len(outbox_events) == 1
+
+    expected_announcement_guild_id = min(
+        entry.notification_guild_id for entry in entries if entry.notification_guild_id is not None
+    )
+    expected_team_a_discord_user_ids = [
+        players_by_id[participant.player_id].discord_user_id
+        for participant in participants
+        if participant.team == MatchParticipantTeam.TEAM_A
+    ]
+    expected_team_b_discord_user_ids = [
+        players_by_id[participant.player_id].discord_user_id
+        for participant in participants
+        if participant.team == MatchParticipantTeam.TEAM_B
+    ]
+    expected_team_a_display_names = [
+        players_by_id[participant.player_id].display_name
+        for participant in participants
+        if participant.team == MatchParticipantTeam.TEAM_A
+    ]
+    expected_team_b_display_names = [
+        players_by_id[participant.player_id].display_name
+        for participant in participants
+        if participant.team == MatchParticipantTeam.TEAM_B
+    ]
+    announcement_events = [
+        event
+        for event in outbox_events
+        if event.payload["destination"]["channel_id"] == matchmaking_news_channel.channel_id
+    ]
+    participant_events = [
+        event
+        for event in outbox_events
+        if event.payload["destination"]["channel_id"] != matchmaking_news_channel.channel_id
+    ]
+
+    assert len(announcement_events) == 1
+    assert len(participant_events) == 0
+
+    announcement_event = announcement_events[0]
+    assert announcement_event.event_type == OutboxEventType.MATCH_CREATED
+    assert announcement_event.dedupe_key == f"match_created:{created_matches[0].match_id}:880001"
+    assert announcement_event.payload == {
+        "match_id": created_matches[0].match_id,
+        "match_format": DEFAULT_MATCH_FORMAT.value,
+        "queue_name": DEFAULT_QUEUE_NAME,
+        "destination": {
+            "kind": "channel",
+            "channel_id": matchmaking_news_channel.channel_id,
+            "guild_id": expected_announcement_guild_id,
+        },
+        "team_a_discord_user_ids": expected_team_a_discord_user_ids,
+        "team_b_discord_user_ids": expected_team_b_discord_user_ids,
+        "team_a_player_display_names": expected_team_a_display_names,
+        "team_b_player_display_names": expected_team_b_display_names,
+        "match_operation_thread_parent_channel_id": matchmaking_channel.channel_id,
+        "create_match_operation_thread": True,
+    }
+
+
+def test_try_create_matches_routes_match_created_to_presence_threads_when_available(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    matchmaking_channel = create_managed_ui_channel(
+        session,
+        ui_type=ManagedUiType.MATCHMAKING_CHANNEL,
+        channel_id=880_010,
+        message_id=880_110,
+    )
+    matchmaking_news_channel = create_managed_ui_channel(
+        session,
+        ui_type=ManagedUiType.MATCHMAKING_NEWS_CHANNEL,
+        channel_id=880_011,
+        message_id=880_111,
+    )
+    players = create_players(session, 6, start_discord_user_id=30_211)
+    for index, player in enumerate(players, start=1):
+        player.display_name = f"Player {index}"
+    session.commit()
+    entries = create_waiting_entries(session, players)
+    service = create_matching_queue_service(session_factory)
+    expected_presence_thread_channel_ids_by_entry_id: dict[int, int] = {}
+    for index, entry in enumerate(entries, start=1):
+        presence_thread_channel_id = 990_000 + index
+        service.update_waiting_presence_thread_channel_id(entry.id, presence_thread_channel_id)
+        expected_presence_thread_channel_ids_by_entry_id[entry.id] = presence_thread_channel_id
+
+    created_matches = service.try_create_matches()
+
+    session.expire_all()
+    participants = session.scalars(
+        select(MatchParticipant).order_by(MatchParticipant.team.asc(), MatchParticipant.slot.asc())
+    ).all()
+    players_by_id = {player.id: player for player in session.scalars(select(Player)).all()}
+    entries_by_id = {entry.id: entry for entry in session.scalars(select(MatchQueueEntry)).all()}
+    outbox_events = get_outbox_events(session)
+
+    assert len(created_matches) == 1
+    assert len(outbox_events) == 1 + len(entries)
+
+    expected_team_a_discord_user_ids = [
+        players_by_id[participant.player_id].discord_user_id
+        for participant in participants
+        if participant.team == MatchParticipantTeam.TEAM_A
+    ]
+    expected_team_b_discord_user_ids = [
+        players_by_id[participant.player_id].discord_user_id
+        for participant in participants
+        if participant.team == MatchParticipantTeam.TEAM_B
+    ]
+    announcement_events = [
+        event
+        for event in outbox_events
+        if event.payload["destination"]["channel_id"] == matchmaking_news_channel.channel_id
+    ]
+    participant_events = [
+        event
+        for event in outbox_events
+        if event.payload["destination"]["channel_id"] != matchmaking_news_channel.channel_id
+    ]
+
+    assert len(announcement_events) == 1
+    assert len(participant_events) == len(entries)
+    assert {event.payload["destination"]["channel_id"] for event in participant_events} == set(
+        expected_presence_thread_channel_ids_by_entry_id.values()
+    )
+
+    for event in participant_events:
+        queue_entry_ids = event.payload["queue_entry_ids"]
+        assert queue_entry_ids == [entry.id for entry in entries]
+        entry_id = next(
+            candidate_entry_id
+            for candidate_entry_id, channel_id in (
+                expected_presence_thread_channel_ids_by_entry_id.items()
+            )
+            if channel_id == event.payload["destination"]["channel_id"]
+        )
+        queue_entry = entries_by_id[entry_id]
+        assert event.event_type == OutboxEventType.MATCH_CREATED
+        assert event.payload["destination"] == {
+            "kind": "channel",
+            "channel_id": expected_presence_thread_channel_ids_by_entry_id[entry_id],
+            "guild_id": queue_entry.notification_guild_id,
+        }
+        assert event.payload["player_ids"] == [entry.player_id for entry in entries]
+        assert (
+            event.payload["mention_discord_user_id"]
+            == queue_entry.notification_mention_discord_user_id
+        )
+        assert event.payload["team_a_discord_user_ids"] == expected_team_a_discord_user_ids
+        assert event.payload["team_b_discord_user_ids"] == expected_team_b_discord_user_ids
+        assert (
+            event.payload["match_operation_thread_parent_channel_id"]
+            == matchmaking_channel.channel_id
+        )
+        assert event.payload["create_match_operation_thread"] is True
+
+
+def test_try_create_matches_skips_missing_presence_thread_without_parent_fallback(
+    session: Session,
+    session_factory: sessionmaker[Session],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    matchmaking_channel = create_managed_ui_channel(
+        session,
+        ui_type=ManagedUiType.MATCHMAKING_CHANNEL,
+        channel_id=880_020,
+        message_id=880_120,
+    )
+    matchmaking_news_channel = create_managed_ui_channel(
+        session,
+        ui_type=ManagedUiType.MATCHMAKING_NEWS_CHANNEL,
+        channel_id=880_021,
+        message_id=880_121,
+    )
+    players = create_players(session, 6, start_discord_user_id=30_311)
+    entries = create_waiting_entries(session, players)
+    service = create_matching_queue_service(session_factory)
+    expected_presence_thread_channel_ids: set[int] = set()
+
+    for index, entry in enumerate(entries[:-1], start=1):
+        presence_thread_channel_id = 991_000 + index
+        service.update_waiting_presence_thread_channel_id(entry.id, presence_thread_channel_id)
+        expected_presence_thread_channel_ids.add(presence_thread_channel_id)
+
+    caplog.set_level(logging.WARNING)
+
+    created_matches = service.try_create_matches()
+
+    outbox_events = get_outbox_events(session)
+    announcement_events = [
+        event
+        for event in outbox_events
+        if event.payload["destination"]["channel_id"] == matchmaking_news_channel.channel_id
+    ]
+    participant_events = [
+        event
+        for event in outbox_events
+        if event.payload["destination"]["channel_id"] != matchmaking_news_channel.channel_id
+    ]
+    missing_presence_entry = entries[-1]
+
+    assert len(created_matches) == 1
+    assert len(announcement_events) == 1
+    assert len(participant_events) == len(entries) - 1
+    assert {
+        event.payload["destination"]["channel_id"] for event in participant_events
+    } == expected_presence_thread_channel_ids
+    assert all(
+        event.payload["destination"]["channel_id"] != missing_presence_entry.notification_channel_id
+        for event in participant_events
+    )
+    assert (
+        "Skipping participant match_created notification without presence thread "
+        f"queue_entry_id={missing_presence_entry.id}"
+    ) in caplog.text
+    assert all(
+        event.payload["match_operation_thread_parent_channel_id"] == matchmaking_channel.channel_id
+        for event in outbox_events
+    )
 
 
 # 12 人以上の待機で 1 回の `try_create_matches()` が複数マッチを連続生成できること
@@ -941,7 +1448,10 @@ def test_try_create_matches_creates_balanced_two_vs_two_match_from_four_players(
         format_stats = get_player_format_stats(session, player.id, MatchFormat.TWO_VS_TWO)
         format_stats.rating = ratings_by_player_id[player.id]
         format_stats.carryover_status = CarryoverStatus.NOT_APPLIED
-    queue_definition = get_match_queue_class_definition_by_name(MatchFormat.TWO_VS_TWO, "low")
+    queue_definition = get_match_queue_class_definition_by_name(
+        MatchFormat.TWO_VS_TWO,
+        "beginner",
+    )
     assert queue_definition is not None
     create_waiting_entries(session, players, queue_class_id=queue_definition.queue_class_id)
     service = create_matching_queue_service(session_factory)
@@ -984,7 +1494,10 @@ def test_try_create_matches_creates_two_one_vs_one_matches_from_four_players(
         format_stats = get_player_format_stats(session, player.id, MatchFormat.ONE_VS_ONE)
         format_stats.rating = ratings_by_player_id[player.id]
         format_stats.carryover_status = CarryoverStatus.NOT_APPLIED
-    queue_definition = get_match_queue_class_definition_by_name(MatchFormat.ONE_VS_ONE, "low")
+    queue_definition = get_match_queue_class_definition_by_name(
+        MatchFormat.ONE_VS_ONE,
+        "beginner",
+    )
     assert queue_definition is not None
     create_waiting_entries(session, players, queue_class_id=queue_definition.queue_class_id)
     service = create_matching_queue_service(session_factory)
@@ -1045,7 +1558,7 @@ def test_matched_entries_make_reminder_and_expire_tasks_noop(
 
     assert reminder_result.reminded is False
     assert expire_result.expired is False
-    assert len(outbox_events) == len({entry.notification_channel_id for entry in entries})
+    assert outbox_events == []
     assert all(event.event_type == OutboxEventType.MATCH_CREATED for event in outbox_events)
 
 
@@ -1069,7 +1582,7 @@ def test_matching_queue_outbox_event_types_are_generated_for_supported_flows(
         player_id=expired_player.id,
         expire_at=now - timedelta(seconds=1),
     )
-    match_entries = create_waiting_entries(
+    create_waiting_entries(
         session,
         match_players,
         base_joined_at=now + timedelta(seconds=1),
@@ -1082,11 +1595,98 @@ def test_matching_queue_outbox_event_types_are_generated_for_supported_flows(
 
     event_types = [event.event_type for event in get_outbox_events(session)]
 
-    expected_match_created_event_count = len(
-        {entry.notification_channel_id for entry in match_entries}
-    )
+    expected_match_created_event_count = 0
     assert event_types[:2] == [
         OutboxEventType.PRESENCE_REMINDER,
         OutboxEventType.QUEUE_EXPIRED,
     ]
     assert event_types[2:] == [OutboxEventType.MATCH_CREATED] * expected_match_created_event_count
+
+
+def test_try_create_matches_prefers_presence_thread_for_match_created_destination(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    players = create_players(session, 6, start_discord_user_id=50_300)
+    entries = create_waiting_entries(session, players)
+    service = create_matching_queue_service(session_factory)
+    expected_presence_thread_channel_ids: set[int] = set()
+
+    for index, entry in enumerate(entries, start=1):
+        presence_thread_channel_id = 650_000 + index
+        service.update_waiting_presence_thread_channel_id(entry.id, presence_thread_channel_id)
+        expected_presence_thread_channel_ids.add(presence_thread_channel_id)
+
+    service.try_create_matches()
+
+    outbox_events = get_outbox_events(session)
+
+    assert outbox_events
+    assert {
+        event.payload["destination"]["channel_id"] for event in outbox_events
+    } == expected_presence_thread_channel_ids
+    expected_mention_discord_user_ids = {
+        entry.notification_mention_discord_user_id for entry in entries
+    }
+    assert all(
+        event.payload["mention_discord_user_id"] in expected_mention_discord_user_ids
+        for event in outbox_events
+    )
+
+
+def test_process_presence_reminder_uses_channel_destination_even_if_dm_snapshot_exists(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    player = create_player(session, 50_210)
+    now = get_database_now(session)
+    entry = create_queue_entry(
+        session,
+        player_id=player.id,
+        expire_at=now + timedelta(seconds=30),
+        notification_channel_id=601_210,
+        notification_guild_id=701_210,
+        notification_dm_discord_user_id=801_210,
+    )
+    service = create_matching_queue_service(session_factory)
+
+    result = service.process_presence_reminder(entry.id, expected_revision=1)
+
+    outbox_event = get_outbox_events(session)[0]
+
+    assert result.reminded is True
+    assert outbox_event.payload["destination"] == {
+        "kind": "channel",
+        "channel_id": 601_210,
+        "guild_id": 701_210,
+    }
+
+
+def test_process_presence_reminder_uses_channel_destination_for_legacy_interaction_context(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    player = create_player(session, 50_211)
+    now = get_database_now(session)
+    entry = create_queue_entry(
+        session,
+        player_id=player.id,
+        expire_at=now + timedelta(seconds=30),
+        notification_channel_id=601_211,
+        notification_guild_id=701_211,
+        notification_interaction_application_id=801_211,
+        notification_interaction_token="legacy-interaction-token",
+        notification_mention_discord_user_id=901_211,
+    )
+    service = create_matching_queue_service(session_factory)
+
+    result = service.process_presence_reminder(entry.id, expected_revision=1)
+
+    outbox_event = get_outbox_events(session)[0]
+
+    assert result.reminded is True
+    assert outbox_event.payload["destination"] == {
+        "kind": "channel",
+        "channel_id": 601_211,
+        "guild_id": 701_211,
+    }

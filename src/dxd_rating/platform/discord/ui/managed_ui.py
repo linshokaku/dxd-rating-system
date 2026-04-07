@@ -46,9 +46,11 @@ MATCHMAKING_CHANNEL_STATUS_PLACEHOLDER_MESSAGE = "\n".join(
 MATCHMAKING_CHANNEL_MATCH_FORMAT_PLACEHOLDER = "試合形式を選択"
 MATCHMAKING_CHANNEL_QUEUE_NAME_PLACEHOLDER = "階級を選択"
 MATCHMAKING_CHANNEL_JOIN_BUTTON_LABEL = "参加"
+MATCHMAKING_CHANNEL_UPDATE_STATUS_BUTTON_LABEL = "更新する"
 MATCHMAKING_CHANNEL_MATCH_FORMAT_SELECT_CUSTOM_ID = "dxd_rating:matchmaking_channel:match_format"
 MATCHMAKING_CHANNEL_QUEUE_NAME_SELECT_CUSTOM_ID = "dxd_rating:matchmaking_channel:queue_name"
 MATCHMAKING_CHANNEL_JOIN_BUTTON_CUSTOM_ID = "dxd_rating:matchmaking_channel:join"
+MATCHMAKING_CHANNEL_UPDATE_STATUS_BUTTON_CUSTOM_ID = "dxd_rating:matchmaking_channel:update_status"
 MATCHMAKING_CHANNEL_SELECT_MATCH_FORMAT_MESSAGE = "試合形式を選択してください。"
 MATCHMAKING_CHANNEL_SELECT_QUEUE_NAME_MESSAGE = "階級を選択してください。"
 MATCHMAKING_NEWS_CHANNEL_MESSAGE = "\n".join(
@@ -78,6 +80,9 @@ ADMIN_OPERATIONS_CHANNEL_MESSAGE = "このチャンネルは super admin 専用�
 MAX_MANAGED_UI_CHANNEL_NAME_LENGTH = 100
 REGISTER_PANEL_FALLBACK_ERROR_MESSAGE = "登録に失敗しました。管理者に確認してください。"
 MATCHMAKING_CHANNEL_FALLBACK_ERROR_MESSAGE = "操作に失敗しました。管理者に確認してください。"
+MATCHMAKING_CHANNEL_STATUS_UPDATE_FALLBACK_ERROR_MESSAGE = (
+    "参加状況の更新に失敗しました。管理者に確認してください。"
+)
 INFO_CHANNEL_FALLBACK_ERROR_MESSAGE = (
     "情報確認用スレッドの作成に失敗しました。管理者に確認してください。"
 )
@@ -98,6 +103,13 @@ class MatchmakingPanelInteractionHandler(Protocol):
     ) -> None: ...
 
 
+class MatchmakingStatusInteractionHandler(Protocol):
+    async def update_matchmaking_status_from_ui(
+        self,
+        interaction: discord.Interaction[Any],
+    ) -> None: ...
+
+
 class InfoChannelInteractionHandler(Protocol):
     async def info_thread_from_ui(
         self,
@@ -108,6 +120,7 @@ class InfoChannelInteractionHandler(Protocol):
 
 class ManagedUiInteractionHandler(
     RegisterPanelInteractionHandler,
+    MatchmakingStatusInteractionHandler,
     MatchmakingPanelInteractionHandler,
     InfoChannelInteractionHandler,
     Protocol,
@@ -385,6 +398,46 @@ class MatchmakingPanelView(discord.ui.View):
             logger.exception("Failed to send matchmaking panel fallback error response")
 
 
+class MatchmakingStatusView(discord.ui.View):
+    def __init__(self, interaction_handler: MatchmakingStatusInteractionHandler) -> None:
+        super().__init__(timeout=None)
+        self._interaction_handler = interaction_handler
+
+    @discord.ui.button(
+        label=MATCHMAKING_CHANNEL_UPDATE_STATUS_BUTTON_LABEL,
+        style=discord.ButtonStyle.success,
+        custom_id=MATCHMAKING_CHANNEL_UPDATE_STATUS_BUTTON_CUSTOM_ID,
+    )
+    async def update_status_button(
+        self,
+        interaction: discord.Interaction[Any],
+        _: discord.ui.Button[discord.ui.View],
+    ) -> None:
+        await self._interaction_handler.update_matchmaking_status_from_ui(interaction)
+
+    async def on_error(
+        self,
+        interaction: discord.Interaction[Any],
+        error: Exception,
+        _: discord.ui.Item[discord.ui.View],
+    ) -> None:
+        logger.exception("Matchmaking status interaction failed", exc_info=error)
+
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(
+                    MATCHMAKING_CHANNEL_STATUS_UPDATE_FALLBACK_ERROR_MESSAGE,
+                    ephemeral=True,
+                )
+            else:
+                await interaction.response.send_message(
+                    MATCHMAKING_CHANNEL_STATUS_UPDATE_FALLBACK_ERROR_MESSAGE,
+                    ephemeral=True,
+                )
+        except Exception:
+            logger.exception("Failed to send matchmaking status fallback error response")
+
+
 class InfoChannelView(discord.ui.View):
     def __init__(self, interaction_handler: InfoChannelInteractionHandler) -> None:
         super().__init__(timeout=None)
@@ -482,6 +535,7 @@ def create_persistent_views(
 ) -> tuple[discord.ui.View, ...]:
     return (
         RegisterPanelView(interaction_handler),
+        MatchmakingStatusView(interaction_handler),
         MatchmakingPanelView(interaction_handler),
         InfoChannelView(interaction_handler),
     )
@@ -503,6 +557,12 @@ def create_managed_ui_view(
         return InfoChannelView(interaction_handler)
 
     raise ValueError(f"Unsupported ui_type: {ui_type}")
+
+
+def create_matchmaking_status_view(
+    interaction_handler: MatchmakingStatusInteractionHandler,
+) -> discord.ui.View:
+    return MatchmakingStatusView(interaction_handler)
 
 
 def is_valid_managed_ui_channel_name(channel_name: str) -> bool:
@@ -661,7 +721,10 @@ async def send_initial_managed_ui_message(
             content=build_matchmaking_guide_message(matchmaking_guide_url),
             suppress_embeds=True,
         )
-        status_message = await channel.send(content=MATCHMAKING_CHANNEL_STATUS_PLACEHOLDER_MESSAGE)
+        status_message = await channel.send(
+            content=MATCHMAKING_CHANNEL_STATUS_PLACEHOLDER_MESSAGE,
+            view=create_matchmaking_status_view(interaction_handler),
+        )
         return InitialManagedUiMessages(
             primary_message=await channel.send(
                 content=MATCHMAKING_CHANNEL_MESSAGE,

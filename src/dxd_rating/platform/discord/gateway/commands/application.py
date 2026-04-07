@@ -742,6 +742,26 @@ class BotCommandHandlers:
         await self._send_player_operation_message(interaction, result.message)
 
     async def update_matchmaking_status(self, interaction: discord.Interaction[Any]) -> None:
+        await self._run_update_matchmaking_status(
+            interaction,
+            source="slash_command",
+        )
+
+    async def update_matchmaking_status_from_ui(
+        self,
+        interaction: discord.Interaction[Any],
+    ) -> None:
+        await self._run_update_matchmaking_status(
+            interaction,
+            source="managed_ui",
+        )
+
+    async def _run_update_matchmaking_status(
+        self,
+        interaction: discord.Interaction[Any],
+        *,
+        source: str,
+    ) -> None:
         await self._sync_requesting_user_identity(interaction)
         try:
             await asyncio.to_thread(self._lookup_player_id, interaction.user.id)
@@ -754,8 +774,9 @@ class BotCommandHandlers:
             return
         except Exception:
             self.logger.exception(
-                "Failed to execute /update_matchmaking_status command "
-                "discord_user_id=%s channel_id=%s guild_id=%s",
+                "Failed to update matchmaking status "
+                "source=%s discord_user_id=%s channel_id=%s guild_id=%s",
+                source,
                 interaction.user.id,
                 interaction.channel_id,
                 interaction.guild_id,

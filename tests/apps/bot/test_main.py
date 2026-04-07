@@ -17,6 +17,8 @@ from dxd_rating.platform.discord.ui import (
     INFO_CHANNEL_PLAYER_INFO_SEASON_BUTTON_LABEL,
     INFO_THREAD_LEADERBOARD_SHOW_BUTTON_LABEL,
     INFO_THREAD_PLAYER_INFO_SHOW_BUTTON_LABEL,
+    MATCHMAKING_CHANNEL_JOIN_BUTTON_LABEL,
+    MATCHMAKING_CHANNEL_UPDATE_STATUS_BUTTON_LABEL,
     MATCHMAKING_PRESENCE_THREAD_LEAVE_BUTTON_LABEL,
     MATCHMAKING_PRESENCE_THREAD_PRESENT_BUTTON_LABEL,
     REGISTER_PANEL_BUTTON_LABEL,
@@ -203,3 +205,77 @@ def test_setup_hook_skips_managed_channels_without_persistent_view(
     assert MatchmakingNewsMatchAnnouncementSpectateButton in dynamic_item_classes
     assert InfoThreadLeaderboardNextPageButton in dynamic_item_classes
     assert InfoThreadLeaderboardSeasonNextPageButton in dynamic_item_classes
+
+
+def test_setup_hook_restores_matchmaking_status_and_panel_views(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    initialize_seasons(session_factory)
+    settings = BotSettings.model_construct(
+        discord_bot_token="discord-token",
+        database_url="postgresql+psycopg://user:password@localhost:5432/dxd_rating",
+        log_level="INFO",
+        matchmaking_guide_url=DEFAULT_MATCHMAKING_GUIDE_URL,
+        development_mode=False,
+        super_admin_user_ids=frozenset(),
+    )
+    session.add(
+        ManagedUiChannel(
+            ui_type=ManagedUiType.MATCHMAKING_CHANNEL,
+            channel_id=1003,
+            message_id=2003,
+            status_message_id=2004,
+            created_by_discord_user_id=3003,
+        )
+    )
+    session.commit()
+
+    client = create_client(settings, session_factory)
+    client.tree.sync = AsyncMock(return_value=[])  # type: ignore[method-assign]
+
+    asyncio.run(client.setup_hook())
+
+    button_labels_by_view = find_button_labels(client)
+    registered_message_ids = set(client._connection._view_store._synced_message_views)
+
+    assert [MATCHMAKING_CHANNEL_UPDATE_STATUS_BUTTON_LABEL] in button_labels_by_view
+    assert [None, None, MATCHMAKING_CHANNEL_JOIN_BUTTON_LABEL] in button_labels_by_view
+    assert registered_message_ids == {2003, 2004}
+
+
+def test_setup_hook_skips_matchmaking_status_view_when_status_message_id_is_missing(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    initialize_seasons(session_factory)
+    settings = BotSettings.model_construct(
+        discord_bot_token="discord-token",
+        database_url="postgresql+psycopg://user:password@localhost:5432/dxd_rating",
+        log_level="INFO",
+        matchmaking_guide_url=DEFAULT_MATCHMAKING_GUIDE_URL,
+        development_mode=False,
+        super_admin_user_ids=frozenset(),
+    )
+    session.add(
+        ManagedUiChannel(
+            ui_type=ManagedUiType.MATCHMAKING_CHANNEL,
+            channel_id=1004,
+            message_id=2005,
+            status_message_id=None,
+            created_by_discord_user_id=3004,
+        )
+    )
+    session.commit()
+
+    client = create_client(settings, session_factory)
+    client.tree.sync = AsyncMock(return_value=[])  # type: ignore[method-assign]
+
+    asyncio.run(client.setup_hook())
+
+    button_labels_by_view = find_button_labels(client)
+    registered_message_ids = set(client._connection._view_store._synced_message_views)
+
+    assert [MATCHMAKING_CHANNEL_UPDATE_STATUS_BUTTON_LABEL] not in button_labels_by_view
+    assert [None, None, MATCHMAKING_CHANNEL_JOIN_BUTTON_LABEL] in button_labels_by_view
+    assert registered_message_ids == {2005}

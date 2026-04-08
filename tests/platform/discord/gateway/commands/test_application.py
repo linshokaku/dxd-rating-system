@@ -767,6 +767,43 @@ def create_active_info_thread(
     return info_channel.created_threads[-1]
 
 
+def create_active_dev_info_thread(
+    handlers: BotCommandHandlers,
+    *,
+    executor_discord_user_id: int,
+    target_discord_user_id: int,
+    guild: FakeGuild,
+    info_channel: FakeTextChannel,
+    command_name: InfoThreadCommandName = InfoThreadCommandName.PLAYER_INFO,
+    interaction_channel_id: int = 13_299,
+    executor_name: str | None = None,
+    executor_global_name: str | None = None,
+    executor_nick: str | None = None,
+) -> FakeThread:
+    interaction = FakeInteraction(
+        user=FakeUser(
+            id=executor_discord_user_id,
+            name=executor_name,
+            global_name=executor_global_name,
+            nick=executor_nick,
+        ),
+        channel_id=interaction_channel_id,
+        guild_id=guild.id,
+        guild=guild,
+    )
+
+    asyncio.run(
+        handlers.dev_info_thread(
+            as_interaction(interaction),
+            command_name.value,
+            str(target_discord_user_id),
+        )
+    )
+
+    assert len(info_channel.created_threads) > 0, interaction.response.messages
+    return info_channel.created_threads[-1]
+
+
 def get_player_format_stats(
     session: Session,
     player_id: int,
@@ -6908,11 +6945,235 @@ def test_dev_player_info_requires_admin(
     )
 
 
+def test_dev_info_thread_requires_admin(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    target_discord_user_id = 123_456_789_012_345_689_1
+    create_player(session, target_discord_user_id)
+    handlers = create_handlers(session_factory)
+    interaction = FakeInteraction(user=FakeUser(id=10))
+
+    asyncio.run(
+        handlers.dev_info_thread(
+            as_interaction(interaction),
+            InfoThreadCommandName.PLAYER_INFO.value,
+            str(target_discord_user_id),
+        )
+    )
+
+    assert_response(
+        interaction,
+        ["このコマンドは管理者のみ実行できます。"],
+        ephemeral=True,
+    )
+
+
+def test_dev_info_thread_validates_discord_user_id(session_factory: sessionmaker[Session]) -> None:
+    handlers = create_handlers(session_factory, super_admin_user_ids=frozenset({10}))
+    interaction = FakeInteraction(user=FakeUser(id=10))
+
+    asyncio.run(
+        handlers.dev_info_thread(
+            as_interaction(interaction),
+            InfoThreadCommandName.PLAYER_INFO.value,
+            "not-a-number",
+        )
+    )
+
+    assert_response(interaction, ["discord_user_id が不正です。"], ephemeral=True)
+
+
+def test_dev_info_thread_creates_thread_and_binding_for_real_user(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    executor_discord_user_id = 10
+    target_discord_user_id = 123_456_789_012_345_689_2
+    player = create_player(session, target_discord_user_id)
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({executor_discord_user_id}),
+    )
+    guild = FakeGuild(
+        id=14_200,
+        members={
+            target_discord_user_id: FakeMember(
+                id=target_discord_user_id,
+                nick="target-guild",
+            )
+        },
+    )
+    info_channel = FakeTextChannel(id=13_200, name="レート戦情報", guild=guild)
+    guild.channels.append(info_channel)
+    setup_info_managed_ui_channel(handlers, info_channel.id)
+    interaction = FakeInteraction(
+        user=FakeUser(id=executor_discord_user_id, nick="admin-guild"),
+        channel_id=13_299,
+        guild_id=guild.id,
+        guild=guild,
+    )
+
+    asyncio.run(
+        handlers.dev_info_thread(
+            as_interaction(interaction),
+            InfoThreadCommandName.LEADERBOARD.value,
+            str(target_discord_user_id),
+        )
+    )
+
+    session.expire_all()
+    binding = session.get(PlayerInfoThreadBinding, player.id)
+
+    assert_response(
+        interaction,
+        ["指定したユーザーの情報確認用スレッドを作成しました。"],
+        ephemeral=True,
+    )
+    assert len(info_channel.created_threads) == 1
+    created_thread = info_channel.created_threads[0]
+    assert created_thread.name == "情報-target-guild"
+    assert created_thread.added_user_ids == [target_discord_user_id, executor_discord_user_id]
+    assert [message.content for message in created_thread.sent_messages] == [
+        build_info_thread_initial_message(InfoThreadCommandName.LEADERBOARD)
+    ]
+    assert binding is not None
+    assert binding.thread_channel_id == created_thread.id
+
+
+def test_dev_info_thread_creates_thread_and_binding_for_dummy_user(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    executor_discord_user_id = 10
+    target_discord_user_id = 777
+    player = create_player(session, target_discord_user_id)
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({executor_discord_user_id}),
+    )
+    guild = FakeGuild(id=14_201)
+    info_channel = FakeTextChannel(id=13_201, name="レート戦情報", guild=guild)
+    guild.channels.append(info_channel)
+    setup_info_managed_ui_channel(handlers, info_channel.id)
+    interaction = FakeInteraction(
+        user=FakeUser(id=executor_discord_user_id),
+        channel_id=13_300,
+        guild_id=guild.id,
+        guild=guild,
+    )
+
+    asyncio.run(
+        handlers.dev_info_thread(
+            as_interaction(interaction),
+            InfoThreadCommandName.PLAYER_INFO.value,
+            str(target_discord_user_id),
+        )
+    )
+
+    session.expire_all()
+    binding = session.get(PlayerInfoThreadBinding, player.id)
+
+    assert_response(
+        interaction,
+        ["指定したユーザーの情報確認用スレッドを作成しました。"],
+        ephemeral=True,
+    )
+    assert len(info_channel.created_threads) == 1
+    created_thread = info_channel.created_threads[0]
+    assert created_thread.name == "情報-<dummy_777>"
+    assert created_thread.added_user_ids == [executor_discord_user_id]
+    assert [message.content for message in created_thread.sent_messages] == [
+        build_info_thread_initial_message(InfoThreadCommandName.PLAYER_INFO)
+    ]
+    assert binding is not None
+    assert binding.thread_channel_id == created_thread.id
+
+
+def test_dev_info_thread_overwrites_latest_binding_with_new_thread(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    executor_discord_user_id = 10
+    target_discord_user_id = 123_456_789_012_345_689_3
+    player = create_player(session, target_discord_user_id)
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({executor_discord_user_id}),
+    )
+    guild = FakeGuild(id=14_202)
+    info_channel = FakeTextChannel(id=13_202, name="レート戦情報", guild=guild)
+    guild.channels.append(info_channel)
+    setup_info_managed_ui_channel(handlers, info_channel.id)
+    interaction = FakeInteraction(
+        user=FakeUser(id=executor_discord_user_id),
+        channel_id=13_301,
+        guild_id=guild.id,
+        guild=guild,
+    )
+
+    asyncio.run(
+        handlers.dev_info_thread(
+            as_interaction(interaction),
+            InfoThreadCommandName.PLAYER_INFO.value,
+            str(target_discord_user_id),
+        )
+    )
+    asyncio.run(
+        handlers.dev_info_thread(
+            as_interaction(interaction),
+            InfoThreadCommandName.LEADERBOARD.value,
+            str(target_discord_user_id),
+        )
+    )
+
+    session.expire_all()
+    binding = session.get(PlayerInfoThreadBinding, player.id)
+
+    assert len(info_channel.created_threads) == 2
+    assert binding is not None
+    assert binding.thread_channel_id == info_channel.created_threads[-1].id
+
+
+def test_dev_info_thread_returns_target_not_registered_message(
+    session_factory: sessionmaker[Session],
+) -> None:
+    handlers = create_handlers(session_factory, super_admin_user_ids=frozenset({10}))
+    interaction = FakeInteraction(user=FakeUser(id=10))
+
+    asyncio.run(
+        handlers.dev_info_thread(
+            as_interaction(interaction),
+            InfoThreadCommandName.PLAYER_INFO.value,
+            "123456789012345699",
+        )
+    )
+
+    assert_response(interaction, ["指定したユーザーは未登録です。"], ephemeral=True)
+
+
 def test_dev_player_info_validates_discord_user_id(session_factory: sessionmaker[Session]) -> None:
     handlers = create_handlers(session_factory, super_admin_user_ids=frozenset({10}))
     interaction = FakeInteraction(user=FakeUser(id=10))
 
     asyncio.run(handlers.dev_player_info(as_interaction(interaction), "not-a-number"))
+
+    assert_response(interaction, ["discord_user_id が不正です。"], ephemeral=True)
+
+
+def test_dev_player_info_season_validates_discord_user_id(
+    session_factory: sessionmaker[Session],
+) -> None:
+    handlers = create_handlers(session_factory, super_admin_user_ids=frozenset({10}))
+    interaction = FakeInteraction(user=FakeUser(id=10))
+
+    asyncio.run(
+        handlers.dev_player_info_season(
+            as_interaction(interaction),
+            1,
+            "not-a-number",
+        )
+    )
 
     assert_response(interaction, ["discord_user_id が不正です。"], ephemeral=True)
 
@@ -6936,30 +7197,51 @@ def test_dev_player_info_returns_target_player_stats(
         session_factory,
         super_admin_user_ids=frozenset({executor_discord_user_id}),
     )
-    interaction = FakeInteraction(user=FakeUser(id=executor_discord_user_id))
+    guild = FakeGuild(id=14_203)
+    info_channel = FakeTextChannel(id=13_203, name="レート戦情報", guild=guild)
+    guild.channels.append(info_channel)
+    setup_info_managed_ui_channel(handlers, info_channel.id)
+    created_thread = create_active_dev_info_thread(
+        handlers,
+        executor_discord_user_id=executor_discord_user_id,
+        target_discord_user_id=target_discord_user_id,
+        guild=guild,
+        info_channel=info_channel,
+        command_name=InfoThreadCommandName.PLAYER_INFO,
+        interaction_channel_id=13_302,
+    )
+    interaction = FakeInteraction(
+        user=FakeUser(id=executor_discord_user_id),
+        channel_id=13_303,
+        guild_id=guild.id,
+        guild=guild,
+    )
 
     asyncio.run(handlers.dev_player_info(as_interaction(interaction), str(target_discord_user_id)))
 
     assert_response(
         interaction,
-        [
-            format_player_info_message(
-                {
-                    MatchFormat.ONE_VS_ONE: (1500.0, 0, 0, 0, 0, None),
-                    MatchFormat.TWO_VS_TWO: (1500.0, 0, 0, 0, 0, None),
-                    MatchFormat.THREE_VS_THREE: (
-                        1498.25,
-                        3,
-                        1,
-                        1,
-                        1,
-                        datetime(2026, 3, 20, 14, 0, 0, tzinfo=timezone.utc),
-                    ),
-                }
-            )
-        ],
+        ["指定したユーザーのプレイヤー情報を表示しました。"],
         ephemeral=True,
     )
+    assert [message.content for message in created_thread.sent_messages] == [
+        build_info_thread_initial_message(InfoThreadCommandName.PLAYER_INFO),
+        format_player_info_message(
+            {
+                MatchFormat.ONE_VS_ONE: (1500.0, 0, 0, 0, 0, None),
+                MatchFormat.TWO_VS_TWO: (1500.0, 0, 0, 0, 0, None),
+                MatchFormat.THREE_VS_THREE: (
+                    1498.25,
+                    3,
+                    1,
+                    1,
+                    1,
+                    datetime(2026, 3, 20, 14, 0, 0, tzinfo=timezone.utc),
+                ),
+            }
+        ),
+    ]
+    assert created_thread.sent_messages[1].view is None
 
 
 def test_dev_player_info_season_returns_target_player_stats(
@@ -6985,7 +7267,25 @@ def test_dev_player_info_season_returns_target_player_stats(
         session_factory,
         super_admin_user_ids=frozenset({executor_discord_user_id}),
     )
-    interaction = FakeInteraction(user=FakeUser(id=executor_discord_user_id))
+    guild = FakeGuild(id=14_204)
+    info_channel = FakeTextChannel(id=13_204, name="レート戦情報", guild=guild)
+    guild.channels.append(info_channel)
+    setup_info_managed_ui_channel(handlers, info_channel.id)
+    created_thread = create_active_dev_info_thread(
+        handlers,
+        executor_discord_user_id=executor_discord_user_id,
+        target_discord_user_id=target_discord_user_id,
+        guild=guild,
+        info_channel=info_channel,
+        command_name=InfoThreadCommandName.PLAYER_INFO_SEASON,
+        interaction_channel_id=13_304,
+    )
+    interaction = FakeInteraction(
+        user=FakeUser(id=executor_discord_user_id),
+        channel_id=13_305,
+        guild_id=guild.id,
+        guild=guild,
+    )
 
     asyncio.run(
         handlers.dev_player_info_season(
@@ -6997,16 +7297,79 @@ def test_dev_player_info_season_returns_target_player_stats(
 
     assert_response(
         interaction,
+        ["指定したユーザーのシーズン別プレイヤー情報を表示しました。"],
+        ephemeral=True,
+    )
+    assert [message.content for message in created_thread.sent_messages] == [
+        build_info_thread_initial_message(InfoThreadCommandName.PLAYER_INFO_SEASON),
+        format_player_info_message(
+            {
+                MatchFormat.ONE_VS_ONE: (1500.0, 0, 0, 0, 0, None),
+                MatchFormat.TWO_VS_TWO: (1500.0, 0, 0, 0, 0, None),
+                MatchFormat.THREE_VS_THREE: (1488.0, 0, 0, 0, 0, None),
+            },
+            season_id=season_pair.upcoming.id,
+            season_name="next-summer",
+        ),
+    ]
+    assert created_thread.sent_messages[1].view is None
+
+
+def test_dev_player_info_requires_info_thread_binding(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    executor_discord_user_id = 10
+    target_discord_user_id = 123_456_789_012_345_690_2
+    create_player(session, target_discord_user_id)
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({executor_discord_user_id}),
+    )
+    interaction = FakeInteraction(user=FakeUser(id=executor_discord_user_id))
+
+    asyncio.run(handlers.dev_player_info(as_interaction(interaction), str(target_discord_user_id)))
+
+    assert_response(
+        interaction,
+        ["先に /info_thread または /dev_info_thread を実行してください。"],
+        ephemeral=True,
+    )
+
+
+def test_dev_player_info_returns_thread_not_found_when_bound_thread_is_missing(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    executor_discord_user_id = 10
+    target_discord_user_id = 123_456_789_012_345_690_3
+    player = create_player(session, target_discord_user_id)
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({executor_discord_user_id}),
+    )
+    guild = FakeGuild(id=14_205)
+    info_channel = FakeTextChannel(id=13_205, name="レート戦情報", guild=guild)
+    guild.channels.append(info_channel)
+    setup_info_managed_ui_channel(handlers, info_channel.id)
+    handlers.info_thread_binding_service.upsert_latest_thread_channel_id(
+        player_id=player.id,
+        thread_channel_id=99_005,
+    )
+    interaction = FakeInteraction(
+        user=FakeUser(id=executor_discord_user_id),
+        channel_id=13_306,
+        guild_id=guild.id,
+        guild=guild,
+    )
+
+    asyncio.run(handlers.dev_player_info(as_interaction(interaction), str(target_discord_user_id)))
+
+    assert_response(
+        interaction,
         [
-            format_player_info_message(
-                {
-                    MatchFormat.ONE_VS_ONE: (1500.0, 0, 0, 0, 0, None),
-                    MatchFormat.TWO_VS_TWO: (1500.0, 0, 0, 0, 0, None),
-                    MatchFormat.THREE_VS_THREE: (1488.0, 0, 0, 0, 0, None),
-                },
-                season_id=season_pair.upcoming.id,
-                season_name="next-summer",
-            )
+            "情報確認用スレッドが見つかりません。"
+            "先に /info_thread または /dev_info_thread を実行してください。"
         ],
         ephemeral=True,
     )
@@ -7021,6 +7384,238 @@ def test_dev_player_info_returns_target_not_registered_message(
     asyncio.run(handlers.dev_player_info(as_interaction(interaction), "123456789012345691"))
 
     assert_response(interaction, ["指定したユーザーは未登録です。"], ephemeral=True)
+
+
+def test_dev_info_thread_binding_is_shared_with_normal_player_info(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    executor_discord_user_id = 10
+    target_discord_user_id = 123_456_789_012_345_690_4
+    player = create_player(session, target_discord_user_id)
+    three_vs_three_stats = get_player_format_stats(session, player.id)
+    three_vs_three_stats.rating = 1510.0
+    session.commit()
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({executor_discord_user_id}),
+    )
+    guild = FakeGuild(
+        id=14_206,
+        members={target_discord_user_id: FakeMember(id=target_discord_user_id, nick="shared-user")},
+    )
+    info_channel = FakeTextChannel(id=13_206, name="レート戦情報", guild=guild)
+    guild.channels.append(info_channel)
+    setup_info_managed_ui_channel(handlers, info_channel.id)
+    created_thread = create_active_dev_info_thread(
+        handlers,
+        executor_discord_user_id=executor_discord_user_id,
+        target_discord_user_id=target_discord_user_id,
+        guild=guild,
+        info_channel=info_channel,
+        command_name=InfoThreadCommandName.PLAYER_INFO,
+        interaction_channel_id=13_307,
+    )
+    interaction = FakeInteraction(
+        user=FakeUser(id=target_discord_user_id, nick="shared-user"),
+        channel_id=13_308,
+        guild_id=guild.id,
+        guild=guild,
+    )
+
+    asyncio.run(handlers.player_info(as_interaction(interaction)))
+
+    assert_response(interaction, ["プレイヤー情報を表示しました。"], ephemeral=True)
+    assert len(created_thread.sent_messages) == 2
+
+
+def test_dev_leaderboard_posts_current_leaderboard_to_target_info_thread(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    executor_discord_user_id = 10
+    target_discord_user_id = 123_456_789_012_345_690_5
+    bob_discord_user_id = 123_456_789_012_345_690_6
+    carol_discord_user_id = 123_456_789_012_345_690_7
+    target = create_player(session, target_discord_user_id)
+    bob = create_player(session, bob_discord_user_id)
+    carol = create_player(session, carol_discord_user_id)
+    season_pair = ensure_active_and_upcoming_seasons(session)
+    target_stats = get_player_format_stats(session, target.id)
+    bob_stats = get_player_format_stats(session, bob.id)
+    carol_stats = get_player_format_stats(session, carol.id)
+    target_stats.rating = 1600
+    target_stats.games_played = 2
+    target_stats.wins = 2
+    bob_stats.rating = 1600
+    bob_stats.games_played = 5
+    bob_stats.wins = 4
+    bob_stats.losses = 1
+    carol_stats.rating = 1600
+    carol_stats.games_played = 5
+    carol_stats.wins = 3
+    carol_stats.losses = 2
+    target.display_name = "Target"
+    bob.display_name = "Bob"
+    carol.display_name = "Carol"
+    session.commit()
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({executor_discord_user_id}),
+    )
+    guild = FakeGuild(id=14_207)
+    info_channel = FakeTextChannel(id=13_207, name="レート戦情報", guild=guild)
+    guild.channels.append(info_channel)
+    setup_info_managed_ui_channel(handlers, info_channel.id)
+    created_thread = create_active_dev_info_thread(
+        handlers,
+        executor_discord_user_id=executor_discord_user_id,
+        target_discord_user_id=target_discord_user_id,
+        guild=guild,
+        info_channel=info_channel,
+        command_name=InfoThreadCommandName.LEADERBOARD,
+        interaction_channel_id=13_309,
+    )
+    interaction = FakeInteraction(
+        user=FakeUser(id=executor_discord_user_id),
+        channel_id=13_310,
+        guild_id=guild.id,
+        guild=guild,
+    )
+
+    asyncio.run(
+        handlers.dev_leaderboard(
+            as_interaction(interaction),
+            MatchFormat.THREE_VS_THREE.value,
+            1,
+            str(target_discord_user_id),
+        )
+    )
+
+    assert_response(
+        interaction,
+        ["指定したユーザーの情報確認用スレッドにランキングを表示しました。"],
+        ephemeral=True,
+    )
+    assert created_thread.sent_messages[1].content == format_leaderboard_message(
+        season_name=season_pair.active.name,
+        match_format=MatchFormat.THREE_VS_THREE,
+        page=1,
+        entries=[
+            (1, "Bob", 1600.0, None, None, None),
+            (2, "Carol", 1600.0, None, None, None),
+            (3, "Target", 1600.0, None, None, None),
+        ],
+    )
+    assert created_thread.sent_messages[1].view is None
+
+
+def test_dev_leaderboard_requires_info_thread_binding(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    executor_discord_user_id = 10
+    target_discord_user_id = 123_456_789_012_345_690_8
+    create_player(session, target_discord_user_id)
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({executor_discord_user_id}),
+    )
+    interaction = FakeInteraction(user=FakeUser(id=executor_discord_user_id))
+
+    asyncio.run(
+        handlers.dev_leaderboard(
+            as_interaction(interaction),
+            MatchFormat.THREE_VS_THREE.value,
+            1,
+            str(target_discord_user_id),
+        )
+    )
+
+    assert_response(
+        interaction,
+        ["先に /info_thread または /dev_info_thread を実行してください。"],
+        ephemeral=True,
+    )
+
+
+def test_dev_leaderboard_season_posts_requested_season_leaderboard_to_target_info_thread(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    executor_discord_user_id = 10
+    target_discord_user_id = 123_456_789_012_345_690_9
+    target = create_player(session, target_discord_user_id)
+    current_time = get_database_now(session)
+    season = Season(
+        name="202602delta",
+        start_at=current_time - timedelta(days=40),
+        end_at=current_time - timedelta(days=10),
+        completed=True,
+        completed_at=current_time - timedelta(days=10),
+    )
+    session.add(season)
+    session.flush()
+    session.add(
+        PlayerFormatStats(
+            player_id=target.id,
+            season_id=season.id,
+            match_format=MatchFormat.THREE_VS_THREE,
+            rating=1600,
+            games_played=1,
+            wins=1,
+        )
+    )
+    session.commit()
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({executor_discord_user_id}),
+    )
+    guild = FakeGuild(id=14_208)
+    info_channel = FakeTextChannel(id=13_208, name="レート戦情報", guild=guild)
+    guild.channels.append(info_channel)
+    setup_info_managed_ui_channel(handlers, info_channel.id)
+    created_thread = create_active_dev_info_thread(
+        handlers,
+        executor_discord_user_id=executor_discord_user_id,
+        target_discord_user_id=target_discord_user_id,
+        guild=guild,
+        info_channel=info_channel,
+        command_name=InfoThreadCommandName.LEADERBOARD_SEASON,
+        interaction_channel_id=13_311,
+    )
+    interaction = FakeInteraction(
+        user=FakeUser(id=executor_discord_user_id),
+        channel_id=13_312,
+        guild_id=guild.id,
+        guild=guild,
+    )
+
+    asyncio.run(
+        handlers.dev_leaderboard_season(
+            as_interaction(interaction),
+            season.id,
+            MatchFormat.THREE_VS_THREE.value,
+            1,
+            str(target_discord_user_id),
+        )
+    )
+
+    assert_response(
+        interaction,
+        ["指定したユーザーの情報確認用スレッドにシーズン別ランキングを表示しました。"],
+        ephemeral=True,
+    )
+    assert created_thread.sent_messages[1].content == format_leaderboard_season_message(
+        season_id=season.id,
+        season_name=season.name,
+        match_format=MatchFormat.THREE_VS_THREE,
+        page=1,
+        entries=[
+            (1, "1234567890123456909", 1600.0),
+        ],
+    )
+    assert created_thread.sent_messages[1].view is None
 
 
 def test_dev_is_admin_returns_yes_or_no(session_factory: sessionmaker[Session]) -> None:
@@ -8531,8 +9126,11 @@ def test_dev_commands_register_discord_user_id_as_last_option() -> None:
         "dev_join": ["match_format", "queue_name", "discord_user_id"],
         "dev_present": ["discord_user_id"],
         "dev_leave": ["discord_user_id"],
+        "dev_info_thread": ["command_name", "discord_user_id"],
         "dev_player_info": ["discord_user_id"],
         "dev_player_info_season": ["season_id", "discord_user_id"],
+        "dev_leaderboard": ["match_format", "page", "discord_user_id"],
+        "dev_leaderboard_season": ["season_id", "match_format", "page", "discord_user_id"],
         "dev_match_parent": ["match_id", "discord_user_id"],
         "dev_match_spectate": ["match_id", "discord_user_id"],
         "dev_match_win": ["match_id", "discord_user_id"],

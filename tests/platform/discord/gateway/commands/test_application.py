@@ -6512,6 +6512,30 @@ def test_dev_register_returns_internal_error_message_ephemerally(
     )
 
 
+def test_dev_join_requires_admin(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    create_player(session, 123_456_789_012_345_685)
+    handlers = create_handlers(session_factory)
+    interaction = FakeInteraction(user=FakeUser(id=10))
+
+    asyncio.run(
+        handlers.dev_join(
+            as_interaction(interaction),
+            DEFAULT_MATCH_FORMAT.value,
+            DEFAULT_QUEUE_NAME,
+            "123456789012345685",
+        )
+    )
+
+    assert_response(
+        interaction,
+        ["このコマンドは管理者のみ実行できます。"],
+        ephemeral=True,
+    )
+
+
 def test_dev_join_creates_presence_thread_for_dummy_user_under_matchmaking_channel(
     session: Session,
     session_factory: sessionmaker[Session],
@@ -6557,7 +6581,7 @@ def test_dev_join_creates_presence_thread_for_dummy_user_under_matchmaking_chann
 
     queue_entry = get_queue_entry(session, player.id)
 
-    assert_response(interaction, ["指定したユーザーをキューに参加させました。"], ephemeral=False)
+    assert_response(interaction, ["指定したユーザーをキューに参加させました。"], ephemeral=True)
     assert queue_entry.notification_channel_id == matchmaking_channel.id
     assert queue_entry.presence_thread_channel_id == 20_001
     assert queue_entry.notification_guild_id == guild.id
@@ -6703,7 +6727,7 @@ def test_dev_join_returns_internal_error_when_setup_matchmaking_channel_is_missi
     assert_response(
         interaction,
         ["指定したユーザーのキュー参加に失敗しました。管理者に確認してください。"],
-        ephemeral=False,
+        ephemeral=True,
     )
 
 
@@ -6754,7 +6778,11 @@ def test_dev_join_returns_restricted_message_for_restricted_target(
         )
     )
 
-    assert interaction.response.messages == ["指定したユーザーは現在キュー参加を制限されています。"]
+    assert_response(
+        interaction,
+        ["指定したユーザーは現在キュー参加を制限されています。"],
+        ephemeral=True,
+    )
 
 
 def test_dev_present_returns_expired_message_for_expired_target(

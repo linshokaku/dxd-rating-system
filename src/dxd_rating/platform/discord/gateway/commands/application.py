@@ -2264,7 +2264,7 @@ class BotCommandHandlers:
         queue_name: str,
         discord_user_id: str,
     ) -> None:
-        if not await self._ensure_admin(interaction):
+        if not await self._ensure_admin(interaction, ephemeral=True):
             return
 
         parent_channel: discord.abc.GuildChannel | None = None
@@ -2305,25 +2305,53 @@ class BotCommandHandlers:
                 after_join=after_join,
             )
         except ValueError:
-            await self._send_message(interaction, INVALID_DISCORD_USER_ID_MESSAGE)
+            await self._send_message(
+                interaction,
+                INVALID_DISCORD_USER_ID_MESSAGE,
+                ephemeral=True,
+            )
             return
         except InvalidMatchFormatError:
-            await self._send_message(interaction, INVALID_MATCH_FORMAT_MESSAGE)
+            await self._send_message(
+                interaction,
+                INVALID_MATCH_FORMAT_MESSAGE,
+                ephemeral=True,
+            )
             return
         except InvalidQueueNameError:
-            await self._send_message(interaction, DEV_INVALID_QUEUE_NAME_MESSAGE)
+            await self._send_message(
+                interaction,
+                DEV_INVALID_QUEUE_NAME_MESSAGE,
+                ephemeral=True,
+            )
             return
         except PlayerNotRegisteredError:
-            await self._send_message(interaction, DEV_TARGET_NOT_REGISTERED_MESSAGE)
+            await self._send_message(
+                interaction,
+                DEV_TARGET_NOT_REGISTERED_MESSAGE,
+                ephemeral=True,
+            )
             return
         except QueueJoinNotAllowedError:
-            await self._send_message(interaction, DEV_JOIN_NOT_ALLOWED_MESSAGE)
+            await self._send_message(
+                interaction,
+                DEV_JOIN_NOT_ALLOWED_MESSAGE,
+                ephemeral=True,
+            )
             return
         except QueueJoinRestrictedError:
-            await self._send_message(interaction, DEV_JOIN_RESTRICTED_MESSAGE)
+            await self._send_message(
+                interaction,
+                DEV_JOIN_RESTRICTED_MESSAGE,
+                ephemeral=True,
+            )
             return
         except QueueAlreadyJoinedError:
-            await self._send_message(interaction, DEV_JOIN_ALREADY_JOINED_MESSAGE)
+            await self._send_message(
+                interaction,
+                DEV_JOIN_ALREADY_JOINED_MESSAGE,
+                ephemeral=True,
+            )
             return
         except Exception:
             self.logger.exception(
@@ -2338,10 +2366,18 @@ class BotCommandHandlers:
                 interaction.channel_id,
                 interaction.guild_id,
             )
-            await self._send_message(interaction, DEV_JOIN_FAILED_MESSAGE)
+            await self._send_message(
+                interaction,
+                DEV_JOIN_FAILED_MESSAGE,
+                ephemeral=True,
+            )
             return
 
-        await self._send_message(interaction, DEV_JOIN_SUCCESS_MESSAGE)
+        await self._send_message(
+            interaction,
+            DEV_JOIN_SUCCESS_MESSAGE,
+            ephemeral=True,
+        )
 
     async def dev_present(
         self,

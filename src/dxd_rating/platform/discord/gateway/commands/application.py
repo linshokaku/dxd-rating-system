@@ -2217,7 +2217,7 @@ class BotCommandHandlers:
         interaction: discord.Interaction[Any],
         discord_user_id: str,
     ) -> None:
-        if not await self._ensure_admin(interaction, ephemeral=True):
+        if not await self._ensure_admin(interaction):
             return
 
         try:
@@ -2264,7 +2264,7 @@ class BotCommandHandlers:
         queue_name: str,
         discord_user_id: str,
     ) -> None:
-        if not await self._ensure_admin(interaction, ephemeral=True):
+        if not await self._ensure_admin(interaction):
             return
 
         parent_channel: discord.abc.GuildChannel | None = None
@@ -3175,14 +3175,18 @@ class BotCommandHandlers:
     async def _ensure_admin(
         self,
         interaction: discord.Interaction[Any],
-        *,
-        ephemeral: bool = False,
     ) -> bool:
         await self._sync_requesting_user_identity(interaction)
         if is_super_admin(interaction.user.id, self.settings):
             return True
 
-        await self._send_message(interaction, ADMIN_ONLY_MESSAGE, ephemeral=ephemeral)
+        self.logger.warning(
+            "Rejected admin-only command executor_discord_user_id=%s guild_id=%s channel_id=%s",
+            interaction.user.id,
+            interaction.guild_id,
+            interaction.channel_id,
+        )
+        await self._send_message(interaction, ADMIN_ONLY_MESSAGE, ephemeral=True)
         return False
 
     async def _sync_requesting_user_identity(

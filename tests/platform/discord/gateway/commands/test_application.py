@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, cast
@@ -6438,11 +6439,16 @@ def test_dev_match_approve_validates_dummy_user_id_ephemerally(
 def test_dev_register_requires_admin(
     session: Session,
     session_factory: sessionmaker[Session],
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    handlers = create_handlers(session_factory)
-    interaction = FakeInteraction(user=FakeUser(id=10))
+    with caplog.at_level(
+        logging.WARNING,
+        logger="dxd_rating.platform.discord.gateway.commands.application",
+    ):
+        handlers = create_handlers(session_factory)
+        interaction = FakeInteraction(user=FakeUser(id=10))
 
-    asyncio.run(handlers.dev_register(as_interaction(interaction), "123456789012345685"))
+        asyncio.run(handlers.dev_register(as_interaction(interaction), "123456789012345685"))
 
     persisted_player = session.scalar(
         select(Player).where(Player.discord_user_id == 123_456_789_012_345_685)
@@ -6453,6 +6459,9 @@ def test_dev_register_requires_admin(
         ["このコマンドは管理者のみ実行できます。"],
         ephemeral=True,
     )
+    assert (
+        "Rejected admin-only command executor_discord_user_id=10 guild_id=2001 channel_id=1001"
+    ) in caplog.text
     assert persisted_player is None
 
 
@@ -6882,7 +6891,7 @@ def test_dev_player_info_requires_admin(
     assert_response(
         interaction,
         ["このコマンドは管理者のみ実行できます。"],
-        ephemeral=False,
+        ephemeral=True,
     )
 
 

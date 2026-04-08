@@ -4,7 +4,7 @@
 
 - ダミーユーザーとして扱う `discord_user_id` は `1` 以上 `1000` 以下とする。
 - `dev_register` では、この範囲外の `discord_user_id` は不正として扱う。
-- `/dev_register`、`/dev_join`、`/dev_present`、`/dev_leave` のレスポンスは、通常のテキストメッセージとして返す。
+- `/dev_join`、`/dev_present`、`/dev_leave` のレスポンスは、通常のテキストメッセージとして返す。
 - `/dev_join` 成功時は、`レート戦マッチング` チャンネル配下に在席確認用の private thread を作成する。
 - `/dev_join` と `/dev_present` を起点に発生する在席確認リマインドと期限切れ通知は、その private thread 内で行う。
 - 対象ユーザーが実ユーザーなら、在席確認 thread には対象ユーザー、admin、Bot を参加させる。
@@ -25,7 +25,7 @@
 ### 正常時の挙動
 - 指定した `discord_user_id` のプレイヤーをマッチングシステムに登録する。
 - `discord_user_id` はダミーユーザー用の ID として `1` 以上 `1000` 以下のみを受け付ける。
-- レスポンスは通常のテキストメッセージで返す。
+- レスポンスは interaction 宛ての実行ユーザー限定メッセージで返す。
 - レスポンスを返す
   - `ダミーユーザーを登録しました。`
 
@@ -50,7 +50,7 @@
 - 同じ `discord_user_id` の重複登録は行わない。
 - 作成されるデータ形式は `/register` で作成されるプレイヤーと同一とする。
 - ダミーユーザーとして登録できる `discord_user_id` は `1` 以上 `1000` 以下に限定する。
-- `/register` と異なり、`/dev_register` は interaction 宛てのユーザー限定レスポンスにはしない。
+- `/dev_register` の全レスポンスは interaction 宛ての実行ユーザー限定メッセージで返す。
 
 ## `/dev_join`
 

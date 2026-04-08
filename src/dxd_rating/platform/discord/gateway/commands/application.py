@@ -2217,17 +2217,25 @@ class BotCommandHandlers:
         interaction: discord.Interaction[Any],
         discord_user_id: str,
     ) -> None:
-        if not await self._ensure_admin(interaction):
+        if not await self._ensure_admin(interaction, ephemeral=True):
             return
 
         try:
             target_discord_user_id = self._parse_dummy_discord_user_id(discord_user_id)
             await asyncio.to_thread(self._register_player, target_discord_user_id)
         except ValueError:
-            await self._send_message(interaction, INVALID_DISCORD_USER_ID_MESSAGE)
+            await self._send_message(
+                interaction,
+                INVALID_DISCORD_USER_ID_MESSAGE,
+                ephemeral=True,
+            )
             return
         except PlayerAlreadyRegisteredError:
-            await self._send_message(interaction, DEV_REGISTER_ALREADY_REGISTERED_MESSAGE)
+            await self._send_message(
+                interaction,
+                DEV_REGISTER_ALREADY_REGISTERED_MESSAGE,
+                ephemeral=True,
+            )
             return
         except Exception:
             self.logger.exception(
@@ -2236,10 +2244,18 @@ class BotCommandHandlers:
                 interaction.user.id,
                 discord_user_id,
             )
-            await self._send_message(interaction, DEV_REGISTER_FAILED_MESSAGE)
+            await self._send_message(
+                interaction,
+                DEV_REGISTER_FAILED_MESSAGE,
+                ephemeral=True,
+            )
             return
 
-        await self._send_message(interaction, DEV_REGISTER_SUCCESS_MESSAGE)
+        await self._send_message(
+            interaction,
+            DEV_REGISTER_SUCCESS_MESSAGE,
+            ephemeral=True,
+        )
 
     async def dev_join(
         self,
@@ -3120,12 +3136,17 @@ class BotCommandHandlers:
 
         return await fetch_message(managed_ui_channel.status_message_id)
 
-    async def _ensure_admin(self, interaction: discord.Interaction[Any]) -> bool:
+    async def _ensure_admin(
+        self,
+        interaction: discord.Interaction[Any],
+        *,
+        ephemeral: bool = False,
+    ) -> bool:
         await self._sync_requesting_user_identity(interaction)
         if is_super_admin(interaction.user.id, self.settings):
             return True
 
-        await self._send_message(interaction, ADMIN_ONLY_MESSAGE)
+        await self._send_message(interaction, ADMIN_ONLY_MESSAGE, ephemeral=ephemeral)
         return False
 
     async def _sync_requesting_user_identity(

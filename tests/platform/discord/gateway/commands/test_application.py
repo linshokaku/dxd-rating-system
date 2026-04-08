@@ -6448,7 +6448,11 @@ def test_dev_register_requires_admin(
         select(Player).where(Player.discord_user_id == 123_456_789_012_345_685)
     )
 
-    assert interaction.response.messages == ["このコマンドは管理者のみ実行できます。"]
+    assert_response(
+        interaction,
+        ["このコマンドは管理者のみ実行できます。"],
+        ephemeral=True,
+    )
     assert persisted_player is None
 
 
@@ -6463,7 +6467,7 @@ def test_dev_register_sets_fixed_dummy_display_name(
 
     persisted_player = session.scalar(select(Player).where(Player.discord_user_id == 777))
 
-    assert interaction.response.messages == ["ダミーユーザーを登録しました。"]
+    assert_response(interaction, ["ダミーユーザーを登録しました。"], ephemeral=True)
     assert persisted_player is not None
     assert persisted_player.display_name == "<dummy_777>"
     assert persisted_player.display_name_updated_at is not None
@@ -6476,7 +6480,7 @@ def test_dev_register_validates_discord_user_id(session_factory: sessionmaker[Se
 
     asyncio.run(handlers.dev_register(as_interaction(interaction), "not-a-number"))
 
-    assert interaction.response.messages == ["discord_user_id が不正です。"]
+    assert_response(interaction, ["discord_user_id が不正です。"], ephemeral=True)
 
 
 def test_dev_register_rejects_non_dummy_discord_user_id(
@@ -6487,7 +6491,25 @@ def test_dev_register_rejects_non_dummy_discord_user_id(
 
     asyncio.run(handlers.dev_register(as_interaction(interaction), "1001"))
 
-    assert interaction.response.messages == ["discord_user_id が不正です。"]
+    assert_response(interaction, ["discord_user_id が不正です。"], ephemeral=True)
+
+
+def test_dev_register_returns_internal_error_message_ephemerally(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    session.execute(delete(Season))
+    session.commit()
+    handlers = create_handlers(session_factory, super_admin_user_ids=frozenset({10}))
+    interaction = FakeInteraction(user=FakeUser(id=10))
+
+    asyncio.run(handlers.dev_register(as_interaction(interaction), "777"))
+
+    assert_response(
+        interaction,
+        ["ダミーユーザーの登録に失敗しました。管理者に確認してください。"],
+        ephemeral=True,
+    )
 
 
 def test_dev_join_creates_presence_thread_for_dummy_user_under_matchmaking_channel(
@@ -6829,7 +6851,11 @@ def test_dev_player_info_requires_admin(
 
     asyncio.run(handlers.dev_player_info(as_interaction(interaction), "123456789012345689"))
 
-    assert interaction.response.messages == ["このコマンドは管理者のみ実行できます。"]
+    assert_response(
+        interaction,
+        ["このコマンドは管理者のみ実行できます。"],
+        ephemeral=False,
+    )
 
 
 def test_dev_player_info_validates_discord_user_id(session_factory: sessionmaker[Session]) -> None:

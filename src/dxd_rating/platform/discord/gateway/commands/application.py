@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
 import re
 from collections.abc import Awaitable, Callable, Iterable, Sequence
@@ -238,6 +239,17 @@ DEV_PRESENT_FAILED_MESSAGE = "指定したユーザーの在席更新に失敗�
 
 DEV_LEAVE_SUCCESS_MESSAGE = "指定したユーザーをキューから退出させました。"
 DEV_LEAVE_EXPIRED_MESSAGE = "指定したユーザーはすでに期限切れでキューから外れています。"
+APPLICATION_COMMAND_INTERNAL_ERROR_MESSAGE = "内部エラーが発生しました。管理者に確認してください。"
+
+
+@dataclass
+class ApplicationCommandResponseContext:
+    interaction: discord.Interaction[Any]
+    command_name: str
+    deferred: bool = False
+    executor_response_sent: bool = False
+
+
 DEV_LEAVE_FAILED_MESSAGE = "指定したユーザーのキュー退出に失敗しました。管理者に確認してください。"
 DEV_INFO_THREAD_SUCCESS_MESSAGE = "指定したユーザーの情報確認用スレッドを作成しました。"
 DEV_INFO_THREAD_FAILED_MESSAGE = (
@@ -503,6 +515,12 @@ class BotCommandHandlers:
         self.leaderboard_service = leaderboard_service or LeaderboardService(session_factory)
         self.managed_ui_service = ManagedUiService(session_factory)
         self.info_thread_binding_service = InfoThreadBindingService(session_factory)
+        self._application_command_response_context: contextvars.ContextVar[
+            ApplicationCommandResponseContext | None
+        ] = contextvars.ContextVar(
+            "application_command_response_context",
+            default=None,
+        )
 
     @property
     def matching_queue_service(self) -> MatchingQueueCommandService | None:
@@ -4801,14 +4819,26 @@ class BotCommandHandlers:
         message: str,
         *,
         ephemeral: bool = False,
+        mark_executor_response: bool = True,
     ) -> None:
+        command_context = self._get_application_command_response_context(interaction)
+        if command_context is not None and command_context.deferred:
+            await interaction.followup.send(message, ephemeral=ephemeral)
+            if mark_executor_response:
+                command_context.executor_response_sent = True
+            return
+
         response = interaction.response
         is_done = getattr(response, "is_done", None)
         if callable(is_done) and is_done():
             await interaction.followup.send(message, ephemeral=ephemeral)
+            if command_context is not None and mark_executor_response:
+                command_context.executor_response_sent = True
             return
 
         await response.send_message(message, ephemeral=ephemeral)
+        if command_context is not None and mark_executor_response:
+            command_context.executor_response_sent = True
 
     async def _send_info_thread_message(
         self,
@@ -4839,9 +4869,15 @@ class BotCommandHandlers:
         response = interaction.response
         is_done = getattr(response, "is_done", None)
         if callable(is_done) and is_done():
+            command_context = self._get_application_command_response_context(interaction)
+            if command_context is not None:
+                command_context.deferred = True
             return
 
         await response.defer(ephemeral=ephemeral, thinking=True)
+        command_context = self._get_application_command_response_context(interaction)
+        if command_context is not None:
+            command_context.deferred = True
 
     async def _send_executor_operation_message(
         self,
@@ -4859,7 +4895,12 @@ class BotCommandHandlers:
     ) -> None:
         await self._send_executor_operation_message(interaction, executor_message)
         try:
-            await self._send_message(interaction, public_message, ephemeral=False)
+            await self._send_message(
+                interaction,
+                public_message,
+                ephemeral=False,
+                mark_executor_response=False,
+            )
         except Exception:
             self.logger.exception(
                 "Failed to send public followup message "
@@ -4868,6 +4909,67 @@ class BotCommandHandlers:
                 interaction.channel_id,
                 interaction.guild_id,
             )
+
+    def _get_application_command_response_context(
+        self,
+        interaction: discord.Interaction[Any],
+    ) -> ApplicationCommandResponseContext | None:
+        command_context = self._application_command_response_context.get()
+        if command_context is None or command_context.interaction is not interaction:
+            return None
+
+        return command_context
+
+    async def run_application_command(
+        self,
+        interaction: discord.Interaction[Any],
+        command_name: str,
+        callback: Callable[..., Awaitable[None]],
+        *args: object,
+        **kwargs: object,
+    ) -> None:
+        command_context = ApplicationCommandResponseContext(
+            interaction=interaction,
+            command_name=command_name,
+        )
+        token = self._application_command_response_context.set(command_context)
+        try:
+            await self._defer_message_response(interaction, ephemeral=True)
+            try:
+                await callback(interaction, *args, **kwargs)
+            except Exception:
+                self.logger.exception(
+                    "Unhandled exception in application command command_name=%s "
+                    "executor_discord_user_id=%s channel_id=%s guild_id=%s",
+                    command_name,
+                    interaction.user.id,
+                    interaction.channel_id,
+                    interaction.guild_id,
+                )
+                if not command_context.executor_response_sent:
+                    await self._send_executor_operation_message(
+                        interaction,
+                        APPLICATION_COMMAND_INTERNAL_ERROR_MESSAGE,
+                    )
+                return
+
+            if command_context.executor_response_sent:
+                return
+
+            self.logger.error(
+                "Application command completed without executor response "
+                "command_name=%s executor_discord_user_id=%s channel_id=%s guild_id=%s",
+                command_name,
+                interaction.user.id,
+                interaction.channel_id,
+                interaction.guild_id,
+            )
+            await self._send_executor_operation_message(
+                interaction,
+                APPLICATION_COMMAND_INTERNAL_ERROR_MESSAGE,
+            )
+        finally:
+            self._application_command_response_context.reset(token)
 
     async def _send_player_operation_message(
         self,
@@ -4924,9 +5026,24 @@ def register_app_commands(
         for command_name in InfoThreadCommandName
     ]
 
+    async def run_command(
+        command_name: str,
+        interaction: discord.Interaction[Any],
+        callback: Callable[..., Awaitable[None]],
+        *args: object,
+        **kwargs: object,
+    ) -> None:
+        await handlers.run_application_command(
+            interaction,
+            command_name,
+            callback,
+            *args,
+            **kwargs,
+        )
+
     @tree.command(name="register", description="プレイヤー登録を行います")
     async def register_command(interaction: discord.Interaction[Any]) -> None:
-        await handlers.register(interaction)
+        await run_command("register", interaction, handlers.register)
 
     @tree.command(name="join", description="マッチングキューに参加します")
     @app_commands.describe(match_format="参加したいフォーマット", queue_name="参加したいキュー名")
@@ -4937,26 +5054,30 @@ def register_app_commands(
         match_format: str,
         queue_name: str,
     ) -> None:
-        await handlers.join(interaction, match_format, queue_name)
+        await run_command("join", interaction, handlers.join, match_format, queue_name)
 
     @tree.command(name="present", description="在席を更新して期限を延長します")
     async def present_command(interaction: discord.Interaction[Any]) -> None:
-        await handlers.present(interaction)
+        await run_command("present", interaction, handlers.present)
 
     @tree.command(name="leave", description="マッチングキューから退出します")
     async def leave_command(interaction: discord.Interaction[Any]) -> None:
-        await handlers.leave(interaction)
+        await run_command("leave", interaction, handlers.leave)
 
     @tree.command(
         name="update_matchmaking_status",
         description="レート戦マッチングの参加状況表示を更新します",
     )
     async def update_matchmaking_status_command(interaction: discord.Interaction[Any]) -> None:
-        await handlers.update_matchmaking_status(interaction)
+        await run_command(
+            "update_matchmaking_status",
+            interaction,
+            handlers.update_matchmaking_status,
+        )
 
     @tree.command(name="player_info", description="自分のプレイヤー情報を表示します")
     async def player_info_command(interaction: discord.Interaction[Any]) -> None:
-        await handlers.player_info(interaction)
+        await run_command("player_info", interaction, handlers.player_info)
 
     @tree.command(name="info_thread", description="情報確認用スレッドを作成します")
     @app_commands.describe(command_name="作成したい情報確認スレッドの用途")
@@ -4965,7 +5086,7 @@ def register_app_commands(
         interaction: discord.Interaction[Any],
         command_name: str,
     ) -> None:
-        await handlers.info_thread(interaction, command_name)
+        await run_command("info_thread", interaction, handlers.info_thread, command_name)
 
     @tree.command(
         name="player_info_season",
@@ -4976,7 +5097,12 @@ def register_app_commands(
         interaction: discord.Interaction[Any],
         season_id: int,
     ) -> None:
-        await handlers.player_info_season(interaction, season_id)
+        await run_command(
+            "player_info_season",
+            interaction,
+            handlers.player_info_season,
+            season_id,
+        )
 
     @tree.command(name="leaderboard", description="現在シーズンのランキングを表示します")
     @app_commands.describe(match_format="対象のフォーマット", page="表示したいページ番号")
@@ -4986,7 +5112,13 @@ def register_app_commands(
         match_format: str,
         page: int,
     ) -> None:
-        await handlers.leaderboard(interaction, match_format, page)
+        await run_command(
+            "leaderboard",
+            interaction,
+            handlers.leaderboard,
+            match_format,
+            page,
+        )
 
     @tree.command(
         name="leaderboard_season",
@@ -5004,7 +5136,14 @@ def register_app_commands(
         match_format: str,
         page: int,
     ) -> None:
-        await handlers.leaderboard_season(interaction, season_id, match_format, page)
+        await run_command(
+            "leaderboard_season",
+            interaction,
+            handlers.leaderboard_season,
+            season_id,
+            match_format,
+            page,
+        )
 
     @tree.command(name="match_parent", description="試合の親に立候補します")
     @app_commands.describe(match_id="対象の match_id")
@@ -5012,7 +5151,7 @@ def register_app_commands(
         interaction: discord.Interaction[Any],
         match_id: int,
     ) -> None:
-        await handlers.match_parent(interaction, match_id)
+        await run_command("match_parent", interaction, handlers.match_parent, match_id)
 
     @tree.command(name="match_spectate", description="試合の観戦応募を行います")
     @app_commands.describe(match_id="対象の match_id")
@@ -5020,27 +5159,27 @@ def register_app_commands(
         interaction: discord.Interaction[Any],
         match_id: int,
     ) -> None:
-        await handlers.match_spectate(interaction, match_id)
+        await run_command("match_spectate", interaction, handlers.match_spectate, match_id)
 
     @tree.command(name="match_win", description="自分視点で勝ちを報告します")
     @app_commands.describe(match_id="対象の match_id")
     async def match_win_command(interaction: discord.Interaction[Any], match_id: int) -> None:
-        await handlers.match_win(interaction, match_id)
+        await run_command("match_win", interaction, handlers.match_win, match_id)
 
     @tree.command(name="match_lose", description="自分視点で負けを報告します")
     @app_commands.describe(match_id="対象の match_id")
     async def match_lose_command(interaction: discord.Interaction[Any], match_id: int) -> None:
-        await handlers.match_lose(interaction, match_id)
+        await run_command("match_lose", interaction, handlers.match_lose, match_id)
 
     @tree.command(name="match_draw", description="引き分けを報告します")
     @app_commands.describe(match_id="対象の match_id")
     async def match_draw_command(interaction: discord.Interaction[Any], match_id: int) -> None:
-        await handlers.match_draw(interaction, match_id)
+        await run_command("match_draw", interaction, handlers.match_draw, match_id)
 
     @tree.command(name="match_void", description="無効試合を報告します")
     @app_commands.describe(match_id="対象の match_id")
     async def match_void_command(interaction: discord.Interaction[Any], match_id: int) -> None:
-        await handlers.match_void(interaction, match_id)
+        await run_command("match_void", interaction, handlers.match_void, match_id)
 
     @tree.command(name="match_approve", description="仮決定結果を承認します")
     @app_commands.describe(match_id="対象の match_id")
@@ -5048,7 +5187,7 @@ def register_app_commands(
         interaction: discord.Interaction[Any],
         match_id: int,
     ) -> None:
-        await handlers.match_approve(interaction, match_id)
+        await run_command("match_approve", interaction, handlers.match_approve, match_id)
 
     @tree.command(name="admin_match_result", description="試合結果を上書きします")
     @app_commands.describe(match_id="対象の match_id", result="上書きする結果")
@@ -5065,7 +5204,13 @@ def register_app_commands(
         match_id: int,
         result: str,
     ) -> None:
-        await handlers.admin_match_result(interaction, match_id, result)
+        await run_command(
+            "admin_match_result",
+            interaction,
+            handlers.admin_match_result,
+            match_id,
+            result,
+        )
 
     @tree.command(name="admin_rename_season", description="シーズン名を変更します")
     @app_commands.describe(season_id="対象の season_id", name="新しいシーズン名")
@@ -5074,7 +5219,13 @@ def register_app_commands(
         season_id: int,
         name: str,
     ) -> None:
-        await handlers.admin_rename_season(interaction, season_id, name)
+        await run_command(
+            "admin_rename_season",
+            interaction,
+            handlers.admin_rename_season,
+            season_id,
+            name,
+        )
 
     @tree.command(
         name="admin_setup_custom_ui_channel",
@@ -5090,14 +5241,24 @@ def register_app_commands(
         ui_type: str,
         channel_name: str,
     ) -> None:
-        await handlers.admin_setup_custom_ui_channel(interaction, ui_type, channel_name)
+        await run_command(
+            "admin_setup_custom_ui_channel",
+            interaction,
+            handlers.admin_setup_custom_ui_channel,
+            ui_type,
+            channel_name,
+        )
 
     @tree.command(
         name="admin_setup_ui_channels",
         description="必要な UI 設置チャンネルをまとめて作成します",
     )
     async def admin_setup_ui_channels_command(interaction: discord.Interaction[Any]) -> None:
-        await handlers.admin_setup_ui_channels(interaction)
+        await run_command(
+            "admin_setup_ui_channels",
+            interaction,
+            handlers.admin_setup_ui_channels,
+        )
 
     @tree.command(
         name="admin_cleanup_ui_channels",
@@ -5108,7 +5269,12 @@ def register_app_commands(
         interaction: discord.Interaction[Any],
         confirm: str,
     ) -> None:
-        await handlers.admin_cleanup_ui_channels(interaction, confirm)
+        await run_command(
+            "admin_cleanup_ui_channels",
+            interaction,
+            handlers.admin_cleanup_ui_channels,
+            confirm,
+        )
 
     @tree.command(
         name="admin_teardown_ui_channels",
@@ -5119,7 +5285,12 @@ def register_app_commands(
         interaction: discord.Interaction[Any],
         confirm: str,
     ) -> None:
-        await handlers.admin_teardown_ui_channels(interaction, confirm)
+        await run_command(
+            "admin_teardown_ui_channels",
+            interaction,
+            handlers.admin_teardown_ui_channels,
+            confirm,
+        )
 
     @tree.command(name="admin_restrict_user", description="ユーザーの利用権限を制限します")
     @app_commands.describe(
@@ -5139,8 +5310,10 @@ def register_app_commands(
         dummy_user: str | None = None,
         reason: str | None = None,
     ) -> None:
-        await handlers.admin_restrict_user(
+        await run_command(
+            "admin_restrict_user",
             interaction,
+            handlers.admin_restrict_user,
             restriction_type,
             duration,
             target_user=user,
@@ -5161,8 +5334,10 @@ def register_app_commands(
         user: discord.Member | discord.User | None = None,
         dummy_user: str | None = None,
     ) -> None:
-        await handlers.admin_unrestrict_user(
+        await run_command(
+            "admin_unrestrict_user",
             interaction,
+            handlers.admin_unrestrict_user,
             restriction_type,
             target_user=user,
             dummy_user=dummy_user,
@@ -5185,8 +5360,10 @@ def register_app_commands(
             user: discord.Member | discord.User | None = None,
             dummy_user: str | None = None,
         ) -> None:
-            await handlers.admin_add_penalty(
+            await run_command(
+                add_name,
                 interaction,
+                handlers.admin_add_penalty,
                 penalty_type,
                 target_user=user,
                 dummy_user=dummy_user,
@@ -5202,8 +5379,10 @@ def register_app_commands(
             user: discord.Member | discord.User | None = None,
             dummy_user: str | None = None,
         ) -> None:
-            await handlers.admin_sub_penalty(
+            await run_command(
+                sub_name,
                 interaction,
+                handlers.admin_sub_penalty,
                 penalty_type,
                 target_user=user,
                 dummy_user=dummy_user,
@@ -5254,7 +5433,7 @@ def register_app_commands(
         interaction: discord.Interaction[Any],
         discord_user_id: str,
     ) -> None:
-        await handlers.dev_register(interaction, discord_user_id)
+        await run_command("dev_register", interaction, handlers.dev_register, discord_user_id)
 
     @tree.command(name="dev_join", description="任意の Discord user ID をキュー参加させます")
     @app_commands.describe(
@@ -5270,7 +5449,14 @@ def register_app_commands(
         queue_name: str,
         discord_user_id: str,
     ) -> None:
-        await handlers.dev_join(interaction, match_format, queue_name, discord_user_id)
+        await run_command(
+            "dev_join",
+            interaction,
+            handlers.dev_join,
+            match_format,
+            queue_name,
+            discord_user_id,
+        )
 
     @tree.command(name="dev_present", description="任意の Discord user ID の在席を更新します")
     @app_commands.describe(discord_user_id="在席を更新したい Discord user ID")
@@ -5278,7 +5464,7 @@ def register_app_commands(
         interaction: discord.Interaction[Any],
         discord_user_id: str,
     ) -> None:
-        await handlers.dev_present(interaction, discord_user_id)
+        await run_command("dev_present", interaction, handlers.dev_present, discord_user_id)
 
     @tree.command(name="dev_leave", description="任意の Discord user ID をキューから退出させます")
     @app_commands.describe(discord_user_id="キューから退出させたい Discord user ID")
@@ -5286,7 +5472,7 @@ def register_app_commands(
         interaction: discord.Interaction[Any],
         discord_user_id: str,
     ) -> None:
-        await handlers.dev_leave(interaction, discord_user_id)
+        await run_command("dev_leave", interaction, handlers.dev_leave, discord_user_id)
 
     @tree.command(
         name="dev_info_thread",
@@ -5302,7 +5488,13 @@ def register_app_commands(
         command_name: str,
         discord_user_id: str,
     ) -> None:
-        await handlers.dev_info_thread(interaction, command_name, discord_user_id)
+        await run_command(
+            "dev_info_thread",
+            interaction,
+            handlers.dev_info_thread,
+            command_name,
+            discord_user_id,
+        )
 
     @tree.command(
         name="dev_player_info",
@@ -5313,7 +5505,12 @@ def register_app_commands(
         interaction: discord.Interaction[Any],
         discord_user_id: str,
     ) -> None:
-        await handlers.dev_player_info(interaction, discord_user_id)
+        await run_command(
+            "dev_player_info",
+            interaction,
+            handlers.dev_player_info,
+            discord_user_id,
+        )
 
     @tree.command(
         name="dev_player_info_season",
@@ -5328,7 +5525,13 @@ def register_app_commands(
         season_id: int,
         discord_user_id: str,
     ) -> None:
-        await handlers.dev_player_info_season(interaction, season_id, discord_user_id)
+        await run_command(
+            "dev_player_info_season",
+            interaction,
+            handlers.dev_player_info_season,
+            season_id,
+            discord_user_id,
+        )
 
     @tree.command(
         name="dev_leaderboard",
@@ -5348,7 +5551,14 @@ def register_app_commands(
         page: int,
         discord_user_id: str,
     ) -> None:
-        await handlers.dev_leaderboard(interaction, match_format, page, discord_user_id)
+        await run_command(
+            "dev_leaderboard",
+            interaction,
+            handlers.dev_leaderboard,
+            match_format,
+            page,
+            discord_user_id,
+        )
 
     @tree.command(
         name="dev_leaderboard_season",
@@ -5370,8 +5580,10 @@ def register_app_commands(
         page: int,
         discord_user_id: str,
     ) -> None:
-        await handlers.dev_leaderboard_season(
+        await run_command(
+            "dev_leaderboard_season",
             interaction,
+            handlers.dev_leaderboard_season,
             season_id,
             match_format,
             page,
@@ -5385,7 +5597,13 @@ def register_app_commands(
         match_id: int,
         discord_user_id: str,
     ) -> None:
-        await handlers.dev_match_parent(interaction, match_id, discord_user_id)
+        await run_command(
+            "dev_match_parent",
+            interaction,
+            handlers.dev_match_parent,
+            match_id,
+            discord_user_id,
+        )
 
     @tree.command(name="dev_match_spectate", description="ダミーユーザーに観戦応募させます")
     @app_commands.describe(match_id="対象の match_id", discord_user_id="対象の dummy_user_id")
@@ -5394,7 +5612,13 @@ def register_app_commands(
         match_id: int,
         discord_user_id: str,
     ) -> None:
-        await handlers.dev_match_spectate(interaction, match_id, discord_user_id)
+        await run_command(
+            "dev_match_spectate",
+            interaction,
+            handlers.dev_match_spectate,
+            match_id,
+            discord_user_id,
+        )
 
     @tree.command(name="dev_match_win", description="ダミーユーザーに勝ちを報告させます")
     @app_commands.describe(match_id="対象の match_id", discord_user_id="対象の dummy_user_id")
@@ -5403,7 +5627,13 @@ def register_app_commands(
         match_id: int,
         discord_user_id: str,
     ) -> None:
-        await handlers.dev_match_win(interaction, match_id, discord_user_id)
+        await run_command(
+            "dev_match_win",
+            interaction,
+            handlers.dev_match_win,
+            match_id,
+            discord_user_id,
+        )
 
     @tree.command(name="dev_match_lose", description="ダミーユーザーに負けを報告させます")
     @app_commands.describe(match_id="対象の match_id", discord_user_id="対象の dummy_user_id")
@@ -5412,7 +5642,13 @@ def register_app_commands(
         match_id: int,
         discord_user_id: str,
     ) -> None:
-        await handlers.dev_match_lose(interaction, match_id, discord_user_id)
+        await run_command(
+            "dev_match_lose",
+            interaction,
+            handlers.dev_match_lose,
+            match_id,
+            discord_user_id,
+        )
 
     @tree.command(name="dev_match_draw", description="ダミーユーザーに引き分けを報告させます")
     @app_commands.describe(match_id="対象の match_id", discord_user_id="対象の dummy_user_id")
@@ -5421,7 +5657,13 @@ def register_app_commands(
         match_id: int,
         discord_user_id: str,
     ) -> None:
-        await handlers.dev_match_draw(interaction, match_id, discord_user_id)
+        await run_command(
+            "dev_match_draw",
+            interaction,
+            handlers.dev_match_draw,
+            match_id,
+            discord_user_id,
+        )
 
     @tree.command(name="dev_match_void", description="ダミーユーザーに無効試合を報告させます")
     @app_commands.describe(match_id="対象の match_id", discord_user_id="対象の dummy_user_id")
@@ -5430,7 +5672,13 @@ def register_app_commands(
         match_id: int,
         discord_user_id: str,
     ) -> None:
-        await handlers.dev_match_void(interaction, match_id, discord_user_id)
+        await run_command(
+            "dev_match_void",
+            interaction,
+            handlers.dev_match_void,
+            match_id,
+            discord_user_id,
+        )
 
     @tree.command(
         name="dev_match_approve",
@@ -5442,8 +5690,14 @@ def register_app_commands(
         match_id: int,
         discord_user_id: str,
     ) -> None:
-        await handlers.dev_match_approve(interaction, match_id, discord_user_id)
+        await run_command(
+            "dev_match_approve",
+            interaction,
+            handlers.dev_match_approve,
+            match_id,
+            discord_user_id,
+        )
 
     @tree.command(name="dev_is_admin", description="実行者が admin かどうかを確認します")
     async def dev_is_admin_command(interaction: discord.Interaction[Any]) -> None:
-        await handlers.dev_is_admin(interaction)
+        await run_command("dev_is_admin", interaction, handlers.dev_is_admin)

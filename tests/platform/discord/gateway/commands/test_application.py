@@ -60,6 +60,9 @@ from dxd_rating.platform.db.models import (
     Season,
 )
 from dxd_rating.platform.discord.gateway.commands import BotCommandHandlers, register_app_commands
+from dxd_rating.platform.discord.gateway.commands.application import (
+    APPLICATION_COMMAND_INTERNAL_ERROR_MESSAGE,
+)
 from dxd_rating.platform.discord.ui import (
     ADMIN_CONTACT_CHANNEL_MESSAGE,
     ADMIN_OPERATIONS_CHANNEL_MESSAGE,
@@ -166,10 +169,13 @@ class FakeInteractionResponse:
     deferred: bool = False
     defer_ephemeral: bool | None = None
     defer_thinking: bool | None = None
+    send_message_call_count: int = 0
+    defer_call_count: int = 0
     interaction: FakeInteraction | None = field(default=None, repr=False)
 
     async def send_message(self, content: str, *, ephemeral: bool = False, **_: Any) -> None:
         self.deferred = True
+        self.send_message_call_count += 1
         self.messages.append(content)
         self.ephemeral_flags.append(ephemeral)
 
@@ -193,6 +199,7 @@ class FakeInteractionResponse:
         **_: Any,
     ) -> None:
         self.deferred = True
+        self.defer_call_count += 1
         self.defer_ephemeral = ephemeral
         self.defer_thinking = thinking
 
@@ -203,8 +210,10 @@ class FakeInteractionResponse:
 @dataclass
 class FakeInteractionFollowup:
     response: FakeInteractionResponse
+    send_call_count: int = 0
 
     async def send(self, content: str, *, ephemeral: bool = False, **_: Any) -> None:
+        self.send_call_count += 1
         self.response.messages.append(content)
         self.response.ephemeral_flags.append(ephemeral)
 
@@ -9314,3 +9323,117 @@ def test_match_spectate_command_is_registered_with_match_id_parameter() -> None:
     command = tree.get_command("match_spectate")
     assert command is not None
     assert [parameter.name for parameter in command.parameters] == ["match_id"]
+
+
+def test_register_command_defers_and_replies_via_followup(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    handlers = create_handlers(session_factory)
+    client = discord.Client(intents=discord.Intents.none())
+    tree = discord.app_commands.CommandTree(client)
+    interaction = FakeInteraction(user=FakeUser(id=10))
+
+    register_app_commands(tree, handlers)
+
+    command = tree.get_command("register")
+
+    assert command is not None
+    asyncio.run(command.callback(as_interaction(interaction)))
+
+    assert_response(interaction, ["登録が完了しました。"], ephemeral=True)
+    assert interaction.response.defer_call_count == 1
+    assert interaction.response.defer_ephemeral is True
+    assert interaction.response.defer_thinking is True
+    assert interaction.response.send_message_call_count == 0
+    assert interaction.followup.send_call_count == 1
+
+
+def test_register_command_returns_generic_internal_error_on_unhandled_exception(
+    session_factory: sessionmaker[Session],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    handlers = create_handlers(session_factory)
+    client = discord.Client(intents=discord.Intents.none())
+    tree = discord.app_commands.CommandTree(client)
+    interaction = FakeInteraction(user=FakeUser(id=10))
+
+    async def raise_unhandled(interaction: discord.Interaction[Any]) -> None:
+        raise RuntimeError("boom")
+
+    handlers.register = raise_unhandled  # type: ignore[method-assign]
+    register_app_commands(tree, handlers)
+
+    command = tree.get_command("register")
+
+    assert command is not None
+    with caplog.at_level(logging.ERROR):
+        asyncio.run(command.callback(as_interaction(interaction)))
+
+    assert_response(interaction, [APPLICATION_COMMAND_INTERNAL_ERROR_MESSAGE], ephemeral=True)
+    assert interaction.response.defer_call_count == 1
+    assert interaction.followup.send_call_count == 1
+    assert "Unhandled exception in application command" in caplog.text
+
+
+def test_register_command_returns_generic_internal_error_when_handler_sends_no_response(
+    session_factory: sessionmaker[Session],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    handlers = create_handlers(session_factory)
+    client = discord.Client(intents=discord.Intents.none())
+    tree = discord.app_commands.CommandTree(client)
+    interaction = FakeInteraction(user=FakeUser(id=10))
+
+    async def no_response(interaction: discord.Interaction[Any]) -> None:
+        return None
+
+    handlers.register = no_response  # type: ignore[method-assign]
+    register_app_commands(tree, handlers)
+
+    command = tree.get_command("register")
+
+    assert command is not None
+    with caplog.at_level(logging.ERROR):
+        asyncio.run(command.callback(as_interaction(interaction)))
+
+    assert_response(interaction, [APPLICATION_COMMAND_INTERNAL_ERROR_MESSAGE], ephemeral=True)
+    assert interaction.response.defer_call_count == 1
+    assert interaction.followup.send_call_count == 1
+    assert "Application command completed without executor response" in caplog.text
+
+
+def test_common_runner_sends_executor_and_public_followups_for_admin_penalty(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    executor_discord_user_id = 10
+    target_discord_user_id = 123
+    create_player(session, target_discord_user_id)
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({executor_discord_user_id}),
+        matching_queue_service=MatchingQueueService(session_factory),
+    )
+    interaction = FakeInteraction(user=FakeUser(id=executor_discord_user_id))
+    asyncio.run(
+        handlers.run_application_command(
+            as_interaction(interaction),
+            "admin_add_late",
+            handlers.admin_add_penalty,
+            PenaltyType.LATE,
+            dummy_user=f"<dummy_{target_discord_user_id}>",
+        )
+    )
+
+    assert_response_sequence(
+        interaction,
+        [
+            "ペナルティを加算しました。",
+            f"<dummy_{target_discord_user_id}> の遅刻ペナルティを+1しました。現在の累積: 1",
+        ],
+        [True, False],
+    )
+    assert interaction.response.defer_call_count == 1
+    assert interaction.response.send_message_call_count == 0
+    assert interaction.followup.send_call_count == 2

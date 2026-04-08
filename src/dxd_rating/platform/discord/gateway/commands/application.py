@@ -271,6 +271,20 @@ PLAYER_ACCESS_RESTRICTION_DURATION_LABELS = {
     PlayerAccessRestrictionDuration.EIGHTY_FOUR_DAYS: "84日",
     PlayerAccessRestrictionDuration.PERMANENT: "永久",
 }
+MATCH_RESULT_LABELS = {
+    MatchResult.TEAM_A_WIN: "チーム A の勝ち",
+    MatchResult.TEAM_B_WIN: "チーム B の勝ち",
+    MatchResult.DRAW: "引き分け",
+    MatchResult.VOID: "無効試合",
+}
+PENALTY_TYPE_LABELS = {
+    PenaltyType.INCORRECT_REPORT: "誤報告",
+    PenaltyType.NO_REPORT: "未報告",
+    PenaltyType.ROOM_SETUP_DELAY: "部屋立て遅延",
+    PenaltyType.MATCH_MISTAKE: "試合進行ミス",
+    PenaltyType.LATE: "遅刻",
+    PenaltyType.DISCONNECT: "切断",
+}
 
 DUMMY_USER_REFERENCE_PATTERN = re.compile(r"<dummy_(\d+)>")
 
@@ -1380,17 +1394,18 @@ class BotCommandHandlers:
             return
 
         try:
+            resolved_result = self._parse_match_result(result)
             service = self._require_match_service()
             await service.admin_override_match_result(
                 match_id,
-                self._parse_match_result(result),
+                resolved_result,
                 admin_discord_user_id=interaction.user.id,
             )
         except ValueError:
-            await self._send_message(interaction, "result が不正です。")
+            await self._send_executor_operation_message(interaction, "result が不正です。")
             return
         except MatchFlowError as exc:
-            await self._send_message(interaction, str(exc))
+            await self._send_executor_operation_message(interaction, str(exc))
             return
         except Exception:
             self.logger.exception(
@@ -1400,10 +1415,20 @@ class BotCommandHandlers:
                 match_id,
                 result,
             )
-            await self._send_message(interaction, ADMIN_MATCH_RESULT_FAILED_MESSAGE)
+            await self._send_executor_operation_message(
+                interaction,
+                ADMIN_MATCH_RESULT_FAILED_MESSAGE,
+            )
             return
 
-        await self._send_message(interaction, ADMIN_MATCH_RESULT_SUCCESS_MESSAGE)
+        await self._send_success_message_with_public_followup(
+            interaction,
+            executor_message=ADMIN_MATCH_RESULT_SUCCESS_MESSAGE,
+            public_message=self._format_admin_match_result_public_message(
+                match_id=match_id,
+                final_result=resolved_result,
+            ),
+        )
 
     async def admin_rename_season(
         self,
@@ -1417,7 +1442,7 @@ class BotCommandHandlers:
         try:
             await asyncio.to_thread(self._rename_season, season_id, name)
         except (SeasonNotFoundError, InvalidSeasonNameError, SeasonAlreadyExistsError) as exc:
-            await self._send_message(interaction, str(exc))
+            await self._send_executor_operation_message(interaction, str(exc))
             return
         except Exception:
             self.logger.exception(
@@ -1428,10 +1453,16 @@ class BotCommandHandlers:
                 interaction.user.id,
                 season_id,
             )
-            await self._send_message(interaction, ADMIN_RENAME_SEASON_FAILED_MESSAGE)
+            await self._send_executor_operation_message(
+                interaction,
+                ADMIN_RENAME_SEASON_FAILED_MESSAGE,
+            )
             return
 
-        await self._send_message(interaction, ADMIN_RENAME_SEASON_SUCCESS_MESSAGE)
+        await self._send_executor_operation_message(
+            interaction,
+            ADMIN_RENAME_SEASON_SUCCESS_MESSAGE,
+        )
 
     async def admin_setup_custom_ui_channel(
         self,
@@ -2122,19 +2153,34 @@ class BotCommandHandlers:
                 reason=reason,
             )
         except ValueError:
-            await self._send_message(interaction, INVALID_ADMIN_TARGET_USER_MESSAGE)
+            await self._send_executor_operation_message(
+                interaction,
+                INVALID_ADMIN_TARGET_USER_MESSAGE,
+            )
             return
         except InvalidPlayerAccessRestrictionTypeError:
-            await self._send_message(interaction, INVALID_RESTRICTION_TYPE_MESSAGE)
+            await self._send_executor_operation_message(
+                interaction,
+                INVALID_RESTRICTION_TYPE_MESSAGE,
+            )
             return
         except InvalidPlayerAccessRestrictionDurationError:
-            await self._send_message(interaction, INVALID_RESTRICTION_DURATION_MESSAGE)
+            await self._send_executor_operation_message(
+                interaction,
+                INVALID_RESTRICTION_DURATION_MESSAGE,
+            )
             return
         except PlayerNotRegisteredError:
-            await self._send_message(interaction, ADMIN_TARGET_NOT_REGISTERED_MESSAGE)
+            await self._send_executor_operation_message(
+                interaction,
+                ADMIN_TARGET_NOT_REGISTERED_MESSAGE,
+            )
             return
         except PlayerAccessRestrictionAlreadyExistsError:
-            await self._send_message(interaction, ADMIN_RESTRICTION_ALREADY_EXISTS_MESSAGE)
+            await self._send_executor_operation_message(
+                interaction,
+                ADMIN_RESTRICTION_ALREADY_EXISTS_MESSAGE,
+            )
             return
         except Exception:
             self.logger.exception(
@@ -2146,15 +2192,25 @@ class BotCommandHandlers:
                 restriction_type,
                 duration,
             )
-            await self._send_message(interaction, ADMIN_RESTRICTION_FAILED_MESSAGE)
+            await self._send_executor_operation_message(
+                interaction,
+                ADMIN_RESTRICTION_FAILED_MESSAGE,
+            )
             return
 
-        await self._send_message(
+        executor_message = (
+            f"指定したユーザーの"
+            f"{PLAYER_ACCESS_RESTRICTION_TYPE_LABELS[resolved_restriction_type]}を"
+            f"{PLAYER_ACCESS_RESTRICTION_DURATION_LABELS[resolved_duration]}制限しました。"
+        )
+        await self._send_success_message_with_public_followup(
             interaction,
-            (
-                f"指定したユーザーの"
-                f"{PLAYER_ACCESS_RESTRICTION_TYPE_LABELS[resolved_restriction_type]}を"
-                f"{PLAYER_ACCESS_RESTRICTION_DURATION_LABELS[resolved_duration]}制限しました。"
+            executor_message=executor_message,
+            public_message=self._format_admin_restriction_public_message(
+                target_discord_user_id=target_discord_user_id,
+                target_user=target_user,
+                restriction_type=resolved_restriction_type,
+                duration=resolved_duration,
             ),
         )
 
@@ -2185,13 +2241,22 @@ class BotCommandHandlers:
                 admin_discord_user_id=interaction.user.id,
             )
         except ValueError:
-            await self._send_message(interaction, INVALID_ADMIN_TARGET_USER_MESSAGE)
+            await self._send_executor_operation_message(
+                interaction,
+                INVALID_ADMIN_TARGET_USER_MESSAGE,
+            )
             return
         except InvalidPlayerAccessRestrictionTypeError:
-            await self._send_message(interaction, INVALID_RESTRICTION_TYPE_MESSAGE)
+            await self._send_executor_operation_message(
+                interaction,
+                INVALID_RESTRICTION_TYPE_MESSAGE,
+            )
             return
         except PlayerNotRegisteredError:
-            await self._send_message(interaction, ADMIN_TARGET_NOT_REGISTERED_MESSAGE)
+            await self._send_executor_operation_message(
+                interaction,
+                ADMIN_TARGET_NOT_REGISTERED_MESSAGE,
+            )
             return
         except Exception:
             self.logger.exception(
@@ -2201,14 +2266,23 @@ class BotCommandHandlers:
                 self._format_admin_target_for_log(target_user=target_user, dummy_user=dummy_user),
                 restriction_type,
             )
-            await self._send_message(interaction, ADMIN_UNRESTRICTION_FAILED_MESSAGE)
+            await self._send_executor_operation_message(
+                interaction,
+                ADMIN_UNRESTRICTION_FAILED_MESSAGE,
+            )
             return
 
-        await self._send_message(
+        executor_message = (
+            f"指定したユーザーの"
+            f"{PLAYER_ACCESS_RESTRICTION_TYPE_LABELS[resolved_restriction_type]}制限を解除しました。"
+        )
+        await self._send_success_message_with_public_followup(
             interaction,
-            (
-                f"指定したユーザーの"
-                f"{PLAYER_ACCESS_RESTRICTION_TYPE_LABELS[resolved_restriction_type]}制限を解除しました。"
+            executor_message=executor_message,
+            public_message=self._format_admin_unrestriction_public_message(
+                target_discord_user_id=target_discord_user_id,
+                target_user=target_user,
+                restriction_type=resolved_restriction_type,
             ),
         )
 
@@ -2396,13 +2470,22 @@ class BotCommandHandlers:
                 notification_context=None,
             )
         except ValueError:
-            await self._send_message(interaction, INVALID_DISCORD_USER_ID_MESSAGE)
+            await self._send_executor_operation_message(
+                interaction,
+                INVALID_DISCORD_USER_ID_MESSAGE,
+            )
             return
         except PlayerNotRegisteredError:
-            await self._send_message(interaction, DEV_TARGET_NOT_REGISTERED_MESSAGE)
+            await self._send_executor_operation_message(
+                interaction,
+                DEV_TARGET_NOT_REGISTERED_MESSAGE,
+            )
             return
         except QueueNotJoinedError:
-            await self._send_message(interaction, DEV_PRESENT_NOT_JOINED_MESSAGE)
+            await self._send_executor_operation_message(
+                interaction,
+                DEV_PRESENT_NOT_JOINED_MESSAGE,
+            )
             return
         except Exception:
             self.logger.exception(
@@ -2414,14 +2497,14 @@ class BotCommandHandlers:
                 interaction.channel_id,
                 interaction.guild_id,
             )
-            await self._send_message(interaction, DEV_PRESENT_FAILED_MESSAGE)
+            await self._send_executor_operation_message(interaction, DEV_PRESENT_FAILED_MESSAGE)
             return
 
         if result.expired:
-            await self._send_message(interaction, DEV_PRESENT_EXPIRED_MESSAGE)
+            await self._send_executor_operation_message(interaction, DEV_PRESENT_EXPIRED_MESSAGE)
             return
 
-        await self._send_message(interaction, DEV_PRESENT_SUCCESS_MESSAGE)
+        await self._send_executor_operation_message(interaction, DEV_PRESENT_SUCCESS_MESSAGE)
 
     async def dev_leave(
         self,
@@ -2437,10 +2520,16 @@ class BotCommandHandlers:
             service = self._require_matching_queue_service()
             result = await service.leave(player_id)
         except ValueError:
-            await self._send_message(interaction, INVALID_DISCORD_USER_ID_MESSAGE)
+            await self._send_executor_operation_message(
+                interaction,
+                INVALID_DISCORD_USER_ID_MESSAGE,
+            )
             return
         except PlayerNotRegisteredError:
-            await self._send_message(interaction, DEV_TARGET_NOT_REGISTERED_MESSAGE)
+            await self._send_executor_operation_message(
+                interaction,
+                DEV_TARGET_NOT_REGISTERED_MESSAGE,
+            )
             return
         except Exception:
             self.logger.exception(
@@ -2449,14 +2538,14 @@ class BotCommandHandlers:
                 interaction.user.id,
                 discord_user_id,
             )
-            await self._send_message(interaction, DEV_LEAVE_FAILED_MESSAGE)
+            await self._send_executor_operation_message(interaction, DEV_LEAVE_FAILED_MESSAGE)
             return
 
         if result.expired:
-            await self._send_message(interaction, DEV_LEAVE_EXPIRED_MESSAGE)
+            await self._send_executor_operation_message(interaction, DEV_LEAVE_EXPIRED_MESSAGE)
             return
 
-        await self._send_message(interaction, DEV_LEAVE_SUCCESS_MESSAGE)
+        await self._send_executor_operation_message(interaction, DEV_LEAVE_SUCCESS_MESSAGE)
 
     async def dev_player_info(
         self,
@@ -2473,10 +2562,16 @@ class BotCommandHandlers:
                 target_discord_user_id,
             )
         except ValueError:
-            await self._send_message(interaction, INVALID_DISCORD_USER_ID_MESSAGE)
+            await self._send_executor_operation_message(
+                interaction,
+                INVALID_DISCORD_USER_ID_MESSAGE,
+            )
             return
         except PlayerNotRegisteredError:
-            await self._send_message(interaction, DEV_TARGET_NOT_REGISTERED_MESSAGE)
+            await self._send_executor_operation_message(
+                interaction,
+                DEV_TARGET_NOT_REGISTERED_MESSAGE,
+            )
             return
         except Exception:
             self.logger.exception(
@@ -2485,10 +2580,16 @@ class BotCommandHandlers:
                 interaction.user.id,
                 discord_user_id,
             )
-            await self._send_message(interaction, DEV_PLAYER_INFO_FAILED_MESSAGE)
+            await self._send_executor_operation_message(
+                interaction,
+                DEV_PLAYER_INFO_FAILED_MESSAGE,
+            )
             return
 
-        await self._send_message(interaction, self._format_player_info_message(player_info))
+        await self._send_executor_operation_message(
+            interaction,
+            self._format_player_info_message(player_info),
+        )
 
     async def dev_player_info_season(
         self,
@@ -2507,13 +2608,19 @@ class BotCommandHandlers:
                 season_id,
             )
         except ValueError:
-            await self._send_message(interaction, INVALID_DISCORD_USER_ID_MESSAGE)
+            await self._send_executor_operation_message(
+                interaction,
+                INVALID_DISCORD_USER_ID_MESSAGE,
+            )
             return
         except PlayerNotRegisteredError:
-            await self._send_message(interaction, DEV_TARGET_NOT_REGISTERED_MESSAGE)
+            await self._send_executor_operation_message(
+                interaction,
+                DEV_TARGET_NOT_REGISTERED_MESSAGE,
+            )
             return
         except (SeasonNotFoundError, PlayerSeasonStatsNotFoundError) as exc:
-            await self._send_message(interaction, str(exc))
+            await self._send_executor_operation_message(interaction, str(exc))
             return
         except Exception:
             self.logger.exception(
@@ -2523,10 +2630,13 @@ class BotCommandHandlers:
                 discord_user_id,
                 season_id,
             )
-            await self._send_message(interaction, DEV_PLAYER_SEASON_INFO_FAILED_MESSAGE)
+            await self._send_executor_operation_message(
+                interaction,
+                DEV_PLAYER_SEASON_INFO_FAILED_MESSAGE,
+            )
             return
 
-        await self._send_message(
+        await self._send_executor_operation_message(
             interaction,
             self._format_player_info_message(player_info, include_season=True),
         )
@@ -2670,10 +2780,13 @@ class BotCommandHandlers:
                 "Failed to execute /dev_is_admin command discord_user_id=%s",
                 interaction.user.id,
             )
-            await self._send_message(interaction, DEV_IS_ADMIN_ERROR_MESSAGE)
+            await self._send_executor_operation_message(
+                interaction,
+                DEV_IS_ADMIN_ERROR_MESSAGE,
+            )
             return
 
-        await self._send_message(interaction, message)
+        await self._send_executor_operation_message(interaction, message)
 
     async def _run_match_parent(
         self,
@@ -2926,17 +3039,23 @@ class BotCommandHandlers:
             )
             player_id = await asyncio.to_thread(self._lookup_player_id, target_discord_user_id)
             service = self._require_match_service()
-            await service.adjust_penalty(
+            result = await service.adjust_penalty(
                 player_id,
                 penalty_type,
                 delta,
                 admin_discord_user_id=interaction.user.id,
             )
         except ValueError:
-            await self._send_message(interaction, INVALID_ADMIN_TARGET_USER_MESSAGE)
+            await self._send_executor_operation_message(
+                interaction,
+                INVALID_ADMIN_TARGET_USER_MESSAGE,
+            )
             return
         except PlayerNotRegisteredError:
-            await self._send_message(interaction, ADMIN_TARGET_NOT_REGISTERED_MESSAGE)
+            await self._send_executor_operation_message(
+                interaction,
+                ADMIN_TARGET_NOT_REGISTERED_MESSAGE,
+            )
             return
         except Exception:
             self.logger.exception(
@@ -2947,10 +3066,20 @@ class BotCommandHandlers:
                 penalty_type.value,
                 delta,
             )
-            await self._send_message(interaction, ADMIN_PENALTY_FAILED_MESSAGE)
+            await self._send_executor_operation_message(interaction, ADMIN_PENALTY_FAILED_MESSAGE)
             return
 
-        await self._send_message(interaction, success_message)
+        await self._send_success_message_with_public_followup(
+            interaction,
+            executor_message=success_message,
+            public_message=self._format_admin_penalty_public_message(
+                target_discord_user_id=target_discord_user_id,
+                target_user=target_user,
+                penalty_type=penalty_type,
+                delta=delta,
+                count=result.count,
+            ),
+        )
 
     def _register_player(self, discord_user_id: int) -> None:
         with session_scope(self.session_factory) as session:
@@ -3268,6 +3397,82 @@ class BotCommandHandlers:
             return str(target_user.id)
 
         return repr(dummy_user)
+
+    def _format_admin_target_display(
+        self,
+        *,
+        target_discord_user_id: int,
+        target_user: DiscordUserLike | None = None,
+    ) -> str:
+        if target_user is not None or not is_dummy_discord_user_id(target_discord_user_id):
+            return f"<@{target_discord_user_id}>"
+
+        return f"<dummy_{target_discord_user_id}>"
+
+    def _format_admin_match_result_public_message(
+        self,
+        *,
+        match_id: int,
+        final_result: MatchResult,
+    ) -> str:
+        return (
+            f"match_id: {match_id} の試合結果が"
+            f"管理者操作により「{MATCH_RESULT_LABELS[final_result]}」に上書きされました。"
+        )
+
+    def _format_admin_restriction_public_message(
+        self,
+        *,
+        target_discord_user_id: int,
+        target_user: DiscordUserLike | None,
+        restriction_type: PlayerAccessRestrictionType,
+        duration: PlayerAccessRestrictionDuration,
+    ) -> str:
+        target_label = self._format_admin_target_display(
+            target_discord_user_id=target_discord_user_id,
+            target_user=target_user,
+        )
+        return (
+            f"{target_label} の"
+            f"{PLAYER_ACCESS_RESTRICTION_TYPE_LABELS[restriction_type]}を"
+            f"{PLAYER_ACCESS_RESTRICTION_DURATION_LABELS[duration]}制限しました。"
+        )
+
+    def _format_admin_unrestriction_public_message(
+        self,
+        *,
+        target_discord_user_id: int,
+        target_user: DiscordUserLike | None,
+        restriction_type: PlayerAccessRestrictionType,
+    ) -> str:
+        target_label = self._format_admin_target_display(
+            target_discord_user_id=target_discord_user_id,
+            target_user=target_user,
+        )
+        return (
+            f"{target_label} の"
+            f"{PLAYER_ACCESS_RESTRICTION_TYPE_LABELS[restriction_type]}制限を解除しました。"
+        )
+
+    def _format_admin_penalty_public_message(
+        self,
+        *,
+        target_discord_user_id: int,
+        target_user: DiscordUserLike | None,
+        penalty_type: PenaltyType,
+        delta: int,
+        count: int,
+    ) -> str:
+        target_label = self._format_admin_target_display(
+            target_discord_user_id=target_discord_user_id,
+            target_user=target_user,
+        )
+        adjustment = "+1" if delta > 0 else "-1"
+        return (
+            f"{target_label} の"
+            f"{PENALTY_TYPE_LABELS[penalty_type]}ペナルティを{adjustment}しました。"
+            f"現在の累積: {count}"
+        )
 
     def _parse_match_result(self, value: str) -> MatchResult:
         return MatchResult(value)
@@ -4442,12 +4647,38 @@ class BotCommandHandlers:
 
         await response.defer(ephemeral=ephemeral, thinking=True)
 
-    async def _send_player_operation_message(
+    async def _send_executor_operation_message(
         self,
         interaction: discord.Interaction[Any],
         message: str,
     ) -> None:
         await self._send_message(interaction, message, ephemeral=True)
+
+    async def _send_success_message_with_public_followup(
+        self,
+        interaction: discord.Interaction[Any],
+        *,
+        executor_message: str,
+        public_message: str,
+    ) -> None:
+        await self._send_executor_operation_message(interaction, executor_message)
+        try:
+            await self._send_message(interaction, public_message, ephemeral=False)
+        except Exception:
+            self.logger.exception(
+                "Failed to send public followup message "
+                "executor_discord_user_id=%s channel_id=%s guild_id=%s",
+                interaction.user.id,
+                interaction.channel_id,
+                interaction.guild_id,
+            )
+
+    async def _send_player_operation_message(
+        self,
+        interaction: discord.Interaction[Any],
+        message: str,
+    ) -> None:
+        await self._send_executor_operation_message(interaction, message)
 
 
 def register_app_commands(

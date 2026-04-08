@@ -34,6 +34,7 @@ from dxd_rating.contexts.ui.application import (
 from dxd_rating.platform.config.bot import BotSettings
 from dxd_rating.platform.db.models import (
     ActiveMatchState,
+    FinalizedMatchResult,
     LeaderboardSnapshot,
     ManagedUiChannel,
     ManagedUiType,
@@ -44,6 +45,7 @@ from dxd_rating.platform.db.models import (
     MatchQueueEntryStatus,
     MatchReport,
     MatchReportInputResult,
+    MatchResult,
     MatchSpectator,
     MatchState,
     OutboxEvent,
@@ -510,6 +512,15 @@ def assert_response(
 ) -> None:
     assert interaction.response.messages == expected_messages
     assert interaction.response.ephemeral_flags == [ephemeral] * len(expected_messages)
+
+
+def assert_response_sequence(
+    interaction: FakeInteraction,
+    expected_messages: list[str],
+    expected_ephemeral_flags: list[bool],
+) -> None:
+    assert interaction.response.messages == expected_messages
+    assert interaction.response.ephemeral_flags == expected_ephemeral_flags
 
 
 def assert_presence_thread_controls(view: discord.ui.View | None) -> None:
@@ -6816,9 +6827,11 @@ def test_dev_present_returns_expired_message_for_expired_target(
 
     asyncio.run(handlers.dev_present(as_interaction(interaction), str(target_discord_user_id)))
 
-    assert interaction.response.messages == [
-        "指定したユーザーは期限切れのためキューから外れました。"
-    ]
+    assert_response(
+        interaction,
+        ["指定したユーザーは期限切れのためキューから外れました。"],
+        ephemeral=True,
+    )
 
 
 def test_dev_present_preserves_existing_presence_thread_destination(
@@ -6857,7 +6870,7 @@ def test_dev_present_preserves_existing_presence_thread_destination(
 
     queue_entry = get_queue_entry(session, player.id)
 
-    assert interaction.response.messages == ["指定したユーザーの在席を更新しました。"]
+    assert_response(interaction, ["指定したユーザーの在席を更新しました。"], ephemeral=True)
     assert queue_entry.notification_channel_id == 41_001
     assert queue_entry.notification_guild_id == 42_001
     assert queue_entry.presence_thread_channel_id == 43_001
@@ -6875,7 +6888,7 @@ def test_dev_leave_returns_target_not_registered_message(
 
     asyncio.run(handlers.dev_leave(as_interaction(interaction), "123456789012345688"))
 
-    assert interaction.response.messages == ["指定したユーザーは未登録です。"]
+    assert_response(interaction, ["指定したユーザーは未登録です。"], ephemeral=True)
 
 
 def test_dev_player_info_requires_admin(
@@ -6901,7 +6914,7 @@ def test_dev_player_info_validates_discord_user_id(session_factory: sessionmaker
 
     asyncio.run(handlers.dev_player_info(as_interaction(interaction), "not-a-number"))
 
-    assert interaction.response.messages == ["discord_user_id が不正です。"]
+    assert_response(interaction, ["discord_user_id が不正です。"], ephemeral=True)
 
 
 def test_dev_player_info_returns_target_player_stats(
@@ -6927,22 +6940,26 @@ def test_dev_player_info_returns_target_player_stats(
 
     asyncio.run(handlers.dev_player_info(as_interaction(interaction), str(target_discord_user_id)))
 
-    assert interaction.response.messages == [
-        format_player_info_message(
-            {
-                MatchFormat.ONE_VS_ONE: (1500.0, 0, 0, 0, 0, None),
-                MatchFormat.TWO_VS_TWO: (1500.0, 0, 0, 0, 0, None),
-                MatchFormat.THREE_VS_THREE: (
-                    1498.25,
-                    3,
-                    1,
-                    1,
-                    1,
-                    datetime(2026, 3, 20, 14, 0, 0, tzinfo=timezone.utc),
-                ),
-            }
-        )
-    ]
+    assert_response(
+        interaction,
+        [
+            format_player_info_message(
+                {
+                    MatchFormat.ONE_VS_ONE: (1500.0, 0, 0, 0, 0, None),
+                    MatchFormat.TWO_VS_TWO: (1500.0, 0, 0, 0, 0, None),
+                    MatchFormat.THREE_VS_THREE: (
+                        1498.25,
+                        3,
+                        1,
+                        1,
+                        1,
+                        datetime(2026, 3, 20, 14, 0, 0, tzinfo=timezone.utc),
+                    ),
+                }
+            )
+        ],
+        ephemeral=True,
+    )
 
 
 def test_dev_player_info_season_returns_target_player_stats(
@@ -6978,17 +6995,21 @@ def test_dev_player_info_season_returns_target_player_stats(
         )
     )
 
-    assert interaction.response.messages == [
-        format_player_info_message(
-            {
-                MatchFormat.ONE_VS_ONE: (1500.0, 0, 0, 0, 0, None),
-                MatchFormat.TWO_VS_TWO: (1500.0, 0, 0, 0, 0, None),
-                MatchFormat.THREE_VS_THREE: (1488.0, 0, 0, 0, 0, None),
-            },
-            season_id=season_pair.upcoming.id,
-            season_name="next-summer",
-        )
-    ]
+    assert_response(
+        interaction,
+        [
+            format_player_info_message(
+                {
+                    MatchFormat.ONE_VS_ONE: (1500.0, 0, 0, 0, 0, None),
+                    MatchFormat.TWO_VS_TWO: (1500.0, 0, 0, 0, 0, None),
+                    MatchFormat.THREE_VS_THREE: (1488.0, 0, 0, 0, 0, None),
+                },
+                season_id=season_pair.upcoming.id,
+                season_name="next-summer",
+            )
+        ],
+        ephemeral=True,
+    )
 
 
 def test_dev_player_info_returns_target_not_registered_message(
@@ -6999,7 +7020,7 @@ def test_dev_player_info_returns_target_not_registered_message(
 
     asyncio.run(handlers.dev_player_info(as_interaction(interaction), "123456789012345691"))
 
-    assert interaction.response.messages == ["指定したユーザーは未登録です。"]
+    assert_response(interaction, ["指定したユーザーは未登録です。"], ephemeral=True)
 
 
 def test_dev_is_admin_returns_yes_or_no(session_factory: sessionmaker[Session]) -> None:
@@ -7010,8 +7031,91 @@ def test_dev_is_admin_returns_yes_or_no(session_factory: sessionmaker[Session]) 
     asyncio.run(handlers.dev_is_admin(as_interaction(admin_interaction)))
     asyncio.run(handlers.dev_is_admin(as_interaction(non_admin_interaction)))
 
-    assert admin_interaction.response.messages == ["はい"]
-    assert non_admin_interaction.response.messages == ["いいえ"]
+    assert_response(admin_interaction, ["はい"], ephemeral=True)
+    assert_response(non_admin_interaction, ["いいえ"], ephemeral=True)
+
+
+def test_admin_match_result_responds_ephemerally_and_posts_public_followup(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    executor_discord_user_id = 10
+    match_id, players = create_match(
+        session,
+        session_factory,
+        start_discord_user_id=123_456_789_012_345_694,
+        channel_id=13_021,
+        guild_id=14_021,
+    )
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({executor_discord_user_id}),
+        matching_queue_service=MatchingQueueService(session_factory),
+    )
+    setup_matchmaking_managed_ui_channel(handlers, 13_021)
+    match_service = MatchFlowService(session_factory)
+    match_service.volunteer_parent(match_id, players[0].id)
+
+    session.expire_all()
+    active_state = session.scalar(
+        select(ActiveMatchState).where(ActiveMatchState.match_id == match_id)
+    )
+    assert active_state is not None
+    now = datetime.now(timezone.utc)
+    active_state.report_open_at = now - timedelta(minutes=1)
+    active_state.report_deadline_at = now + timedelta(minutes=10)
+    session.commit()
+    assert match_service.process_report_open(match_id) is True
+
+    participants = session.scalars(
+        select(MatchParticipant).where(MatchParticipant.match_id == match_id)
+    ).all()
+    participant_by_player_id = {participant.player_id: participant for participant in participants}
+    dissenting_player = next(
+        player
+        for player in players
+        if participant_by_player_id[player.id].team == MatchParticipantTeam.TEAM_B
+    )
+
+    for player in players:
+        participant = participant_by_player_id[player.id]
+        if participant.team == MatchParticipantTeam.TEAM_A:
+            input_result = MatchReportInputResult.WIN
+        elif player.id == dissenting_player.id:
+            input_result = MatchReportInputResult.DRAW
+        else:
+            input_result = MatchReportInputResult.LOSE
+        match_service.submit_report(match_id, player.id, input_result)
+
+    match_service.approve_provisional_result(match_id, dissenting_player.id)
+
+    interaction = FakeInteraction(
+        user=FakeUser(id=executor_discord_user_id),
+        channel_id=13_121,
+        guild_id=14_021,
+    )
+
+    asyncio.run(
+        handlers.admin_match_result(
+            as_interaction(interaction),
+            match_id,
+            MatchResult.DRAW.value,
+        )
+    )
+
+    session.expire_all()
+    finalized_result = session.get(FinalizedMatchResult, match_id)
+
+    assert finalized_result is not None
+    assert finalized_result.final_result == MatchResult.DRAW
+    assert_response_sequence(
+        interaction,
+        [
+            "試合結果を上書きしました。",
+            f"match_id: {match_id} の試合結果が管理者操作により「引き分け」に上書きされました。",
+        ],
+        [True, False],
+    )
 
 
 def test_admin_rename_season_updates_target_season_name(
@@ -7038,7 +7142,7 @@ def test_admin_rename_season_updates_target_season_name(
     session.expire_all()
     refreshed_pair = ensure_active_and_upcoming_seasons(session)
 
-    assert interaction.response.messages == ["シーズン名を変更しました。"]
+    assert_response(interaction, ["シーズン名を変更しました。"], ephemeral=True)
     assert refreshed_pair.upcoming.id == season_pair.upcoming.id
     assert refreshed_pair.upcoming.name == "spring-cup"
 
@@ -8285,12 +8389,22 @@ def test_admin_restrict_and_unrestrict_user_commands_manage_restrictions(
         select(MatchQueueEntry).where(MatchQueueEntry.player_id == player.id)
     )
 
-    assert restrict_interaction.response.messages == [
-        "指定したユーザーのキュー参加を7日制限しました。"
-    ]
-    assert unrestrict_interaction.response.messages == [
-        "指定したユーザーのキュー参加制限を解除しました。"
-    ]
+    assert_response_sequence(
+        restrict_interaction,
+        [
+            "指定したユーザーのキュー参加を7日制限しました。",
+            f"<@{target_discord_user_id}> のキュー参加を7日制限しました。",
+        ],
+        [True, False],
+    )
+    assert_response_sequence(
+        unrestrict_interaction,
+        [
+            "指定したユーザーのキュー参加制限を解除しました。",
+            f"<@{target_discord_user_id}> のキュー参加制限を解除しました。",
+        ],
+        [True, False],
+    )
     assert restriction is not None
     assert restriction.restriction_type == PlayerAccessRestrictionType.QUEUE_JOIN
     assert restriction.reason == "test reason"
@@ -8330,7 +8444,14 @@ def test_admin_restrict_user_accepts_dummy_user_reference(
         select(PlayerAccessRestriction).where(PlayerAccessRestriction.player_id == player.id)
     )
 
-    assert interaction.response.messages == ["指定したユーザーの観戦を1日制限しました。"]
+    assert_response_sequence(
+        interaction,
+        [
+            "指定したユーザーの観戦を1日制限しました。",
+            f"<dummy_{target_discord_user_id}> の観戦を1日制限しました。",
+        ],
+        [True, False],
+    )
     assert restriction is not None
     assert restriction.restriction_type == PlayerAccessRestrictionType.SPECTATE
 
@@ -8352,7 +8473,7 @@ def test_admin_restrict_user_requires_target_selection(
         )
     )
 
-    assert interaction.response.messages == ["対象ユーザーの指定が不正です。"]
+    assert_response(interaction, ["対象ユーザーの指定が不正です。"], ephemeral=True)
 
 
 def test_admin_add_penalty_accepts_dummy_user_reference(
@@ -8383,7 +8504,14 @@ def test_admin_add_penalty_accepts_dummy_user_reference(
         {"player_id": player.id, "penalty_type": PenaltyType.LATE},
     )
 
-    assert interaction.response.messages == ["ペナルティを加算しました。"]
+    assert_response_sequence(
+        interaction,
+        [
+            "ペナルティを加算しました。",
+            f"<dummy_{target_discord_user_id}> の遅刻ペナルティを+1しました。現在の累積: 1",
+        ],
+        [True, False],
+    )
     assert penalty is not None
     assert penalty.count == 1
 

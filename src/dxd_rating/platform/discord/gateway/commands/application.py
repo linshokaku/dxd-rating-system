@@ -243,9 +243,9 @@ APPLICATION_COMMAND_INTERNAL_ERROR_MESSAGE = "内部エラーが発生しまし�
 
 
 @dataclass
-class ApplicationCommandResponseContext:
+class InteractionResponseContext:
     interaction: discord.Interaction[Any]
-    command_name: str
+    interaction_name: str
     deferred: bool = False
     executor_response_sent: bool = False
 
@@ -515,10 +515,10 @@ class BotCommandHandlers:
         self.leaderboard_service = leaderboard_service or LeaderboardService(session_factory)
         self.managed_ui_service = ManagedUiService(session_factory)
         self.info_thread_binding_service = InfoThreadBindingService(session_factory)
-        self._application_command_response_context: contextvars.ContextVar[
-            ApplicationCommandResponseContext | None
+        self._interaction_response_context: contextvars.ContextVar[
+            InteractionResponseContext | None
         ] = contextvars.ContextVar(
-            "application_command_response_context",
+            "interaction_response_context",
             default=None,
         )
 
@@ -4821,24 +4821,24 @@ class BotCommandHandlers:
         ephemeral: bool = False,
         mark_executor_response: bool = True,
     ) -> None:
-        command_context = self._get_application_command_response_context(interaction)
-        if command_context is not None and command_context.deferred:
+        interaction_context = self._get_interaction_response_context(interaction)
+        if interaction_context is not None and interaction_context.deferred:
             await interaction.followup.send(message, ephemeral=ephemeral)
             if mark_executor_response:
-                command_context.executor_response_sent = True
+                interaction_context.executor_response_sent = True
             return
 
         response = interaction.response
         is_done = getattr(response, "is_done", None)
         if callable(is_done) and is_done():
             await interaction.followup.send(message, ephemeral=ephemeral)
-            if command_context is not None and mark_executor_response:
-                command_context.executor_response_sent = True
+            if interaction_context is not None and mark_executor_response:
+                interaction_context.executor_response_sent = True
             return
 
         await response.send_message(message, ephemeral=ephemeral)
-        if command_context is not None and mark_executor_response:
-            command_context.executor_response_sent = True
+        if interaction_context is not None and mark_executor_response:
+            interaction_context.executor_response_sent = True
 
     async def _send_info_thread_message(
         self,
@@ -4869,15 +4869,15 @@ class BotCommandHandlers:
         response = interaction.response
         is_done = getattr(response, "is_done", None)
         if callable(is_done) and is_done():
-            command_context = self._get_application_command_response_context(interaction)
-            if command_context is not None:
-                command_context.deferred = True
+            interaction_context = self._get_interaction_response_context(interaction)
+            if interaction_context is not None:
+                interaction_context.deferred = True
             return
 
         await response.defer(ephemeral=ephemeral, thinking=True)
-        command_context = self._get_application_command_response_context(interaction)
-        if command_context is not None:
-            command_context.deferred = True
+        interaction_context = self._get_interaction_response_context(interaction)
+        if interaction_context is not None:
+            interaction_context.deferred = True
 
     async def _send_executor_operation_message(
         self,
@@ -4885,6 +4885,13 @@ class BotCommandHandlers:
         message: str,
     ) -> None:
         await self._send_message(interaction, message, ephemeral=True)
+
+    async def send_component_message(
+        self,
+        interaction: discord.Interaction[Any],
+        message: str,
+    ) -> None:
+        await self._send_executor_operation_message(interaction, message)
 
     async def _send_success_message_with_public_followup(
         self,
@@ -4910,15 +4917,15 @@ class BotCommandHandlers:
                 interaction.guild_id,
             )
 
-    def _get_application_command_response_context(
+    def _get_interaction_response_context(
         self,
         interaction: discord.Interaction[Any],
-    ) -> ApplicationCommandResponseContext | None:
-        command_context = self._application_command_response_context.get()
-        if command_context is None or command_context.interaction is not interaction:
+    ) -> InteractionResponseContext | None:
+        interaction_context = self._interaction_response_context.get()
+        if interaction_context is None or interaction_context.interaction is not interaction:
             return None
 
-        return command_context
+        return interaction_context
 
     async def run_application_command(
         self,
@@ -4928,38 +4935,76 @@ class BotCommandHandlers:
         *args: object,
         **kwargs: object,
     ) -> None:
-        command_context = ApplicationCommandResponseContext(
+        await self._run_interaction(
             interaction=interaction,
-            command_name=command_name,
+            interaction_name=command_name,
+            callback=lambda: callback(interaction, *args, **kwargs),
+            fallback_message=None,
+            log_label="application command",
         )
-        token = self._application_command_response_context.set(command_context)
+
+    async def run_component_interaction(
+        self,
+        interaction: discord.Interaction[Any],
+        interaction_name: str,
+        callback: Callable[[], Awaitable[None]],
+        *,
+        fallback_message: str,
+    ) -> None:
+        await self._run_interaction(
+            interaction=interaction,
+            interaction_name=interaction_name,
+            callback=callback,
+            fallback_message=fallback_message,
+            log_label="component",
+        )
+
+    async def _run_interaction(
+        self,
+        *,
+        interaction: discord.Interaction[Any],
+        interaction_name: str,
+        callback: Callable[[], Awaitable[None]],
+        fallback_message: str | None,
+        log_label: str,
+    ) -> None:
+        interaction_context = InteractionResponseContext(
+            interaction=interaction,
+            interaction_name=interaction_name,
+        )
+        token = self._interaction_response_context.set(interaction_context)
         try:
             await self._defer_message_response(interaction, ephemeral=True)
             try:
-                await callback(interaction, *args, **kwargs)
+                await callback()
             except Exception:
                 self.logger.exception(
-                    "Unhandled exception in application command command_name=%s "
+                    "Unhandled exception in %s interaction_name=%s "
                     "executor_discord_user_id=%s channel_id=%s guild_id=%s",
-                    command_name,
+                    log_label,
+                    interaction_name,
                     interaction.user.id,
                     interaction.channel_id,
                     interaction.guild_id,
                 )
-                if not command_context.executor_response_sent:
-                    await self._send_executor_operation_message(
-                        interaction,
-                        APPLICATION_COMMAND_INTERNAL_ERROR_MESSAGE,
-                    )
+                if not interaction_context.executor_response_sent:
+                    if fallback_message is None:
+                        await self._send_executor_operation_message(
+                            interaction,
+                            APPLICATION_COMMAND_INTERNAL_ERROR_MESSAGE,
+                        )
+                    else:
+                        await self._send_message(interaction, fallback_message, ephemeral=True)
                 return
 
-            if command_context.executor_response_sent:
+            if interaction_context.executor_response_sent:
                 return
 
             self.logger.error(
-                "Application command completed without executor response "
-                "command_name=%s executor_discord_user_id=%s channel_id=%s guild_id=%s",
-                command_name,
+                "%s completed without executor response "
+                "interaction_name=%s executor_discord_user_id=%s channel_id=%s guild_id=%s",
+                log_label.capitalize(),
+                interaction_name,
                 interaction.user.id,
                 interaction.channel_id,
                 interaction.guild_id,
@@ -4969,7 +5014,7 @@ class BotCommandHandlers:
                 APPLICATION_COMMAND_INTERNAL_ERROR_MESSAGE,
             )
         finally:
-            self._application_command_response_context.reset(token)
+            self._interaction_response_context.reset(token)
 
     async def _send_player_operation_message(
         self,

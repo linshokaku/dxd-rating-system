@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Awaitable, Callable
 from typing import Any, ClassVar, Protocol
 
 import discord
@@ -23,7 +24,18 @@ MATCHMAKING_NEWS_MATCH_ANNOUNCEMENT_FALLBACK_ERROR_MESSAGE = (
 logger = logging.getLogger(__name__)
 
 
-class MatchmakingNewsMatchAnnouncementInteractionHandler(Protocol):
+class _ComponentInteractionHandler(Protocol):
+    async def run_component_interaction(
+        self,
+        interaction: discord.Interaction[Any],
+        interaction_name: str,
+        callback: Callable[[], Awaitable[None]],
+        *,
+        fallback_message: str,
+    ) -> None: ...
+
+
+class MatchmakingNewsMatchAnnouncementInteractionHandler(_ComponentInteractionHandler, Protocol):
     async def spectate_from_matchmaking_news_match_announcement(
         self,
         interaction: discord.Interaction[Any],
@@ -73,16 +85,23 @@ class MatchmakingNewsMatchAnnouncementSpectateButton(
         return cls(match_id=int(match.group("match_id")))
 
     async def callback(self, interaction: discord.Interaction[Any]) -> None:
-        if self._interaction_handler is None:
+        interaction_handler = self._interaction_handler
+        if interaction_handler is None:
             logger.error(
                 "Matchmaking news match announcement interaction handler is not configured"
             )
+            await interaction.response.defer(ephemeral=True, thinking=True)
             await _send_fallback_error_message(interaction)
             return
 
-        await self._interaction_handler.spectate_from_matchmaking_news_match_announcement(
+        await interaction_handler.run_component_interaction(
             interaction,
-            self.match_id,
+            "matchmaking_news:spectate",
+            lambda: interaction_handler.spectate_from_matchmaking_news_match_announcement(
+                interaction,
+                self.match_id,
+            ),
+            fallback_message=MATCHMAKING_NEWS_MATCH_ANNOUNCEMENT_FALLBACK_ERROR_MESSAGE,
         )
 
     @property

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -90,11 +90,28 @@ INFO_CHANNEL_FALLBACK_ERROR_MESSAGE = (
 logger = logging.getLogger(__name__)
 
 
-class RegisterPanelInteractionHandler(Protocol):
+class _ComponentInteractionHandler(Protocol):
+    async def send_component_message(
+        self,
+        interaction: discord.Interaction[Any],
+        message: str,
+    ) -> None: ...
+
+    async def run_component_interaction(
+        self,
+        interaction: discord.Interaction[Any],
+        interaction_name: str,
+        callback: Callable[[], Awaitable[None]],
+        *,
+        fallback_message: str,
+    ) -> None: ...
+
+
+class RegisterPanelInteractionHandler(_ComponentInteractionHandler, Protocol):
     async def register_from_ui(self, interaction: discord.Interaction[Any]) -> None: ...
 
 
-class MatchmakingPanelInteractionHandler(Protocol):
+class MatchmakingPanelInteractionHandler(_ComponentInteractionHandler, Protocol):
     async def join_from_ui(
         self,
         interaction: discord.Interaction[Any],
@@ -103,14 +120,14 @@ class MatchmakingPanelInteractionHandler(Protocol):
     ) -> None: ...
 
 
-class MatchmakingStatusInteractionHandler(Protocol):
+class MatchmakingStatusInteractionHandler(_ComponentInteractionHandler, Protocol):
     async def update_matchmaking_status_from_ui(
         self,
         interaction: discord.Interaction[Any],
     ) -> None: ...
 
 
-class InfoChannelInteractionHandler(Protocol):
+class InfoChannelInteractionHandler(_ComponentInteractionHandler, Protocol):
     async def info_thread_from_ui(
         self,
         interaction: discord.Interaction[Any],
@@ -143,7 +160,12 @@ class RegisterPanelView(discord.ui.View):
         interaction: discord.Interaction[Any],
         _: discord.ui.Button[discord.ui.View],
     ) -> None:
-        await self._interaction_handler.register_from_ui(interaction)
+        await self._interaction_handler.run_component_interaction(
+            interaction,
+            "register_panel:register",
+            lambda: self._interaction_handler.register_from_ui(interaction),
+            fallback_message=REGISTER_PANEL_FALLBACK_ERROR_MESSAGE,
+        )
 
     async def on_error(
         self,
@@ -236,17 +258,6 @@ def _build_matchmaking_queue_options(match_format: MatchFormat) -> list[discord.
     ]
 
 
-async def _send_ephemeral_component_message(
-    interaction: discord.Interaction[Any],
-    message: str,
-) -> None:
-    if interaction.response.is_done():
-        await interaction.followup.send(message, ephemeral=True)
-        return
-
-    await interaction.response.send_message(message, ephemeral=True)
-
-
 class MatchmakingMatchFormatSelect(discord.ui.Select["MatchmakingPanelView"]):
     def __init__(self) -> None:
         super().__init__(
@@ -299,7 +310,12 @@ class MatchmakingJoinButton(discord.ui.Button["MatchmakingPanelView"]):
         if view is None:
             raise RuntimeError("Matchmaking panel view is not attached")
 
-        await view.join_queue(interaction)
+        await view._interaction_handler.run_component_interaction(
+            interaction,
+            "matchmaking_channel:join",
+            lambda: view.join_queue(interaction),
+            fallback_message=MATCHMAKING_CHANNEL_FALLBACK_ERROR_MESSAGE,
+        )
 
 
 class MatchmakingPanelView(discord.ui.View):
@@ -356,14 +372,14 @@ class MatchmakingPanelView(discord.ui.View):
             MatchmakingPanelSelectionState(),
         )
         if selection_state.match_format is None:
-            await _send_ephemeral_component_message(
+            await self._interaction_handler.send_component_message(
                 interaction,
                 MATCHMAKING_CHANNEL_SELECT_MATCH_FORMAT_MESSAGE,
             )
             return
 
         if selection_state.queue_name is None:
-            await _send_ephemeral_component_message(
+            await self._interaction_handler.send_component_message(
                 interaction,
                 MATCHMAKING_CHANNEL_SELECT_QUEUE_NAME_MESSAGE,
             )
@@ -413,7 +429,12 @@ class MatchmakingStatusView(discord.ui.View):
         interaction: discord.Interaction[Any],
         _: discord.ui.Button[discord.ui.View],
     ) -> None:
-        await self._interaction_handler.update_matchmaking_status_from_ui(interaction)
+        await self._interaction_handler.run_component_interaction(
+            interaction,
+            "matchmaking_channel:update_status",
+            lambda: self._interaction_handler.update_matchmaking_status_from_ui(interaction),
+            fallback_message=MATCHMAKING_CHANNEL_STATUS_UPDATE_FALLBACK_ERROR_MESSAGE,
+        )
 
     async def on_error(
         self,
@@ -454,9 +475,14 @@ class InfoChannelView(discord.ui.View):
         interaction: discord.Interaction[Any],
         _: discord.ui.Button[discord.ui.View],
     ) -> None:
-        await self._interaction_handler.info_thread_from_ui(
+        await self._interaction_handler.run_component_interaction(
             interaction,
-            InfoThreadCommandName.LEADERBOARD,
+            "info_channel:leaderboard",
+            lambda: self._interaction_handler.info_thread_from_ui(
+                interaction,
+                InfoThreadCommandName.LEADERBOARD,
+            ),
+            fallback_message=INFO_CHANNEL_FALLBACK_ERROR_MESSAGE,
         )
 
     @discord.ui.button(
@@ -470,9 +496,14 @@ class InfoChannelView(discord.ui.View):
         interaction: discord.Interaction[Any],
         _: discord.ui.Button[discord.ui.View],
     ) -> None:
-        await self._interaction_handler.info_thread_from_ui(
+        await self._interaction_handler.run_component_interaction(
             interaction,
-            InfoThreadCommandName.LEADERBOARD_SEASON,
+            "info_channel:leaderboard_season",
+            lambda: self._interaction_handler.info_thread_from_ui(
+                interaction,
+                InfoThreadCommandName.LEADERBOARD_SEASON,
+            ),
+            fallback_message=INFO_CHANNEL_FALLBACK_ERROR_MESSAGE,
         )
 
     @discord.ui.button(
@@ -486,9 +517,14 @@ class InfoChannelView(discord.ui.View):
         interaction: discord.Interaction[Any],
         _: discord.ui.Button[discord.ui.View],
     ) -> None:
-        await self._interaction_handler.info_thread_from_ui(
+        await self._interaction_handler.run_component_interaction(
             interaction,
-            InfoThreadCommandName.PLAYER_INFO,
+            "info_channel:player_info",
+            lambda: self._interaction_handler.info_thread_from_ui(
+                interaction,
+                InfoThreadCommandName.PLAYER_INFO,
+            ),
+            fallback_message=INFO_CHANNEL_FALLBACK_ERROR_MESSAGE,
         )
 
     @discord.ui.button(
@@ -502,9 +538,14 @@ class InfoChannelView(discord.ui.View):
         interaction: discord.Interaction[Any],
         _: discord.ui.Button[discord.ui.View],
     ) -> None:
-        await self._interaction_handler.info_thread_from_ui(
+        await self._interaction_handler.run_component_interaction(
             interaction,
-            InfoThreadCommandName.PLAYER_INFO_SEASON,
+            "info_channel:player_info_season",
+            lambda: self._interaction_handler.info_thread_from_ui(
+                interaction,
+                InfoThreadCommandName.PLAYER_INFO_SEASON,
+            ),
+            fallback_message=INFO_CHANNEL_FALLBACK_ERROR_MESSAGE,
         )
 
     async def on_error(

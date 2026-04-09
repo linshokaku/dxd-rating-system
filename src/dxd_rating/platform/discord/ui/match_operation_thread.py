@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Awaitable, Callable
 from typing import Any, ClassVar, Protocol
 
 import discord
@@ -44,7 +45,18 @@ MATCH_OPERATION_THREAD_FALLBACK_ERROR_MESSAGE = "試合操作に失敗しまし�
 logger = logging.getLogger(__name__)
 
 
-class MatchOperationThreadInteractionHandler(Protocol):
+class _ComponentInteractionHandler(Protocol):
+    async def run_component_interaction(
+        self,
+        interaction: discord.Interaction[Any],
+        interaction_name: str,
+        callback: Callable[[], Awaitable[None]],
+        *,
+        fallback_message: str,
+    ) -> None: ...
+
+
+class MatchOperationThreadInteractionHandler(_ComponentInteractionHandler, Protocol):
     async def win_from_match_operation_thread(
         self,
         interaction: discord.Interaction[Any],
@@ -122,14 +134,21 @@ class MatchOperationThreadWinButton(
         return cls(match_id=int(match.group("match_id")))
 
     async def callback(self, interaction: discord.Interaction[Any]) -> None:
-        if self._interaction_handler is None:
+        interaction_handler = self._interaction_handler
+        if interaction_handler is None:
             logger.error("Match operation thread interaction handler is not configured")
+            await interaction.response.defer(ephemeral=True, thinking=True)
             await _send_fallback_error_message(interaction)
             return
 
-        await self._interaction_handler.win_from_match_operation_thread(
+        await interaction_handler.run_component_interaction(
             interaction,
-            self.match_id,
+            "match_operation_thread:win",
+            lambda: interaction_handler.win_from_match_operation_thread(
+                interaction,
+                self.match_id,
+            ),
+            fallback_message=MATCH_OPERATION_THREAD_FALLBACK_ERROR_MESSAGE,
         )
 
     @property
@@ -181,14 +200,21 @@ class MatchOperationThreadDrawButton(
         return cls(match_id=int(match.group("match_id")))
 
     async def callback(self, interaction: discord.Interaction[Any]) -> None:
-        if self._interaction_handler is None:
+        interaction_handler = self._interaction_handler
+        if interaction_handler is None:
             logger.error("Match operation thread interaction handler is not configured")
+            await interaction.response.defer(ephemeral=True, thinking=True)
             await _send_fallback_error_message(interaction)
             return
 
-        await self._interaction_handler.draw_from_match_operation_thread(
+        await interaction_handler.run_component_interaction(
             interaction,
-            self.match_id,
+            "match_operation_thread:draw",
+            lambda: interaction_handler.draw_from_match_operation_thread(
+                interaction,
+                self.match_id,
+            ),
+            fallback_message=MATCH_OPERATION_THREAD_FALLBACK_ERROR_MESSAGE,
         )
 
     @property
@@ -240,14 +266,21 @@ class MatchOperationThreadLoseButton(
         return cls(match_id=int(match.group("match_id")))
 
     async def callback(self, interaction: discord.Interaction[Any]) -> None:
-        if self._interaction_handler is None:
+        interaction_handler = self._interaction_handler
+        if interaction_handler is None:
             logger.error("Match operation thread interaction handler is not configured")
+            await interaction.response.defer(ephemeral=True, thinking=True)
             await _send_fallback_error_message(interaction)
             return
 
-        await self._interaction_handler.lose_from_match_operation_thread(
+        await interaction_handler.run_component_interaction(
             interaction,
-            self.match_id,
+            "match_operation_thread:lose",
+            lambda: interaction_handler.lose_from_match_operation_thread(
+                interaction,
+                self.match_id,
+            ),
+            fallback_message=MATCH_OPERATION_THREAD_FALLBACK_ERROR_MESSAGE,
         )
 
     @property
@@ -299,14 +332,21 @@ class MatchOperationThreadVoidButton(
         return cls(match_id=int(match.group("match_id")))
 
     async def callback(self, interaction: discord.Interaction[Any]) -> None:
-        if self._interaction_handler is None:
+        interaction_handler = self._interaction_handler
+        if interaction_handler is None:
             logger.error("Match operation thread interaction handler is not configured")
+            await interaction.response.defer(ephemeral=True, thinking=True)
             await _send_fallback_error_message(interaction)
             return
 
-        await self._interaction_handler.void_from_match_operation_thread(
+        await interaction_handler.run_component_interaction(
             interaction,
-            self.match_id,
+            "match_operation_thread:void",
+            lambda: interaction_handler.void_from_match_operation_thread(
+                interaction,
+                self.match_id,
+            ),
+            fallback_message=MATCH_OPERATION_THREAD_FALLBACK_ERROR_MESSAGE,
         )
 
     @property
@@ -358,14 +398,21 @@ class MatchOperationThreadParentButton(
         return cls(match_id=int(match.group("match_id")))
 
     async def callback(self, interaction: discord.Interaction[Any]) -> None:
-        if self._interaction_handler is None:
+        interaction_handler = self._interaction_handler
+        if interaction_handler is None:
             logger.error("Match operation thread interaction handler is not configured")
+            await interaction.response.defer(ephemeral=True, thinking=True)
             await _send_fallback_error_message(interaction)
             return
 
-        await self._interaction_handler.parent_from_match_operation_thread(
+        await interaction_handler.run_component_interaction(
             interaction,
-            self.match_id,
+            "match_operation_thread:parent",
+            lambda: interaction_handler.parent_from_match_operation_thread(
+                interaction,
+                self.match_id,
+            ),
+            fallback_message=MATCH_OPERATION_THREAD_FALLBACK_ERROR_MESSAGE,
         )
 
     @property
@@ -417,14 +464,21 @@ class MatchOperationThreadApproveButton(
         return cls(match_id=int(match.group("match_id")))
 
     async def callback(self, interaction: discord.Interaction[Any]) -> None:
-        if self._interaction_handler is None:
+        interaction_handler = self._interaction_handler
+        if interaction_handler is None:
             logger.error("Match operation thread interaction handler is not configured")
+            await interaction.response.defer(ephemeral=True, thinking=True)
             await _send_fallback_error_message(interaction)
             return
 
-        await self._interaction_handler.approve_from_match_operation_thread(
+        await interaction_handler.run_component_interaction(
             interaction,
-            self.match_id,
+            "match_operation_thread:approve",
+            lambda: interaction_handler.approve_from_match_operation_thread(
+                interaction,
+                self.match_id,
+            ),
+            fallback_message=MATCH_OPERATION_THREAD_FALLBACK_ERROR_MESSAGE,
         )
 
     @property

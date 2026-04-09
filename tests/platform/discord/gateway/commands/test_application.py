@@ -101,7 +101,9 @@ from dxd_rating.platform.discord.ui import (
     REGISTER_PANEL_BUTTON_LABEL,
     REGISTER_PANEL_MESSAGE,
     SYSTEM_ANNOUNCEMENTS_CHANNEL_MESSAGE,
+    MatchmakingNewsMatchAnnouncementSpectateButton,
     MatchmakingPanelView,
+    MatchOperationThreadParentButton,
     build_info_thread_initial_message,
     build_matchmaking_status_message,
 )
@@ -530,6 +532,18 @@ def assert_response_sequence(
 ) -> None:
     assert interaction.response.messages == expected_messages
     assert interaction.response.ephemeral_flags == expected_ephemeral_flags
+
+
+def assert_deferred_followup_response(
+    interaction: FakeInteraction,
+    *,
+    followup_send_call_count: int = 1,
+) -> None:
+    assert interaction.response.defer_call_count == 1
+    assert interaction.response.defer_ephemeral is True
+    assert interaction.response.defer_thinking is True
+    assert interaction.response.send_message_call_count == 0
+    assert interaction.followup.send_call_count == followup_send_call_count
 
 
 def assert_presence_thread_controls(view: discord.ui.View | None) -> None:
@@ -1400,6 +1414,7 @@ def test_matchmaking_panel_join_button_requires_match_format_selection(
         [MATCHMAKING_CHANNEL_SELECT_MATCH_FORMAT_MESSAGE],
         ephemeral=True,
     )
+    assert_deferred_followup_response(interaction)
 
 
 def test_matchmaking_panel_join_button_requires_queue_selection(
@@ -1425,6 +1440,7 @@ def test_matchmaking_panel_join_button_requires_queue_selection(
         [MATCHMAKING_CHANNEL_SELECT_QUEUE_NAME_MESSAGE],
         ephemeral=True,
     )
+    assert_deferred_followup_response(interaction)
 
 
 def test_matchmaking_panel_join_button_uses_selected_values_for_join(
@@ -1477,6 +1493,7 @@ def test_matchmaking_panel_join_button_uses_selected_values_for_join(
         ["キューに参加しました。5分間マッチングします。\n在席確認は <#20001> で行ってください。"],
         ephemeral=True,
     )
+    assert_deferred_followup_response(interaction)
     assert queue_entry.match_format == MatchFormat.ONE_VS_ONE
     assert queue_entry.notification_channel_id == channel.id
     assert queue_entry.presence_thread_channel_id == 20_001
@@ -1557,6 +1574,7 @@ def test_matchmaking_presence_thread_present_button_updates_waiting_entry(
         ["在席を更新しました。次の期限は5分後です。"],
         ephemeral=True,
     )
+    assert_deferred_followup_response(button_interaction)
     assert queue_entry.status == MatchQueueEntryStatus.WAITING
     assert queue_entry.notification_channel_id == channel.id
     assert queue_entry.presence_thread_channel_id == thread.id
@@ -1991,6 +2009,7 @@ def test_matchmaking_status_button_updates_second_message(
     asyncio.run(status_button.callback(as_interaction(interaction)))
 
     assert_response(interaction, ["参加状況を更新しました。"], ephemeral=True)
+    assert_deferred_followup_response(interaction)
     assert status_message.content == expected_message
     assert matchmaking_channel.sent_messages[2].content == MATCHMAKING_CHANNEL_MESSAGE
 
@@ -2410,6 +2429,7 @@ def test_info_thread_player_info_button_posts_current_stats_to_active_thread(
     asyncio.run(show_button.callback(as_interaction(interaction)))
 
     assert_response(interaction, ["プレイヤー情報を表示しました。"], ephemeral=True)
+    assert_deferred_followup_response(interaction)
     assert_all_controls_disabled(initial_message.view)
     assert [message.content for message in created_thread.sent_messages] == [
         build_info_thread_initial_message(InfoThreadCommandName.PLAYER_INFO),
@@ -2527,6 +2547,7 @@ def test_info_thread_player_info_button_returns_internal_error_and_disables_mess
         ["プレイヤー情報の取得に失敗しました。管理者に確認してください。"],
         ephemeral=True,
     )
+    assert_deferred_followup_response(interaction)
     assert_all_controls_disabled(initial_message.view)
     assert len(created_thread.sent_messages) == 1
 
@@ -2617,6 +2638,7 @@ def test_info_thread_player_info_season_button_requires_season_selection(
         [INFO_THREAD_PLAYER_INFO_SEASON_SELECT_SEASON_MESSAGE],
         ephemeral=True,
     )
+    assert_deferred_followup_response(interaction)
     assert_all_controls_disabled(initial_message.view)
     assert len(created_thread.sent_messages) == 1
 
@@ -3304,6 +3326,7 @@ def test_info_thread_leaderboard_button_requires_match_format_selection(
         [INFO_THREAD_LEADERBOARD_SELECT_MATCH_FORMAT_MESSAGE],
         ephemeral=True,
     )
+    assert_deferred_followup_response(interaction)
     assert_all_controls_disabled(initial_message.view)
     assert len(created_thread.sent_messages) == 1
 
@@ -3579,6 +3602,7 @@ def test_info_thread_leaderboard_next_page_button_posts_requested_page(
             ["ランキングを表示しました。"],
             ephemeral=True,
         )
+        assert_deferred_followup_response(button_interaction)
         assert_all_controls_disabled(next_page_message.view)
 
     asyncio.run(scenario())
@@ -5821,6 +5845,70 @@ def test_matchmaking_news_match_announcement_spectate_button_responds_ephemerall
     assert match_operation_thread.added_user_ids == [spectator_discord_user_id]
 
 
+def test_matchmaking_news_match_announcement_spectate_button_defers_and_replies_via_followup(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    match_id, _ = create_match(
+        session,
+        session_factory,
+        start_discord_user_id=123_456_789_012_345_710_2,
+        channel_id=13_022,
+        guild_id=14_022,
+    )
+    spectator_discord_user_id = 123_456_789_012_345_716_2
+    spectator = create_player(session, spectator_discord_user_id)
+    handlers = create_handlers(
+        session_factory,
+        matching_queue_service=MatchingQueueService(session_factory),
+    )
+    guild = FakeGuild(id=14_022)
+    matchmaking_channel = FakeTextChannel(
+        id=13_022,
+        name="レート戦マッチング",
+        guild=guild,
+    )
+    announcement_channel = FakeTextChannel(
+        id=13_023,
+        name="レート戦マッチ速報",
+        guild=guild,
+    )
+    guild.channels.extend([matchmaking_channel, announcement_channel])
+    setup_matchmaking_managed_ui_channel(handlers, matchmaking_channel.id)
+    match_operation_thread = cast(
+        FakeThread,
+        asyncio.run(matchmaking_channel.create_thread(name=f"試合-{match_id}")),
+    )
+    button = MatchmakingNewsMatchAnnouncementSpectateButton(
+        match_id,
+        interaction_handler=handlers,
+    )
+    interaction = FakeInteraction(
+        user=FakeUser(id=spectator_discord_user_id),
+        channel_id=announcement_channel.id,
+        guild_id=guild.id,
+        guild=guild,
+    )
+
+    asyncio.run(button.callback(as_interaction(interaction)))
+
+    persisted_spectator = session.scalar(
+        select(MatchSpectator).where(
+            MatchSpectator.match_id == match_id,
+            MatchSpectator.player_id == spectator.id,
+        )
+    )
+
+    assert_response(
+        interaction,
+        ["観戦応募を受け付けました。現在 1 / 6 人です。"],
+        ephemeral=True,
+    )
+    assert_deferred_followup_response(interaction)
+    assert persisted_spectator is not None
+    assert match_operation_thread.added_user_ids == [spectator_discord_user_id]
+
+
 @pytest.mark.parametrize(
     "handler_name",
     [
@@ -5990,6 +6078,46 @@ def test_match_parent_actions_respond_ephemerally(
         ["親に立候補しました。"],
         ephemeral=True,
     )
+
+
+def test_match_operation_thread_parent_button_defers_and_replies_via_followup(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    match_id, players = create_match(
+        session,
+        session_factory,
+        start_discord_user_id=123_456_789_012_345_723_1,
+        channel_id=13_025,
+        guild_id=14_025,
+    )
+    handlers = create_handlers(
+        session_factory,
+        matching_queue_service=MatchingQueueService(session_factory),
+    )
+    setup_matchmaking_managed_ui_channel(handlers, 13_025)
+    button = MatchOperationThreadParentButton(match_id, interaction_handler=handlers)
+    interaction = FakeInteraction(
+        user=FakeUser(id=players[0].discord_user_id),
+        channel_id=13_125,
+        guild_id=14_025,
+    )
+
+    asyncio.run(button.callback(as_interaction(interaction)))
+
+    active_state = session.scalar(
+        select(ActiveMatchState).where(ActiveMatchState.match_id == match_id)
+    )
+
+    assert active_state is not None
+    assert active_state.parent_player_id == players[0].id
+    assert active_state.parent_decided_at is not None
+    assert_response(
+        interaction,
+        ["親に立候補しました。"],
+        ephemeral=True,
+    )
+    assert_deferred_followup_response(interaction)
 
 
 @pytest.mark.parametrize(
@@ -8062,6 +8190,7 @@ def test_info_channel_button_creates_info_thread_via_existing_command_flow(
     binding = session.get(PlayerInfoThreadBinding, player.id)
 
     assert_response(button_interaction, ["情報確認用スレッドを作成しました。"], ephemeral=True)
+    assert_deferred_followup_response(button_interaction)
     assert len(persisted_channel.created_threads) == 1
     created_thread = persisted_channel.created_threads[0]
     assert created_thread.added_user_ids == [target_discord_user_id, executor_discord_user_id]
@@ -8113,6 +8242,7 @@ def test_info_channel_button_returns_registration_required_for_unregistered_user
         ["プレイヤー登録が必要です。先に /register を実行してください。"],
         ephemeral=True,
     )
+    assert_deferred_followup_response(button_interaction)
     assert persisted_channel.created_threads == []
 
 

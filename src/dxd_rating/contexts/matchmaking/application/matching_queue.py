@@ -70,18 +70,6 @@ from dxd_rating.shared.constants import (
 
 DEFAULT_CLEANUP_BATCH_SIZE = 100
 
-INVALID_MATCH_FORMAT_MESSAGE = "指定したフォーマットは存在しません。"
-INVALID_QUEUE_NAME_MESSAGE = "指定したキューは存在しません。"
-QUEUE_JOIN_NOT_ALLOWED_MESSAGE = "現在のレーティングではそのキューに参加できません。"
-QUEUE_JOIN_RESTRICTED_MESSAGE = "現在キュー参加を制限されています。"
-QUEUE_ALREADY_JOINED_MESSAGE = "すでにキュー参加中です。"
-QUEUE_NOT_JOINED_MESSAGE = "キューに参加していません。"
-PRESENCE_REMINDER_NOTIFICATION_MESSAGE = (
-    "在席確認です。1分以内に在席更新がない場合はマッチングキューから外れます。"
-)
-QUEUE_EXPIRED_NOTIFICATION_MESSAGE = "期限切れでマッチングキューから外れました。"
-MATCH_CREATED_NOTIFICATION_MESSAGE = "マッチ成立です。"
-
 
 def _is_transient_task_db_error(exc: Exception) -> bool:
     if isinstance(exc, (psycopg.OperationalError, psycopg.InterfaceError)):
@@ -262,12 +250,12 @@ class MatchingQueueService:
                     resolved_match_format
                 ],
             ):
-                raise QueueJoinNotAllowedError(QUEUE_JOIN_NOT_ALLOWED_MESSAGE)
+                raise QueueJoinNotAllowedError()
 
             waiting_entry = self._get_waiting_entry_for_update(session, player_id)
 
             if waiting_entry is not None and waiting_entry.expire_at > current_time:
-                raise QueueAlreadyJoinedError(QUEUE_ALREADY_JOINED_MESSAGE)
+                raise QueueAlreadyJoinedError()
 
             if waiting_entry is not None and waiting_entry.expire_at <= current_time:
                 self._mark_entry_expired(
@@ -322,7 +310,7 @@ class MatchingQueueService:
             waiting_entry = self._get_waiting_entry_for_update(session, player_id)
 
             if waiting_entry is None:
-                raise QueueNotJoinedError(QUEUE_NOT_JOINED_MESSAGE)
+                raise QueueNotJoinedError()
 
             if waiting_entry.expire_at <= current_time:
                 self._mark_entry_expired(
@@ -1097,7 +1085,7 @@ class MatchingQueueService:
     def _ensure_player_exists(self, session: Session, player_id: int) -> Player:
         player = session.get(Player, player_id)
         if player is None:
-            raise PlayerNotRegisteredError(f"Player is not registered: {player_id}")
+            raise PlayerNotRegisteredError()
         return player
 
     def _resolve_match_format(self, match_format: MatchFormat | str) -> MatchFormat:
@@ -1106,7 +1094,7 @@ class MatchingQueueService:
                 return match_format
             return MatchFormat(match_format)
         except ValueError as exc:
-            raise InvalidMatchFormatError(INVALID_MATCH_FORMAT_MESSAGE) from exc
+            raise InvalidMatchFormatError() from exc
 
     def _resolve_queue_class_definition(
         self,
@@ -1117,7 +1105,7 @@ class MatchingQueueService:
             (match_format, normalize_match_queue_name(queue_name))
         )
         if definition is None:
-            raise InvalidQueueNameError(INVALID_QUEUE_NAME_MESSAGE)
+            raise InvalidQueueNameError()
         return definition
 
     def _ensure_queue_join_not_restricted(self, session: Session, player_id: int) -> None:
@@ -1127,7 +1115,7 @@ class MatchingQueueService:
             restriction_type=PlayerAccessRestrictionType.QUEUE_JOIN,
         )
         if restriction is not None:
-            raise QueueJoinRestrictedError(QUEUE_JOIN_RESTRICTED_MESSAGE)
+            raise QueueJoinRestrictedError()
 
     def _require_queue_class_definition_by_id(
         self,

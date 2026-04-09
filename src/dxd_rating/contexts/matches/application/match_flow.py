@@ -104,19 +104,10 @@ from dxd_rating.shared.constants import (
     get_match_format_definition,
 )
 
-MATCH_PARENT_ASSIGNED_NOTIFICATION_MESSAGE = "親が決定しました。"
-MATCH_REPORT_OPENED_NOTIFICATION_MESSAGE = "試合が終わったら参加者全員試合結果を報告してください。"
-MATCH_APPROVAL_STARTED_NOTIFICATION_MESSAGE = "承認フェーズに移行しました。"
-MATCH_APPROVAL_REQUESTED_NOTIFICATION_MESSAGE = "仮決定結果の承認が必要です。"
-MATCH_FINALIZED_NOTIFICATION_MESSAGE = "試合結果が確定しました。"
-MATCH_AUTO_PENALTY_APPLIED_NOTIFICATION_MESSAGE = "自動ペナルティが付与されました。"
-MATCH_ADMIN_REVIEW_REQUIRED_NOTIFICATION_MESSAGE = "admin による確認が必要です。"
-
 _MATCH_ADVISORY_LOCK_NAMESPACE = 20_260_319
 _PLAYER_ADVISORY_LOCK_NAMESPACE = 20_260_320
 _MAX_MATCH_ROOM_SIZE = 12
 _MATCH_SPECTATOR_REMOVAL_REASON_FINALIZED = "match_finalized"
-_MATCH_SPECTATE_RESTRICTED_MESSAGE = "現在観戦を制限されています。"
 _RATED_MATCH_RESULTS = frozenset(
     {
         MatchResult.TEAM_A_WIN,
@@ -254,12 +245,12 @@ class MatchFlowService:
             self._ensure_not_finalized(active_state)
             participant = self._get_match_participant_for_update(session, match_id, player_id)
             if participant is None:
-                raise MatchParticipantError("この試合の参加者ではありません。")
+                raise MatchParticipantError()
 
             if active_state.state != MatchState.WAITING_FOR_PARENT:
-                raise MatchParentAlreadyAssignedError("この試合の親はすでに決まっています。")
+                raise MatchParentAlreadyAssignedError()
             if current_time >= active_state.parent_deadline_at:
-                raise MatchParentRecruitmentClosedError("親募集期間は終了しています。")
+                raise MatchParentRecruitmentClosedError()
 
             self._apply_match_notification_context(
                 participant,
@@ -297,24 +288,24 @@ class MatchFlowService:
                 MatchState.WAITING_FOR_PARENT,
                 MatchState.WAITING_FOR_RESULT_REPORTS,
             }:
-                raise MatchSpectatingClosedError("この試合は観戦受付を終了しています。")
+                raise MatchSpectatingClosedError()
 
             if self._is_spectate_restricted(session, player_id):
-                raise MatchSpectatingRestrictedError(_MATCH_SPECTATE_RESTRICTED_MESSAGE)
+                raise MatchSpectatingRestrictedError()
 
             participant_count = self._get_match_participant_count(session, match_id)
             max_spectators = self._calculate_max_spectators(participant_count)
             participant = self._get_match_participant_for_update(session, match_id, player_id)
             if participant is not None:
-                raise MatchParticipantCannotSpectateError("この試合の参加者は観戦応募できません。")
+                raise MatchParticipantCannotSpectateError()
 
             spectator = self._get_active_match_spectator_for_update(session, match_id, player_id)
             if spectator is not None:
-                raise MatchSpectatorAlreadyRegisteredError("すでにこの試合へ観戦応募済みです。")
+                raise MatchSpectatorAlreadyRegisteredError()
 
             active_spectator_count = self._count_active_match_spectators(session, match_id)
             if active_spectator_count >= max_spectators:
-                raise MatchSpectatorCapacityError("この試合の観戦枠は埋まっています。")
+                raise MatchSpectatorCapacityError()
 
             session.add(
                 MatchSpectator(
@@ -395,21 +386,21 @@ class MatchFlowService:
             self._ensure_not_finalized(active_state)
             participant = self._get_match_participant_for_update(session, match_id, player_id)
             if participant is None:
-                raise MatchParticipantError("この試合の参加者ではありません。")
+                raise MatchParticipantError()
 
             if active_state.state == MatchState.AWAITING_RESULT_APPROVALS:
-                raise MatchReportApprovalInProgressError("承認期間中は勝敗報告を変更できません。")
+                raise MatchReportApprovalInProgressError()
             if active_state.state == MatchState.FINALIZED:
-                raise MatchAlreadyFinalizedError("この試合はすでに結果確定済みです。")
+                raise MatchAlreadyFinalizedError()
             if (
                 active_state.report_deadline_at is not None
                 and current_time >= active_state.report_deadline_at
             ):
-                raise MatchReportingClosedError("この試合の勝敗報告は締め切られています。")
+                raise MatchReportingClosedError()
             if input_result != MatchReportInputResult.VOID and (
                 active_state.report_open_at is None or current_time < active_state.report_open_at
             ):
-                raise MatchReportNotOpenError("まだ勝敗報告を受け付けていません。")
+                raise MatchReportNotOpenError()
 
             self._apply_match_notification_context(
                 participant,
@@ -472,11 +463,11 @@ class MatchFlowService:
                 or active_state.approval_deadline_at is None
                 or current_time >= active_state.approval_deadline_at
             ):
-                raise MatchApprovalNotAvailableError("この試合は承認期間中ではありません。")
+                raise MatchApprovalNotAvailableError()
 
             participant = self._get_match_participant_for_update(session, match_id, player_id)
             if participant is None:
-                raise MatchParticipantError("この試合の参加者ではありません。")
+                raise MatchParticipantError()
             self._apply_match_notification_context(
                 participant,
                 notification_context,
@@ -490,7 +481,7 @@ class MatchFlowService:
                 player_state is None
                 or player_state.approval_status == MatchApprovalStatus.NOT_REQUIRED
             ):
-                raise MatchApprovalNotRequiredError("この試合では承認は不要です。")
+                raise MatchApprovalNotRequiredError()
             if player_state.approval_status == MatchApprovalStatus.APPROVED:
                 return MatchApprovalResult(
                     match_id=match_id,
@@ -678,7 +669,7 @@ class MatchFlowService:
                 or finalized_result is None
                 or finalized_result.rated_at is None
             ):
-                raise MatchNotFinalizedError("この試合はまだ結果確定していません。")
+                raise MatchNotFinalizedError()
 
             previous_final_result = finalized_result.final_result
             session.add(
@@ -2336,17 +2327,17 @@ class MatchFlowService:
 
     def _ensure_not_finalized(self, active_state: ActiveMatchState) -> None:
         if active_state.state == MatchState.FINALIZED:
-            raise MatchAlreadyFinalizedError("この試合はすでに結果確定済みです。")
+            raise MatchAlreadyFinalizedError()
 
     def _ensure_player_exists(self, session: Session, player_id: int) -> Player:
         player = session.get(Player, player_id)
         if player is None:
-            raise MatchParticipantError("指定したプレイヤーが見つかりません。")
+            raise MatchParticipantError()
         return player
 
     def _raise_missing_match(self, match_id: int) -> None:
         del match_id
-        raise MatchNotFoundError("指定した試合が見つかりません。")
+        raise MatchNotFoundError()
 
     def _raise_retryable_task_error(self, exc: Exception, *, operation: str) -> None:
         if isinstance(exc, RetryableTaskError):

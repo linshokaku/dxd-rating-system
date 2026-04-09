@@ -30,10 +30,6 @@ from dxd_rating.platform.db.session import session_scope
 
 LEADERBOARD_PAGE_SIZE = 20
 SEASON_TOP_RANKING_LIMIT = 12
-INVALID_MATCH_FORMAT_MESSAGE = "指定したフォーマットは存在しません。"
-INVALID_LEADERBOARD_PAGE_MESSAGE = "page は 1 以上で指定してください。"
-LEADERBOARD_PAGE_NOT_FOUND_MESSAGE = "指定したページにはランキングがありません。"
-SEASON_NOT_STARTED_MESSAGE = "指定したシーズンはまだ開始していません。"
 RANK_CHANGE_SNAPSHOT_DAY_OFFSETS = (1, 3, 7)
 
 
@@ -142,7 +138,7 @@ def get_current_leaderboard_page(
     current_time: datetime | None = None,
 ) -> CurrentLeaderboardPage:
     if page < 1:
-        raise InvalidLeaderboardPageError(INVALID_LEADERBOARD_PAGE_MESSAGE)
+        raise InvalidLeaderboardPageError()
 
     resolved_current_time = get_database_now(session) if current_time is None else current_time
     resolved_match_format = _resolve_match_format(match_format)
@@ -220,7 +216,7 @@ def get_season_leaderboard_page(
     current_time: datetime | None = None,
 ) -> SeasonLeaderboardPage:
     if page < 1:
-        raise InvalidLeaderboardPageError(INVALID_LEADERBOARD_PAGE_MESSAGE)
+        raise InvalidLeaderboardPageError()
 
     resolved_current_time = get_database_now(session) if current_time is None else current_time
     resolved_match_format = _resolve_match_format(match_format)
@@ -294,7 +290,7 @@ def _resolve_match_format(match_format: MatchFormat | str) -> MatchFormat:
             return match_format
         return MatchFormat(match_format)
     except ValueError as exc:
-        raise InvalidMatchFormatError(INVALID_MATCH_FORMAT_MESSAGE) from exc
+        raise InvalidMatchFormatError() from exc
 
 
 def _resolve_started_season(
@@ -305,9 +301,9 @@ def _resolve_started_season(
 ) -> Season:
     season = session.get(Season, season_id)
     if season is None:
-        raise SeasonNotFoundError("指定したシーズンが見つかりません。")
+        raise SeasonNotFoundError()
     if season.start_at > current_time:
-        raise SeasonStateError(SEASON_NOT_STARTED_MESSAGE)
+        raise SeasonStateError()
     return season
 
 
@@ -319,7 +315,7 @@ def _load_season_leaderboard_rows(
     page: int,
 ) -> tuple[int, list[tuple[PlayerFormatStats, Player]], bool]:
     if page < 1:
-        raise InvalidLeaderboardPageError(INVALID_LEADERBOARD_PAGE_MESSAGE)
+        raise InvalidLeaderboardPageError()
 
     page_offset = (page - 1) * LEADERBOARD_PAGE_SIZE
     leaderboard_rows = _query_leaderboard_rows(
@@ -330,7 +326,7 @@ def _load_season_leaderboard_rows(
         limit=LEADERBOARD_PAGE_SIZE + 1,
     )
     if not leaderboard_rows:
-        raise LeaderboardPageNotFoundError(LEADERBOARD_PAGE_NOT_FOUND_MESSAGE)
+        raise LeaderboardPageNotFoundError()
 
     has_next_page = len(leaderboard_rows) > LEADERBOARD_PAGE_SIZE
     if has_next_page:
@@ -347,7 +343,7 @@ def _load_current_leaderboard_rows(
     page: int,
 ) -> tuple[int, list[tuple[PlayerFormatStats, Player]], bool]:
     if page < 1:
-        raise InvalidLeaderboardPageError(INVALID_LEADERBOARD_PAGE_MESSAGE)
+        raise InvalidLeaderboardPageError()
 
     page_offset = (page - 1) * LEADERBOARD_PAGE_SIZE
     leaderboard_rows = _query_leaderboard_rows(
@@ -358,7 +354,7 @@ def _load_current_leaderboard_rows(
         limit=LEADERBOARD_PAGE_SIZE + 1,
     )
     if not leaderboard_rows:
-        raise LeaderboardPageNotFoundError(LEADERBOARD_PAGE_NOT_FOUND_MESSAGE)
+        raise LeaderboardPageNotFoundError()
 
     has_next_page = len(leaderboard_rows) > LEADERBOARD_PAGE_SIZE
     if has_next_page:

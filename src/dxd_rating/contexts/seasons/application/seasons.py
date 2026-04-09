@@ -132,7 +132,7 @@ class SeasonService:
         with session_scope(self.session_factory) as session:
             season = session.get(Season, season_id)
             if season is None:
-                raise SeasonNotFoundError("指定したシーズンが見つかりません。")
+                raise SeasonNotFoundError()
 
             validated_name = validate_admin_season_name(name)
             duplicate_exists = session.scalar(
@@ -144,7 +144,7 @@ class SeasonService:
                 )
             )
             if duplicate_exists:
-                raise SeasonAlreadyExistsError("指定したシーズン名はすでに使われています。")
+                raise SeasonAlreadyExistsError()
 
             season.name = validated_name
             session.flush()
@@ -158,11 +158,11 @@ def build_auto_season_name(start_at: datetime) -> str:
 def validate_admin_season_name(name: str) -> str:
     normalized = name.strip()
     if not normalized:
-        raise InvalidSeasonNameRequiredError("シーズン名を入力してください。")
+        raise InvalidSeasonNameRequiredError()
     if len(normalized) > SEASON_NAME_MAX_LENGTH:
-        raise SeasonNameTooLongError("シーズン名が長すぎます。")
+        raise SeasonNameTooLongError()
     if SEASON_RENAME_PATTERN.fullmatch(normalized) is None:
-        raise SeasonNameLeadingDigitError("シーズン名の先頭に数字は使えません。")
+        raise SeasonNameLeadingDigitError()
     return normalized
 
 
@@ -305,7 +305,7 @@ def resolve_player_format_stats_for_season(
 
     season = session.get(Season, season_id)
     if season is None:
-        raise SeasonNotFoundError("指定したシーズンが見つかりません。")
+        raise SeasonNotFoundError()
 
     _ensure_player_format_stats_rows(
         session,
@@ -382,13 +382,11 @@ def get_player_season_info_by_discord_user_id(
 ) -> PlayerSeasonInfo:
     player = session.scalar(select(Player).where(Player.discord_user_id == discord_user_id))
     if player is None:
-        raise PlayerNotRegisteredError(
-            f"Player is not registered for discord_user_id: {discord_user_id}"
-        )
+        raise PlayerNotRegisteredError()
 
     season = session.get(Season, season_id)
     if season is None:
-        raise SeasonNotFoundError("指定したシーズンが見つかりません。")
+        raise SeasonNotFoundError()
 
     rows = session.scalars(
         select(PlayerFormatStats)
@@ -399,7 +397,7 @@ def get_player_season_info_by_discord_user_id(
         .order_by(PlayerFormatStats.match_format)
     ).all()
     if not rows:
-        raise PlayerSeasonStatsNotFoundError("指定したシーズンのプレイヤー情報はありません。")
+        raise PlayerSeasonStatsNotFoundError()
 
     rows_by_format = {row.match_format: row for row in rows}
     return PlayerSeasonInfo(
@@ -441,7 +439,7 @@ def update_season_completion(
 ) -> bool:
     season = session.get(Season, season_id)
     if season is None:
-        raise SeasonNotFoundError("指定したシーズンが見つかりません。")
+        raise SeasonNotFoundError()
     if season.completed:
         return False
 

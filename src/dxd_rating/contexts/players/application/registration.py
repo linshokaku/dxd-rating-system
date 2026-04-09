@@ -35,7 +35,7 @@ def register_player(
         select(Player).where(Player.discord_user_id == discord_user_id)
     )
     if existing_player is not None:
-        raise PlayerAlreadyRegisteredError(f"Player already registered: {discord_user_id}")
+        raise PlayerAlreadyRegisteredError()
 
     player = Player(discord_user_id=discord_user_id)
     session.add(player)
@@ -110,9 +110,7 @@ class PlayerLookupService:
             )
 
         if player_id is None:
-            raise PlayerNotRegisteredError(
-                f"Player is not registered for discord_user_id: {discord_user_id}"
-            )
+            raise PlayerNotRegisteredError()
 
         return cast(int, player_id)
 

@@ -359,7 +359,7 @@ def test_join_queue_raises_when_player_has_active_queue_join_restriction(
     )
     service = create_matching_queue_service(session_factory)
 
-    with pytest.raises(QueueJoinRestrictedError, match="現在キュー参加を制限されています。"):
+    with pytest.raises(QueueJoinRestrictedError):
         service.join_queue(player.id, DEFAULT_MATCH_FORMAT, DEFAULT_QUEUE_NAME)
 
 

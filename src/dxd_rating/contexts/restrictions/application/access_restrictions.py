@@ -24,9 +24,6 @@ from dxd_rating.platform.db.models import (
 )
 from dxd_rating.platform.db.session import session_scope
 
-QUEUE_JOIN_RESTRICTED_MESSAGE = "現在キュー参加を制限されています。"
-SPECTATE_RESTRICTED_MESSAGE = "現在観戦を制限されています。"
-
 
 @dataclass(frozen=True, slots=True)
 class RestrictPlayerAccessResult:
@@ -95,9 +92,7 @@ class PlayerAccessRestrictionService:
                 for_update=True,
             )
             if existing_restriction is not None:
-                raise PlayerAccessRestrictionAlreadyExistsError(
-                    "指定したユーザーにはすでに同種別の制限が有効です。"
-                )
+                raise PlayerAccessRestrictionAlreadyExistsError()
 
             current_time = self._get_database_now(session)
             expires_at = build_access_restriction_expires_at(
@@ -166,9 +161,7 @@ class PlayerAccessRestrictionService:
                 return restriction_type
             return PlayerAccessRestrictionType(restriction_type)
         except ValueError as exc:
-            raise InvalidPlayerAccessRestrictionTypeError(
-                f"Invalid restriction_type: {restriction_type}"
-            ) from exc
+            raise InvalidPlayerAccessRestrictionTypeError() from exc
 
     def _resolve_duration(
         self,
@@ -179,14 +172,12 @@ class PlayerAccessRestrictionService:
                 return duration
             return PlayerAccessRestrictionDuration(duration)
         except ValueError as exc:
-            raise InvalidPlayerAccessRestrictionDurationError(
-                f"Invalid duration: {duration}"
-            ) from exc
+            raise InvalidPlayerAccessRestrictionDurationError() from exc
 
     def _ensure_player_exists(self, session: Session, player_id: int) -> Player:
         player = session.get(Player, player_id)
         if player is None:
-            raise PlayerNotRegisteredError(f"Player is not registered: {player_id}")
+            raise PlayerNotRegisteredError()
         return player
 
     def _acquire_player_lock(self, session: Session, player_id: int) -> None:

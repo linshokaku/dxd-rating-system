@@ -594,7 +594,7 @@ def test_spectate_match_rejects_participants_duplicates_and_full_capacity(
     )
     match_service = MatchFlowService(session_factory)
 
-    with pytest.raises(MatchParticipantError, match="この試合の参加者は観戦応募できません。"):
+    with pytest.raises(MatchParticipantError):
         match_service.spectate_match(match_id, participants[0].player_id)
 
     spectator_players = create_players(
@@ -607,16 +607,13 @@ def test_spectate_match_rejects_participants_duplicates_and_full_capacity(
     assert first_result.active_spectator_count == 1
     assert first_result.max_spectators == 6
 
-    with pytest.raises(
-        MatchSpectatorAlreadyRegisteredError,
-        match="すでにこの試合へ観戦応募済みです。",
-    ):
+    with pytest.raises(MatchSpectatorAlreadyRegisteredError):
         match_service.spectate_match(match_id, spectator_players[0].id)
 
     for spectator in spectator_players[1:6]:
         match_service.spectate_match(match_id, spectator.id)
 
-    with pytest.raises(MatchSpectatorCapacityError, match="この試合の観戦枠は埋まっています。"):
+    with pytest.raises(MatchSpectatorCapacityError):
         match_service.spectate_match(match_id, spectator_players[6].id)
 
 
@@ -640,10 +637,7 @@ def test_spectate_match_rejects_matches_outside_accepting_states(
     active_state.state = MatchState.AWAITING_RESULT_APPROVALS
     session.commit()
 
-    with pytest.raises(
-        MatchSpectatingClosedError,
-        match="この試合は観戦受付を終了しています。",
-    ):
+    with pytest.raises(MatchSpectatingClosedError):
         match_service.spectate_match(match_id, spectator.id)
 
 
@@ -669,7 +663,7 @@ def test_spectate_match_rejects_players_with_active_spectate_restriction(
     )
     match_service = MatchFlowService(session_factory)
 
-    with pytest.raises(MatchSpectatingRestrictedError, match="現在観戦を制限されています。"):
+    with pytest.raises(MatchSpectatingRestrictedError):
         match_service.spectate_match(match_id, spectator.id)
 
 

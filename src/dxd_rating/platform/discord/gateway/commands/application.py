@@ -19,9 +19,25 @@ from dxd_rating.contexts.common.application import (
     InvalidPlayerAccessRestrictionTypeError,
     InvalidQueueNameError,
     InvalidSeasonNameError,
+    InvalidSeasonNameRequiredError,
     LeaderboardPageNotFoundError,
+    MatchAlreadyFinalizedError,
+    MatchApprovalNotAvailableError,
+    MatchApprovalNotRequiredError,
     MatchFlowError,
+    MatchNotFinalizedError,
+    MatchNotFoundError,
+    MatchParentAlreadyAssignedError,
+    MatchParentRecruitmentClosedError,
+    MatchParticipantCannotSpectateError,
+    MatchParticipantError,
+    MatchReportApprovalInProgressError,
+    MatchReportingClosedError,
+    MatchReportNotOpenError,
+    MatchSpectatingClosedError,
     MatchSpectatingRestrictedError,
+    MatchSpectatorAlreadyRegisteredError,
+    MatchSpectatorCapacityError,
     PlayerAccessRestrictionAlreadyExistsError,
     PlayerAlreadyRegisteredError,
     PlayerNotRegisteredError,
@@ -30,6 +46,8 @@ from dxd_rating.contexts.common.application import (
     QueueJoinNotAllowedError,
     QueueJoinRestrictedError,
     QueueNotJoinedError,
+    SeasonNameLeadingDigitError,
+    SeasonNameTooLongError,
     SeasonAlreadyExistsError,
     SeasonNotFoundError,
     SeasonStateError,
@@ -116,7 +134,10 @@ INVALID_QUEUE_NAME_MESSAGE = "指定したキューは存在しません。"
 QUEUE_JOIN_NOT_ALLOWED_MESSAGE = "現在のレーティングではそのキューに参加できません。"
 QUEUE_JOIN_RESTRICTED_MESSAGE = "現在キュー参加を制限されています。"
 JOIN_ALREADY_JOINED_MESSAGE = "すでにキュー参加中です。"
+JOIN_SUCCESS_MESSAGE = "キューに参加しました。5分間マッチングします。"
+PRESENT_SUCCESS_MESSAGE = "在席を更新しました。次の期限は5分後です。"
 PRESENT_NOT_JOINED_MESSAGE = "キューに参加していません。"
+PRESENT_EXPIRED_MESSAGE = "期限切れのためキューから外れました。"
 MATCHMAKING_PRESENCE_THREAD_NOT_JOINED_MESSAGE = (
     "現在このキューには参加していません。"
     "再参加する場合は親チャンネルの参加導線から参加してください。"
@@ -127,6 +148,8 @@ MATCHMAKING_PRESENCE_THREAD_MISMATCH_MESSAGE = (
 )
 JOIN_FAILED_MESSAGE = "キュー参加に失敗しました。管理者に確認してください。"
 PRESENT_FAILED_MESSAGE = "在席更新に失敗しました。管理者に確認してください。"
+LEAVE_SUCCESS_MESSAGE = "キューから退出しました。"
+LEAVE_ALREADY_EXPIRED_MESSAGE = "すでに期限切れでキューから外れています。"
 LEAVE_FAILED_MESSAGE = "キュー退出に失敗しました。管理者に確認してください。"
 UPDATE_MATCHMAKING_STATUS_SUCCESS_MESSAGE = "参加状況を更新しました。"
 UPDATE_MATCHMAKING_STATUS_FAILED_MESSAGE = (
@@ -138,11 +161,16 @@ PLAYER_SEASON_INFO_SUCCESS_MESSAGE = "シーズン別プレイヤー情報を表
 PLAYER_SEASON_INFO_FAILED_MESSAGE = (
     "シーズン別プレイヤー情報の取得に失敗しました。管理者に確認してください。"
 )
+SEASON_NOT_FOUND_MESSAGE = "指定したシーズンが見つかりません。"
+PLAYER_SEASON_INFO_NOT_FOUND_MESSAGE = "指定したシーズンのプレイヤー情報はありません。"
 LEADERBOARD_SUCCESS_MESSAGE = "ランキングを表示しました。"
 LEADERBOARD_FAILED_MESSAGE = "ランキングの取得に失敗しました。管理者に確認してください。"
 LEADERBOARD_SEASON_FAILED_MESSAGE = (
     "シーズン別ランキングの取得に失敗しました。管理者に確認してください。"
 )
+INVALID_LEADERBOARD_PAGE_MESSAGE = "page は 1 以上で指定してください。"
+LEADERBOARD_PAGE_NOT_FOUND_MESSAGE = "指定したページにはランキングがありません。"
+SEASON_NOT_STARTED_MESSAGE = "指定したシーズンはまだ開始していません。"
 INFO_THREAD_REQUIRED_MESSAGE = "先に /info_thread を実行してください。"
 INFO_THREAD_NOT_FOUND_MESSAGE = (
     "情報確認用スレッドが見つかりません。先に /info_thread を実行してください。"
@@ -158,15 +186,31 @@ INFO_THREAD_CHANNEL_NOT_FOUND_MESSAGE = (
 INFO_THREAD_FAILED_MESSAGE = "情報確認用スレッドの作成に失敗しました。管理者に確認してください。"
 
 MATCH_PARENT_SUCCESS_MESSAGE = "親に立候補しました。"
+MATCH_NOT_FOUND_MESSAGE = "指定した試合が見つかりません。"
+MATCH_NOT_FINALIZED_MESSAGE = "この試合はまだ結果確定していません。"
+MATCH_PARTICIPANT_REQUIRED_MESSAGE = "この試合の参加者ではありません。"
+MATCH_PARENT_ALREADY_ASSIGNED_MESSAGE = "この試合の親はすでに決まっています。"
+MATCH_PARENT_RECRUITMENT_CLOSED_MESSAGE = "親募集期間は終了しています。"
 MATCH_SPECTATE_RESTRICTED_MESSAGE = "現在観戦を制限されています。"
+MATCH_SPECTATING_CLOSED_MESSAGE = "この試合は観戦受付を終了しています。"
+MATCH_PARTICIPANT_CANNOT_SPECTATE_MESSAGE = "この試合の参加者は観戦応募できません。"
+MATCH_SPECTATOR_ALREADY_REGISTERED_MESSAGE = "すでにこの試合へ観戦応募済みです。"
+MATCH_SPECTATOR_CAPACITY_MESSAGE = "この試合の観戦枠は埋まっています。"
 MATCH_SPECTATE_FAILED_MESSAGE = "観戦応募に失敗しました。管理者に確認してください。"
 MATCH_REPORT_SUCCESS_MESSAGE = "勝敗報告を受け付けました。"
+MATCH_REPORT_APPROVAL_IN_PROGRESS_MESSAGE = "承認期間中は勝敗報告を変更できません。"
+MATCH_REPORT_CLOSED_MESSAGE = "この試合の勝敗報告は締め切られています。"
+MATCH_REPORT_NOT_OPEN_MESSAGE = "まだ勝敗報告を受け付けていません。"
 MATCH_APPROVE_SUCCESS_MESSAGE = "仮決定結果を承認しました。"
+MATCH_APPROVAL_NOT_AVAILABLE_MESSAGE = "この試合は承認期間中ではありません。"
+MATCH_APPROVAL_NOT_REQUIRED_MESSAGE = "この試合では承認は不要です。"
+MATCH_ALREADY_FINALIZED_MESSAGE = "この試合はすでに結果確定済みです。"
 MATCH_ACTION_FAILED_MESSAGE = "試合操作に失敗しました。管理者に確認してください。"
 
 ADMIN_ONLY_MESSAGE = "このコマンドは管理者のみ実行できます。"
 INVALID_DISCORD_USER_ID_MESSAGE = "discord_user_id が不正です。"
 INVALID_ADMIN_TARGET_USER_MESSAGE = "対象ユーザーの指定が不正です。"
+INVALID_MATCH_RESULT_MESSAGE = "result が不正です。"
 ADMIN_MATCH_RESULT_SUCCESS_MESSAGE = "試合結果を上書きしました。"
 ADMIN_MATCH_RESULT_FAILED_MESSAGE = "試合結果の上書きに失敗しました。管理者に確認してください。"
 ADMIN_TARGET_NOT_REGISTERED_MESSAGE = "指定したユーザーは未登録です。"
@@ -180,6 +224,10 @@ ADMIN_PENALTY_SUB_SUCCESS_MESSAGE = "ペナルティを減算しました。"
 ADMIN_PENALTY_FAILED_MESSAGE = "ペナルティ操作に失敗しました。管理者に確認してください。"
 ADMIN_RENAME_SEASON_SUCCESS_MESSAGE = "シーズン名を変更しました。"
 ADMIN_RENAME_SEASON_FAILED_MESSAGE = "シーズン名の変更に失敗しました。管理者に確認してください。"
+SEASON_NAME_REQUIRED_MESSAGE = "シーズン名を入力してください。"
+SEASON_NAME_TOO_LONG_MESSAGE = "シーズン名が長すぎます。"
+SEASON_NAME_LEADING_DIGIT_MESSAGE = "シーズン名の先頭に数字は使えません。"
+SEASON_NAME_ALREADY_EXISTS_MESSAGE = "指定したシーズン名はすでに使われています。"
 ADMIN_SETUP_CUSTOM_UI_CHANNEL_SUCCESS_MESSAGE = "UI 設置チャンネルを作成しました。"
 ADMIN_INVALID_UI_TYPE_MESSAGE = "指定した UI は存在しません。"
 ADMIN_INVALID_CHANNEL_NAME_MESSAGE = "channel_name が不正です。"
@@ -636,7 +684,7 @@ class BotCommandHandlers:
                     interaction,
                     queue_entry_id=result.queue_entry_id,
                     parent_channel=parent_channel,
-                    initial_message=result.message,
+                    initial_message=self._build_matchmaking_presence_thread_initial_message(),
                     target_discord_user_id=interaction.user.id,
                     target_user=interaction.user,
                     invite_target_user=True,
@@ -694,7 +742,7 @@ class BotCommandHandlers:
 
         await self._send_player_operation_message(
             interaction,
-            self._format_matchmaking_join_success_message(result.message, thread_id=thread_id),
+            self._format_matchmaking_join_success_message(JOIN_SUCCESS_MESSAGE, thread_id=thread_id),
         )
 
     async def present(self, interaction: discord.Interaction[Any]) -> None:
@@ -751,7 +799,10 @@ class BotCommandHandlers:
             await self._send_player_operation_message(interaction, PRESENT_FAILED_MESSAGE)
             return
 
-        await self._send_player_operation_message(interaction, result.message)
+        await self._send_player_operation_message(
+            interaction,
+            self._resolve_present_response_message(result),
+        )
 
     async def leave(self, interaction: discord.Interaction[Any]) -> None:
         await self._run_leave(interaction, require_presence_thread_binding=False)
@@ -794,7 +845,10 @@ class BotCommandHandlers:
             await self._send_player_operation_message(interaction, LEAVE_FAILED_MESSAGE)
             return
 
-        await self._send_player_operation_message(interaction, result.message)
+        await self._send_player_operation_message(
+            interaction,
+            self._resolve_leave_response_message(result),
+        )
 
     async def update_matchmaking_status(self, interaction: discord.Interaction[Any]) -> None:
         await self._run_update_matchmaking_status(
@@ -1117,7 +1171,10 @@ class BotCommandHandlers:
             )
             return
         except (SeasonNotFoundError, PlayerSeasonStatsNotFoundError) as exc:
-            await response_sender(interaction, str(exc))
+            await response_sender(
+                interaction,
+                self._resolve_player_info_season_error_message(exc),
+            )
             return
         except MissingInfoThreadBindingError:
             await response_sender(interaction, info_thread_required_message)
@@ -1233,7 +1290,10 @@ class BotCommandHandlers:
             InvalidLeaderboardPageError,
             LeaderboardPageNotFoundError,
         ) as exc:
-            await response_sender(interaction, str(exc))
+            await response_sender(
+                interaction,
+                self._resolve_current_leaderboard_error_message(exc),
+            )
             return
         except MissingInfoThreadBindingError:
             await response_sender(interaction, info_thread_required_message)
@@ -1358,7 +1418,10 @@ class BotCommandHandlers:
             InvalidLeaderboardPageError,
             LeaderboardPageNotFoundError,
         ) as exc:
-            await response_sender(interaction, str(exc))
+            await response_sender(
+                interaction,
+                self._resolve_season_leaderboard_error_message(exc),
+            )
             return
         except MissingInfoThreadBindingError:
             await response_sender(interaction, info_thread_required_message)
@@ -1525,10 +1588,16 @@ class BotCommandHandlers:
                 admin_discord_user_id=interaction.user.id,
             )
         except ValueError:
-            await self._send_executor_operation_message(interaction, "result が不正です。")
+            await self._send_executor_operation_message(interaction, INVALID_MATCH_RESULT_MESSAGE)
             return
-        except MatchFlowError as exc:
-            await self._send_executor_operation_message(interaction, str(exc))
+        except (MatchFlowError, SeasonNotFoundError, PlayerSeasonStatsNotFoundError) as exc:
+            await self._send_executor_operation_message(
+                interaction,
+                self._resolve_match_command_error_message(
+                    exc,
+                    default_message=ADMIN_MATCH_RESULT_FAILED_MESSAGE,
+                ),
+            )
             return
         except Exception:
             self.logger.exception(
@@ -1564,8 +1633,15 @@ class BotCommandHandlers:
 
         try:
             await asyncio.to_thread(self._rename_season, season_id, name)
-        except (SeasonNotFoundError, InvalidSeasonNameError, SeasonAlreadyExistsError) as exc:
-            await self._send_executor_operation_message(interaction, str(exc))
+        except (
+            SeasonNotFoundError,
+            InvalidSeasonNameError,
+            SeasonAlreadyExistsError,
+        ) as exc:
+            await self._send_executor_operation_message(
+                interaction,
+                self._resolve_admin_rename_season_error_message(exc),
+            )
             return
         except Exception:
             self.logger.exception(
@@ -2485,7 +2561,7 @@ class BotCommandHandlers:
                     interaction,
                     queue_entry_id=result.queue_entry_id,
                     parent_channel=parent_channel,
-                    initial_message=result.message,
+                    initial_message=self._build_matchmaking_presence_thread_initial_message(),
                     target_discord_user_id=target_discord_user_id,
                     target_user=await self._resolve_presence_thread_target_user(
                         interaction,
@@ -3006,8 +3082,15 @@ class BotCommandHandlers:
             )
             await self._send_message(interaction, message, ephemeral=ephemeral)
             return
-        except MatchFlowError as exc:
-            await self._send_message(interaction, str(exc), ephemeral=ephemeral)
+        except (MatchFlowError, SeasonNotFoundError, PlayerSeasonStatsNotFoundError) as exc:
+            await self._send_message(
+                interaction,
+                self._resolve_match_command_error_message(
+                    exc,
+                    default_message=failure_message,
+                ),
+                ephemeral=ephemeral,
+            )
             return
         except Exception:
             self.logger.exception(
@@ -3042,16 +3125,20 @@ class BotCommandHandlers:
             )
             await self._send_message(interaction, message, ephemeral=ephemeral)
             return
-        except MatchSpectatingRestrictedError:
-            message = (
-                MATCH_SPECTATE_RESTRICTED_MESSAGE
-                if executor_discord_user_id == interaction.user.id
-                else DEV_MATCH_SPECTATE_RESTRICTED_MESSAGE
+        except (MatchFlowError, SeasonNotFoundError, PlayerSeasonStatsNotFoundError) as exc:
+            await self._send_message(
+                interaction,
+                self._resolve_match_command_error_message(
+                    exc,
+                    default_message=failure_message,
+                    spectate_restricted_message=(
+                        MATCH_SPECTATE_RESTRICTED_MESSAGE
+                        if executor_discord_user_id == interaction.user.id
+                        else DEV_MATCH_SPECTATE_RESTRICTED_MESSAGE
+                    ),
+                ),
+                ephemeral=ephemeral,
             )
-            await self._send_message(interaction, message, ephemeral=ephemeral)
-            return
-        except MatchFlowError as exc:
-            await self._send_message(interaction, str(exc), ephemeral=ephemeral)
             return
         except Exception:
             self.logger.exception(
@@ -3113,8 +3200,15 @@ class BotCommandHandlers:
             )
             await self._send_message(interaction, message, ephemeral=ephemeral)
             return
-        except MatchFlowError as exc:
-            await self._send_message(interaction, str(exc), ephemeral=ephemeral)
+        except (MatchFlowError, SeasonNotFoundError, PlayerSeasonStatsNotFoundError) as exc:
+            await self._send_message(
+                interaction,
+                self._resolve_match_command_error_message(
+                    exc,
+                    default_message=failure_message,
+                ),
+                ephemeral=ephemeral,
+            )
             return
         except Exception:
             self.logger.exception(
@@ -3159,8 +3253,15 @@ class BotCommandHandlers:
             )
             await self._send_message(interaction, message, ephemeral=ephemeral)
             return
-        except MatchFlowError as exc:
-            await self._send_message(interaction, str(exc), ephemeral=ephemeral)
+        except (MatchFlowError, SeasonNotFoundError, PlayerSeasonStatsNotFoundError) as exc:
+            await self._send_message(
+                interaction,
+                self._resolve_match_command_error_message(
+                    exc,
+                    default_message=failure_message,
+                ),
+                ephemeral=ephemeral,
+            )
             return
         except Exception:
             self.logger.exception(
@@ -3844,6 +3945,100 @@ class BotCommandHandlers:
 
     def _build_match_operation_thread_name(self, match_id: int) -> str:
         return f"試合-{match_id}"
+
+    def _build_matchmaking_presence_thread_initial_message(self) -> str:
+        return JOIN_SUCCESS_MESSAGE
+
+    def _resolve_present_response_message(self, result: PresentQueueResult) -> str:
+        if result.expired:
+            return PRESENT_EXPIRED_MESSAGE
+        return PRESENT_SUCCESS_MESSAGE
+
+    def _resolve_leave_response_message(self, result: LeaveQueueResult) -> str:
+        if result.expired:
+            return LEAVE_ALREADY_EXPIRED_MESSAGE
+        return LEAVE_SUCCESS_MESSAGE
+
+    def _resolve_player_info_season_error_message(self, exc: Exception) -> str:
+        if isinstance(exc, SeasonNotFoundError):
+            return SEASON_NOT_FOUND_MESSAGE
+        if isinstance(exc, PlayerSeasonStatsNotFoundError):
+            return PLAYER_SEASON_INFO_NOT_FOUND_MESSAGE
+        raise TypeError(f"Unsupported player info season exception: {type(exc)!r}")
+
+    def _resolve_current_leaderboard_error_message(self, exc: Exception) -> str:
+        if isinstance(exc, InvalidMatchFormatError):
+            return INVALID_MATCH_FORMAT_MESSAGE
+        if isinstance(exc, InvalidLeaderboardPageError):
+            return INVALID_LEADERBOARD_PAGE_MESSAGE
+        if isinstance(exc, LeaderboardPageNotFoundError):
+            return LEADERBOARD_PAGE_NOT_FOUND_MESSAGE
+        raise TypeError(f"Unsupported current leaderboard exception: {type(exc)!r}")
+
+    def _resolve_season_leaderboard_error_message(self, exc: Exception) -> str:
+        if isinstance(exc, SeasonNotFoundError):
+            return SEASON_NOT_FOUND_MESSAGE
+        if isinstance(exc, SeasonStateError):
+            return SEASON_NOT_STARTED_MESSAGE
+        return self._resolve_current_leaderboard_error_message(exc)
+
+    def _resolve_match_command_error_message(
+        self,
+        exc: Exception,
+        *,
+        default_message: str,
+        spectate_restricted_message: str | None = None,
+    ) -> str:
+        if isinstance(exc, MatchNotFoundError):
+            return MATCH_NOT_FOUND_MESSAGE
+        if isinstance(exc, MatchNotFinalizedError):
+            return MATCH_NOT_FINALIZED_MESSAGE
+        if isinstance(exc, MatchParentRecruitmentClosedError):
+            return MATCH_PARENT_RECRUITMENT_CLOSED_MESSAGE
+        if isinstance(exc, MatchParentAlreadyAssignedError):
+            return MATCH_PARENT_ALREADY_ASSIGNED_MESSAGE
+        if isinstance(exc, MatchParticipantCannotSpectateError):
+            return MATCH_PARTICIPANT_CANNOT_SPECTATE_MESSAGE
+        if isinstance(exc, MatchParticipantError):
+            return MATCH_PARTICIPANT_REQUIRED_MESSAGE
+        if isinstance(exc, MatchSpectatingRestrictedError):
+            return spectate_restricted_message or MATCH_SPECTATE_RESTRICTED_MESSAGE
+        if isinstance(exc, MatchSpectatingClosedError):
+            return MATCH_SPECTATING_CLOSED_MESSAGE
+        if isinstance(exc, MatchSpectatorAlreadyRegisteredError):
+            return MATCH_SPECTATOR_ALREADY_REGISTERED_MESSAGE
+        if isinstance(exc, MatchSpectatorCapacityError):
+            return MATCH_SPECTATOR_CAPACITY_MESSAGE
+        if isinstance(exc, MatchReportApprovalInProgressError):
+            return MATCH_REPORT_APPROVAL_IN_PROGRESS_MESSAGE
+        if isinstance(exc, MatchReportingClosedError):
+            return MATCH_REPORT_CLOSED_MESSAGE
+        if isinstance(exc, MatchReportNotOpenError):
+            return MATCH_REPORT_NOT_OPEN_MESSAGE
+        if isinstance(exc, MatchApprovalNotAvailableError):
+            return MATCH_APPROVAL_NOT_AVAILABLE_MESSAGE
+        if isinstance(exc, MatchApprovalNotRequiredError):
+            return MATCH_APPROVAL_NOT_REQUIRED_MESSAGE
+        if isinstance(exc, MatchAlreadyFinalizedError):
+            return MATCH_ALREADY_FINALIZED_MESSAGE
+        if isinstance(exc, (MatchFlowError, SeasonNotFoundError, PlayerSeasonStatsNotFoundError)):
+            return default_message
+        raise TypeError(f"Unsupported match command exception: {type(exc)!r}")
+
+    def _resolve_admin_rename_season_error_message(self, exc: Exception) -> str:
+        if isinstance(exc, SeasonNotFoundError):
+            return SEASON_NOT_FOUND_MESSAGE
+        if isinstance(exc, InvalidSeasonNameRequiredError):
+            return SEASON_NAME_REQUIRED_MESSAGE
+        if isinstance(exc, SeasonNameTooLongError):
+            return SEASON_NAME_TOO_LONG_MESSAGE
+        if isinstance(exc, SeasonNameLeadingDigitError):
+            return SEASON_NAME_LEADING_DIGIT_MESSAGE
+        if isinstance(exc, SeasonAlreadyExistsError):
+            return SEASON_NAME_ALREADY_EXISTS_MESSAGE
+        if isinstance(exc, InvalidSeasonNameError):
+            return ADMIN_RENAME_SEASON_FAILED_MESSAGE
+        raise TypeError(f"Unsupported admin rename season exception: {type(exc)!r}")
 
     def _format_matchmaking_join_success_message(
         self,

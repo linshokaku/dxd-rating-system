@@ -10,9 +10,11 @@ from sqlalchemy import exists, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from dxd_rating.contexts.common.application.errors import (
-    InvalidSeasonNameError,
+    InvalidSeasonNameRequiredError,
     PlayerNotRegisteredError,
     PlayerSeasonStatsNotFoundError,
+    SeasonNameLeadingDigitError,
+    SeasonNameTooLongError,
     SeasonAlreadyExistsError,
     SeasonNotFoundError,
     SeasonStateError,
@@ -156,11 +158,11 @@ def build_auto_season_name(start_at: datetime) -> str:
 def validate_admin_season_name(name: str) -> str:
     normalized = name.strip()
     if not normalized:
-        raise InvalidSeasonNameError("シーズン名を入力してください。")
+        raise InvalidSeasonNameRequiredError("シーズン名を入力してください。")
     if len(normalized) > SEASON_NAME_MAX_LENGTH:
-        raise InvalidSeasonNameError("シーズン名が長すぎます。")
+        raise SeasonNameTooLongError("シーズン名が長すぎます。")
     if SEASON_RENAME_PATTERN.fullmatch(normalized) is None:
-        raise InvalidSeasonNameError("シーズン名の先頭に数字は使えません。")
+        raise SeasonNameLeadingDigitError("シーズン名の先頭に数字は使えません。")
     return normalized
 
 

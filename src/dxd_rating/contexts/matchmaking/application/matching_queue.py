@@ -70,17 +70,12 @@ from dxd_rating.shared.constants import (
 
 DEFAULT_CLEANUP_BATCH_SIZE = 100
 
-JOIN_QUEUE_MESSAGE = "キューに参加しました。5分間マッチングします。"
 INVALID_MATCH_FORMAT_MESSAGE = "指定したフォーマットは存在しません。"
 INVALID_QUEUE_NAME_MESSAGE = "指定したキューは存在しません。"
 QUEUE_JOIN_NOT_ALLOWED_MESSAGE = "現在のレーティングではそのキューに参加できません。"
 QUEUE_JOIN_RESTRICTED_MESSAGE = "現在キュー参加を制限されています。"
 QUEUE_ALREADY_JOINED_MESSAGE = "すでにキュー参加中です。"
-QUEUE_PRESENT_UPDATED_MESSAGE = "在席を更新しました。次の期限は5分後です。"
 QUEUE_NOT_JOINED_MESSAGE = "キューに参加していません。"
-QUEUE_PRESENT_EXPIRED_MESSAGE = "期限切れのためキューから外れました。"
-QUEUE_LEFT_MESSAGE = "キューから退出しました。"
-QUEUE_ALREADY_EXPIRED_MESSAGE = "すでに期限切れでキューから外れています。"
 PRESENCE_REMINDER_NOTIFICATION_MESSAGE = (
     "在席確認です。1分以内に在席更新がない場合はマッチングキューから外れます。"
 )
@@ -110,7 +105,6 @@ class JoinQueueResult:
     revision: int
     expire_at: datetime
     queue_class_id: str
-    message: str = JOIN_QUEUE_MESSAGE
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,14 +113,12 @@ class PresentQueueResult:
     revision: int | None
     expire_at: datetime | None
     expired: bool
-    message: str
 
 
 @dataclass(frozen=True, slots=True)
 class LeaveQueueResult:
     queue_entry_id: int | None
     expired: bool
-    message: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -342,7 +334,6 @@ class MatchingQueueService:
                     revision=None,
                     expire_at=None,
                     expired=True,
-                    message=QUEUE_PRESENT_EXPIRED_MESSAGE,
                 )
             else:
                 waiting_entry.last_present_at = current_time
@@ -360,7 +351,6 @@ class MatchingQueueService:
                     revision=waiting_entry.revision,
                     expire_at=waiting_entry.expire_at,
                     expired=False,
-                    message=QUEUE_PRESENT_UPDATED_MESSAGE,
                 )
 
         if result is None:
@@ -467,7 +457,6 @@ class MatchingQueueService:
                 result = LeaveQueueResult(
                     queue_entry_id=None,
                     expired=False,
-                    message=QUEUE_LEFT_MESSAGE,
                 )
             elif waiting_entry.expire_at <= current_time:
                 self._mark_entry_expired(
@@ -477,7 +466,6 @@ class MatchingQueueService:
                 result = LeaveQueueResult(
                     queue_entry_id=waiting_entry.id,
                     expired=True,
-                    message=QUEUE_ALREADY_EXPIRED_MESSAGE,
                 )
             else:
                 waiting_entry.status = MatchQueueEntryStatus.LEFT
@@ -486,7 +474,6 @@ class MatchingQueueService:
                 result = LeaveQueueResult(
                     queue_entry_id=waiting_entry.id,
                     expired=False,
-                    message=QUEUE_LEFT_MESSAGE,
                 )
 
         if result is None:

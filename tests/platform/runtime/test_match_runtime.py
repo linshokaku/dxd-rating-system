@@ -634,7 +634,6 @@ def test_match_runtime_present_calls_service_and_replaces_timers(
         revision=4,
         expire_at=expire_at,
         expired=False,
-        message="updated",
     )
     service.present.return_value = present_result
     runtime = MatchRuntime(service=service)
@@ -737,7 +736,6 @@ def test_match_runtime_present_updates_database_clock_offset_from_expire_at(
         revision=4,
         expire_at=expected_database_now + MATCH_QUEUE_TTL,
         expired=False,
-        message="updated",
     )
     service.present.return_value = present_result
     runtime = MatchRuntime(service=service)
@@ -760,7 +758,6 @@ def test_match_runtime_present_cancels_timers_when_entry_already_expired(
         revision=None,
         expire_at=None,
         expired=True,
-        message="expired",
     )
     service.present.return_value = present_result
     runtime = MatchRuntime(service=service)
@@ -789,7 +786,6 @@ def test_match_runtime_leave_calls_service_and_cancels_timers(
     leave_result = LeaveQueueResult(
         queue_entry_id=301,
         expired=False,
-        message="left",
     )
     service.leave.return_value = leave_result
     runtime = MatchRuntime(service=service)

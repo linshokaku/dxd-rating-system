@@ -21,7 +21,10 @@ from dxd_rating.contexts.common.application.errors import (
     MatchNotFinalizedError,
     MatchNotFoundError,
     MatchParentAlreadyAssignedError,
+    MatchParentRecruitmentClosedError,
+    MatchParticipantCannotSpectateError,
     MatchParticipantError,
+    MatchReportApprovalInProgressError,
     MatchReportingClosedError,
     MatchReportNotOpenError,
     MatchSpectatingClosedError,
@@ -256,7 +259,7 @@ class MatchFlowService:
             if active_state.state != MatchState.WAITING_FOR_PARENT:
                 raise MatchParentAlreadyAssignedError("この試合の親はすでに決まっています。")
             if current_time >= active_state.parent_deadline_at:
-                raise MatchParentAlreadyAssignedError("親募集期間は終了しています。")
+                raise MatchParentRecruitmentClosedError("親募集期間は終了しています。")
 
             self._apply_match_notification_context(
                 participant,
@@ -303,7 +306,7 @@ class MatchFlowService:
             max_spectators = self._calculate_max_spectators(participant_count)
             participant = self._get_match_participant_for_update(session, match_id, player_id)
             if participant is not None:
-                raise MatchParticipantError("この試合の参加者は観戦応募できません。")
+                raise MatchParticipantCannotSpectateError("この試合の参加者は観戦応募できません。")
 
             spectator = self._get_active_match_spectator_for_update(session, match_id, player_id)
             if spectator is not None:
@@ -395,7 +398,7 @@ class MatchFlowService:
                 raise MatchParticipantError("この試合の参加者ではありません。")
 
             if active_state.state == MatchState.AWAITING_RESULT_APPROVALS:
-                raise MatchReportingClosedError("承認期間中は勝敗報告を変更できません。")
+                raise MatchReportApprovalInProgressError("承認期間中は勝敗報告を変更できません。")
             if active_state.state == MatchState.FINALIZED:
                 raise MatchAlreadyFinalizedError("この試合はすでに結果確定済みです。")
             if (
@@ -1986,18 +1989,13 @@ class MatchFlowService:
         match_format: MatchFormat,
         lock_rows: bool = False,
     ) -> dict[int, PlayerFormatStats]:
-        try:
-            return resolve_player_format_stats_for_season(
-                session,
-                player_ids=tuple(player_ids),
-                season_id=season_id,
-                match_format=match_format,
-                lock_rows=lock_rows,
-            )
-        except SeasonNotFoundError as exc:
-            raise MatchFlowError(str(exc)) from exc
-        except PlayerSeasonStatsNotFoundError as exc:
-            raise MatchFlowError(str(exc)) from exc
+        return resolve_player_format_stats_for_season(
+            session,
+            player_ids=tuple(player_ids),
+            season_id=season_id,
+            match_format=match_format,
+            lock_rows=lock_rows,
+        )
 
     def _require_match_format_definition(
         self,

@@ -59,25 +59,14 @@ from dxd_rating.platform.db.models import (
     PlayerPenalty,
     Season,
 )
-from dxd_rating.platform.discord.gateway.commands import BotCommandHandlers, register_app_commands
-from dxd_rating.platform.discord.gateway.commands.application import (
-    APPLICATION_COMMAND_INTERNAL_ERROR_MESSAGE,
-)
-from dxd_rating.platform.discord.ui import (
-    ADMIN_CONTACT_CHANNEL_MESSAGE,
-    ADMIN_OPERATIONS_CHANNEL_MESSAGE,
-    INFO_CHANNEL_LEADERBOARD_BUTTON_CUSTOM_ID,
+from dxd_rating.platform.discord.copy.info import (
     INFO_CHANNEL_LEADERBOARD_BUTTON_LABEL,
-    INFO_CHANNEL_LEADERBOARD_SEASON_BUTTON_CUSTOM_ID,
     INFO_CHANNEL_LEADERBOARD_SEASON_BUTTON_LABEL,
     INFO_CHANNEL_MESSAGE,
-    INFO_CHANNEL_PLAYER_INFO_BUTTON_CUSTOM_ID,
     INFO_CHANNEL_PLAYER_INFO_BUTTON_LABEL,
-    INFO_CHANNEL_PLAYER_INFO_SEASON_BUTTON_CUSTOM_ID,
     INFO_CHANNEL_PLAYER_INFO_SEASON_BUTTON_LABEL,
     INFO_THREAD_LEADERBOARD_MATCH_FORMAT_PLACEHOLDER,
     INFO_THREAD_LEADERBOARD_NEXT_PAGE_BUTTON_LABEL,
-    INFO_THREAD_LEADERBOARD_SEASON_MAX_OPTIONS,
     INFO_THREAD_LEADERBOARD_SEASON_PLACEHOLDER,
     INFO_THREAD_LEADERBOARD_SEASON_SELECT_BOTH_MESSAGE,
     INFO_THREAD_LEADERBOARD_SEASON_SELECT_SEASON_MESSAGE,
@@ -86,6 +75,10 @@ from dxd_rating.platform.discord.ui import (
     INFO_THREAD_PLAYER_INFO_SEASON_PLACEHOLDER,
     INFO_THREAD_PLAYER_INFO_SEASON_SELECT_SEASON_MESSAGE,
     INFO_THREAD_PLAYER_INFO_SHOW_BUTTON_LABEL,
+    build_info_thread_initial_message,
+)
+from dxd_rating.platform.discord.copy.match import MATCHMAKING_NEWS_CHANNEL_MESSAGE
+from dxd_rating.platform.discord.copy.matchmaking import (
     MATCHMAKING_CHANNEL_JOIN_BUTTON_LABEL,
     MATCHMAKING_CHANNEL_MATCH_FORMAT_PLACEHOLDER,
     MATCHMAKING_CHANNEL_MESSAGE,
@@ -93,19 +86,33 @@ from dxd_rating.platform.discord.ui import (
     MATCHMAKING_CHANNEL_SELECT_MATCH_FORMAT_MESSAGE,
     MATCHMAKING_CHANNEL_SELECT_QUEUE_NAME_MESSAGE,
     MATCHMAKING_CHANNEL_STATUS_PLACEHOLDER_MESSAGE,
-    MATCHMAKING_CHANNEL_UPDATE_STATUS_BUTTON_CUSTOM_ID,
     MATCHMAKING_CHANNEL_UPDATE_STATUS_BUTTON_LABEL,
-    MATCHMAKING_NEWS_CHANNEL_MESSAGE,
     MATCHMAKING_PRESENCE_THREAD_LEAVE_BUTTON_LABEL,
     MATCHMAKING_PRESENCE_THREAD_PRESENT_BUTTON_LABEL,
+    build_matchmaking_guide_message,
+    build_matchmaking_status_message,
+)
+from dxd_rating.platform.discord.copy.registration import (
     REGISTER_PANEL_BUTTON_LABEL,
     REGISTER_PANEL_MESSAGE,
+)
+from dxd_rating.platform.discord.copy.system import (
+    ADMIN_CONTACT_CHANNEL_MESSAGE,
+    ADMIN_OPERATIONS_CHANNEL_MESSAGE,
+    APPLICATION_COMMAND_INTERNAL_ERROR_MESSAGE,
     SYSTEM_ANNOUNCEMENTS_CHANNEL_MESSAGE,
+)
+from dxd_rating.platform.discord.gateway.commands import BotCommandHandlers, register_app_commands
+from dxd_rating.platform.discord.ui import (
+    INFO_CHANNEL_LEADERBOARD_BUTTON_CUSTOM_ID,
+    INFO_CHANNEL_LEADERBOARD_SEASON_BUTTON_CUSTOM_ID,
+    INFO_CHANNEL_PLAYER_INFO_BUTTON_CUSTOM_ID,
+    INFO_CHANNEL_PLAYER_INFO_SEASON_BUTTON_CUSTOM_ID,
+    INFO_THREAD_LEADERBOARD_SEASON_MAX_OPTIONS,
+    MATCHMAKING_CHANNEL_UPDATE_STATUS_BUTTON_CUSTOM_ID,
     MatchmakingNewsMatchAnnouncementSpectateButton,
     MatchmakingPanelView,
     MatchOperationThreadParentButton,
-    build_info_thread_initial_message,
-    build_matchmaking_status_message,
 )
 from dxd_rating.platform.runtime import MatchRuntime
 from dxd_rating.shared.constants import MATCH_FORMAT_CHOICES, get_match_queue_class_definitions
@@ -115,21 +122,6 @@ DEFAULT_QUEUE_NAME = "beginner"
 DEFAULT_MATCHMAKING_GUIDE_URL = (
     "https://github.com/linshokaku/dxd-rating-system/blob/main/docs/README.md"
 )
-
-
-def build_expected_matchmaking_guide_message(guide_url: str) -> str:
-    return "\n".join(
-        [
-            "レート戦の遊び方",
-            "下のメッセージで試合形式と階級を選んで、参加ボタンを押すとマッチングを始められます。",
-            "マッチしたら、まず試合を進める人の「親」を1人決めてください。",
-            "試合は3セットで行い、勝ったセットが多いチームの勝ちです。",
-            "勝ったセット数が同じなら引き分けです。",
-            "どちらかが2回続けて勝ったら、その時点で試合終了です。",
-            "試合が終わったら、参加した **全員** が勝敗報告をしてください。",
-            f"くわしい遊び方は [こちらから]({guide_url}) 確認できます。",
-        ]
-    )
 
 
 @dataclass(frozen=True)
@@ -8051,7 +8043,7 @@ def test_admin_setup_custom_ui_channel_creates_matchmaking_channel_with_placehol
     assert persisted_channel.overwrites[registered_role].view_channel is True
     assert persisted_channel.overwrites[registered_role].send_messages is False
     assert len(persisted_channel.sent_messages) == 3
-    assert persisted_channel.sent_messages[0].content == build_expected_matchmaking_guide_message(
+    assert persisted_channel.sent_messages[0].content == build_matchmaking_guide_message(
         matchmaking_guide_url
     )
     assert persisted_channel.sent_messages[0].view is None
@@ -8571,7 +8563,7 @@ def test_admin_setup_ui_channels_creates_registered_channel_set(
     assert matchmaking_channel.overwrites[guild.me].create_private_threads is True
     assert matchmaking_channel.overwrites[guild.me].send_messages_in_threads is True
     assert len(matchmaking_channel.sent_messages) == 3
-    assert matchmaking_channel.sent_messages[0].content == build_expected_matchmaking_guide_message(
+    assert matchmaking_channel.sent_messages[0].content == build_matchmaking_guide_message(
         DEFAULT_MATCHMAKING_GUIDE_URL
     )
     assert matchmaking_channel.sent_messages[0].view is None

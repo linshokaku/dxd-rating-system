@@ -10,18 +10,22 @@ from sqlalchemy.orm import Session, sessionmaker
 from dxd_rating.apps.bot.main import create_client, initialize_seasons, load_settings
 from dxd_rating.platform.config.bot import BotSettings
 from dxd_rating.platform.db.models import ManagedUiChannel, ManagedUiType, Season
-from dxd_rating.platform.discord.ui import (
+from dxd_rating.platform.discord.copy.info import (
     INFO_CHANNEL_LEADERBOARD_BUTTON_LABEL,
     INFO_CHANNEL_LEADERBOARD_SEASON_BUTTON_LABEL,
     INFO_CHANNEL_PLAYER_INFO_BUTTON_LABEL,
     INFO_CHANNEL_PLAYER_INFO_SEASON_BUTTON_LABEL,
     INFO_THREAD_LEADERBOARD_SHOW_BUTTON_LABEL,
     INFO_THREAD_PLAYER_INFO_SHOW_BUTTON_LABEL,
+)
+from dxd_rating.platform.discord.copy.matchmaking import (
     MATCHMAKING_CHANNEL_JOIN_BUTTON_LABEL,
     MATCHMAKING_CHANNEL_UPDATE_STATUS_BUTTON_LABEL,
     MATCHMAKING_PRESENCE_THREAD_LEAVE_BUTTON_LABEL,
     MATCHMAKING_PRESENCE_THREAD_PRESENT_BUTTON_LABEL,
-    REGISTER_PANEL_BUTTON_LABEL,
+)
+from dxd_rating.platform.discord.copy.registration import REGISTER_PANEL_BUTTON_LABEL
+from dxd_rating.platform.discord.ui import (
     InfoThreadLeaderboardNextPageButton,
     InfoThreadLeaderboardSeasonNextPageButton,
     MatchmakingNewsMatchAnnouncementSpectateButton,

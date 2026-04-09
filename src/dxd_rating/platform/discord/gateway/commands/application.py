@@ -101,11 +101,281 @@ from dxd_rating.platform.db.models import (
     PlayerAccessRestrictionType,
 )
 from dxd_rating.platform.db.session import session_scope
+from dxd_rating.platform.discord.copy.admin import (
+    ADMIN_CLEANUP_UI_CHANNELS_COMMAND_DESCRIPTION,
+    ADMIN_CLEANUP_UI_CHANNELS_CONFIRM_DESCRIPTION,
+    ADMIN_CLEANUP_UI_CHANNELS_EMPTY_MESSAGE,
+    ADMIN_CLEANUP_UI_CHANNELS_FAILED_MESSAGE,
+    ADMIN_CLEANUP_UI_CHANNELS_SUCCESS_MESSAGE,
+    ADMIN_DISCONNECT_PENALTY_DESCRIPTION,
+    ADMIN_DUPLICATE_CHANNEL_NAME_MESSAGE,
+    ADMIN_INCORRECT_REPORT_PENALTY_DESCRIPTION,
+    ADMIN_INVALID_CHANNEL_NAME_MESSAGE,
+    ADMIN_INVALID_CLEANUP_CONFIRM_MESSAGE,
+    ADMIN_INVALID_TEARDOWN_CONFIRM_MESSAGE,
+    ADMIN_INVALID_UI_TYPE_MESSAGE,
+    ADMIN_LATE_PENALTY_DESCRIPTION,
+    ADMIN_MATCH_MISTAKE_PENALTY_DESCRIPTION,
+    ADMIN_MATCH_RESULT_COMMAND_DESCRIPTION,
+    ADMIN_MATCH_RESULT_FAILED_MESSAGE,
+    ADMIN_MATCH_RESULT_MATCH_ID_DESCRIPTION,
+    ADMIN_MATCH_RESULT_RESULT_DESCRIPTION,
+    ADMIN_MATCH_RESULT_SUCCESS_MESSAGE,
+    ADMIN_NO_REPORT_PENALTY_DESCRIPTION,
+    ADMIN_ONLY_MESSAGE,
+    ADMIN_PENALTY_ADD_SUCCESS_MESSAGE,
+    ADMIN_PENALTY_DUMMY_USER_DESCRIPTION,
+    ADMIN_PENALTY_FAILED_MESSAGE,
+    ADMIN_PENALTY_SUB_SUCCESS_MESSAGE,
+    ADMIN_PENALTY_USER_DESCRIPTION,
+    ADMIN_RECOMMENDED_CHANNEL_NAME_CONFLICT_MESSAGE,
+    ADMIN_RENAME_SEASON_COMMAND_DESCRIPTION,
+    ADMIN_RENAME_SEASON_FAILED_MESSAGE,
+    ADMIN_RENAME_SEASON_NAME_DESCRIPTION,
+    ADMIN_RENAME_SEASON_SEASON_ID_DESCRIPTION,
+    ADMIN_RENAME_SEASON_SUCCESS_MESSAGE,
+    ADMIN_RESTRICT_USER_COMMAND_DESCRIPTION,
+    ADMIN_RESTRICT_USER_DUMMY_USER_DESCRIPTION,
+    ADMIN_RESTRICT_USER_DURATION_DESCRIPTION,
+    ADMIN_RESTRICT_USER_REASON_DESCRIPTION,
+    ADMIN_RESTRICT_USER_RESTRICTION_TYPE_DESCRIPTION,
+    ADMIN_RESTRICT_USER_USER_DESCRIPTION,
+    ADMIN_RESTRICTION_ALREADY_EXISTS_MESSAGE,
+    ADMIN_RESTRICTION_FAILED_MESSAGE,
+    ADMIN_ROOM_SETUP_DELAY_PENALTY_DESCRIPTION,
+    ADMIN_SETUP_CUSTOM_UI_CHANNEL_CHANNEL_NAME_DESCRIPTION,
+    ADMIN_SETUP_CUSTOM_UI_CHANNEL_COMMAND_DESCRIPTION,
+    ADMIN_SETUP_CUSTOM_UI_CHANNEL_FAILED_MESSAGE,
+    ADMIN_SETUP_CUSTOM_UI_CHANNEL_SUCCESS_MESSAGE,
+    ADMIN_SETUP_CUSTOM_UI_CHANNEL_UI_TYPE_DESCRIPTION,
+    ADMIN_SETUP_UI_CHANNELS_ALREADY_CREATED_MESSAGE,
+    ADMIN_SETUP_UI_CHANNELS_COMMAND_DESCRIPTION,
+    ADMIN_SETUP_UI_CHANNELS_FAILED_MESSAGE,
+    ADMIN_SETUP_UI_CHANNELS_SUCCESS_MESSAGE,
+    ADMIN_TARGET_NOT_REGISTERED_MESSAGE,
+    ADMIN_TEARDOWN_UI_CHANNELS_COMMAND_DESCRIPTION,
+    ADMIN_TEARDOWN_UI_CHANNELS_CONFIRM_DESCRIPTION,
+    ADMIN_TEARDOWN_UI_CHANNELS_EMPTY_MESSAGE,
+    ADMIN_TEARDOWN_UI_CHANNELS_FAILED_MESSAGE,
+    ADMIN_TEARDOWN_UI_CHANNELS_SUCCESS_MESSAGE,
+    ADMIN_UI_ALREADY_INSTALLED_MESSAGE,
+    ADMIN_UNRESTRICT_USER_COMMAND_DESCRIPTION,
+    ADMIN_UNRESTRICT_USER_DUMMY_USER_DESCRIPTION,
+    ADMIN_UNRESTRICT_USER_RESTRICTION_TYPE_DESCRIPTION,
+    ADMIN_UNRESTRICT_USER_USER_DESCRIPTION,
+    ADMIN_UNRESTRICTION_FAILED_MESSAGE,
+    INVALID_ADMIN_TARGET_USER_MESSAGE,
+    INVALID_MATCH_RESULT_MESSAGE,
+    INVALID_RESTRICTION_DURATION_MESSAGE,
+    INVALID_RESTRICTION_TYPE_MESSAGE,
+    MANAGED_UI_PERMISSION_LABEL_CREATE_PRIVATE_THREADS,
+    MANAGED_UI_PERMISSION_LABEL_MANAGE_CHANNELS,
+    MANAGED_UI_PERMISSION_LABEL_MANAGE_ROLES,
+    MANAGED_UI_PERMISSION_LABEL_SEND_MESSAGES_IN_THREADS,
+    PLAYER_ACCESS_RESTRICTION_DURATION_LABELS,
+    PLAYER_ACCESS_RESTRICTION_TYPE_LABELS,
+    SEASON_NAME_ALREADY_EXISTS_MESSAGE,
+    SEASON_NAME_LEADING_DIGIT_MESSAGE,
+    SEASON_NAME_REQUIRED_MESSAGE,
+    SEASON_NAME_TOO_LONG_MESSAGE,
+    build_admin_match_result_public_message,
+    build_admin_penalty_command_description,
+    build_admin_penalty_public_message,
+    build_admin_restriction_executor_message,
+    build_admin_restriction_public_message,
+    build_admin_unrestriction_executor_message,
+    build_admin_unrestriction_public_message,
+    build_managed_ui_permission_message,
+)
+from dxd_rating.platform.discord.copy.dev import (
+    DEV_INFO_THREAD_COMMAND_DESCRIPTION,
+    DEV_INFO_THREAD_COMMAND_NAME_DESCRIPTION,
+    DEV_INFO_THREAD_DISCORD_USER_ID_DESCRIPTION,
+    DEV_INFO_THREAD_FAILED_MESSAGE,
+    DEV_INFO_THREAD_NOT_FOUND_MESSAGE,
+    DEV_INFO_THREAD_REQUIRED_MESSAGE,
+    DEV_INFO_THREAD_SUCCESS_MESSAGE,
+    DEV_IS_ADMIN_COMMAND_DESCRIPTION,
+    DEV_IS_ADMIN_ERROR_MESSAGE,
+    DEV_JOIN_ALREADY_JOINED_MESSAGE,
+    DEV_JOIN_COMMAND_DESCRIPTION,
+    DEV_JOIN_DISCORD_USER_ID_DESCRIPTION,
+    DEV_JOIN_FAILED_MESSAGE,
+    DEV_JOIN_MATCH_FORMAT_DESCRIPTION,
+    DEV_JOIN_NOT_ALLOWED_MESSAGE,
+    DEV_JOIN_QUEUE_NAME_DESCRIPTION,
+    DEV_JOIN_RESTRICTED_MESSAGE,
+    DEV_JOIN_SUCCESS_MESSAGE,
+    DEV_INVALID_QUEUE_NAME_MESSAGE,
+    DEV_LEADERBOARD_COMMAND_DESCRIPTION,
+    DEV_LEADERBOARD_DISCORD_USER_ID_DESCRIPTION,
+    DEV_LEADERBOARD_FAILED_MESSAGE,
+    DEV_LEADERBOARD_MATCH_FORMAT_DESCRIPTION,
+    DEV_LEADERBOARD_PAGE_DESCRIPTION,
+    DEV_LEADERBOARD_SEASON_COMMAND_DESCRIPTION,
+    DEV_LEADERBOARD_SEASON_DISCORD_USER_ID_DESCRIPTION,
+    DEV_LEADERBOARD_SEASON_FAILED_MESSAGE,
+    DEV_LEADERBOARD_SEASON_ID_DESCRIPTION,
+    DEV_LEADERBOARD_SEASON_MATCH_FORMAT_DESCRIPTION,
+    DEV_LEADERBOARD_SEASON_PAGE_DESCRIPTION,
+    DEV_LEADERBOARD_SEASON_SUCCESS_MESSAGE,
+    DEV_LEADERBOARD_SUCCESS_MESSAGE,
+    DEV_LEAVE_COMMAND_DESCRIPTION,
+    DEV_LEAVE_DISCORD_USER_ID_DESCRIPTION,
+    DEV_LEAVE_EXPIRED_MESSAGE,
+    DEV_LEAVE_FAILED_MESSAGE,
+    DEV_LEAVE_SUCCESS_MESSAGE,
+    DEV_MATCH_ACTION_FAILED_MESSAGE,
+    DEV_MATCH_APPROVE_COMMAND_DESCRIPTION,
+    DEV_MATCH_APPROVE_SUCCESS_MESSAGE,
+    DEV_MATCH_DISCORD_USER_ID_DESCRIPTION,
+    DEV_MATCH_DRAW_COMMAND_DESCRIPTION,
+    DEV_MATCH_LOSE_COMMAND_DESCRIPTION,
+    DEV_MATCH_MATCH_ID_DESCRIPTION,
+    DEV_MATCH_PARENT_COMMAND_DESCRIPTION,
+    DEV_MATCH_PARENT_SUCCESS_MESSAGE,
+    DEV_MATCH_REPORT_SUCCESS_MESSAGE,
+    DEV_MATCH_SPECTATE_COMMAND_DESCRIPTION,
+    DEV_MATCH_SPECTATE_RESTRICTED_MESSAGE,
+    DEV_MATCH_SPECTATE_SUCCESS_MESSAGE,
+    DEV_MATCH_VOID_COMMAND_DESCRIPTION,
+    DEV_MATCH_WIN_COMMAND_DESCRIPTION,
+    DEV_PLAYER_INFO_COMMAND_DESCRIPTION,
+    DEV_PLAYER_INFO_DISCORD_USER_ID_DESCRIPTION,
+    DEV_PLAYER_INFO_FAILED_MESSAGE,
+    DEV_PLAYER_INFO_SEASON_COMMAND_DESCRIPTION,
+    DEV_PLAYER_INFO_SEASON_DISCORD_USER_ID_DESCRIPTION,
+    DEV_PLAYER_INFO_SEASON_ID_DESCRIPTION,
+    DEV_PLAYER_INFO_SUCCESS_MESSAGE,
+    DEV_PLAYER_SEASON_INFO_FAILED_MESSAGE,
+    DEV_PLAYER_SEASON_INFO_SUCCESS_MESSAGE,
+    DEV_PRESENT_COMMAND_DESCRIPTION,
+    DEV_PRESENT_DISCORD_USER_ID_DESCRIPTION,
+    DEV_PRESENT_EXPIRED_MESSAGE,
+    DEV_PRESENT_FAILED_MESSAGE,
+    DEV_PRESENT_NOT_JOINED_MESSAGE,
+    DEV_PRESENT_SUCCESS_MESSAGE,
+    DEV_REGISTER_ALREADY_REGISTERED_MESSAGE,
+    DEV_REGISTER_COMMAND_DESCRIPTION,
+    DEV_REGISTER_DISCORD_USER_ID_DESCRIPTION,
+    DEV_REGISTER_FAILED_MESSAGE,
+    DEV_REGISTER_SUCCESS_MESSAGE,
+    DEV_TARGET_NOT_REGISTERED_MESSAGE,
+    INVALID_DISCORD_USER_ID_MESSAGE,
+    build_dev_is_admin_message,
+)
+from dxd_rating.platform.discord.copy.info import (
+    INFO_THREAD_CHANNEL_NOT_FOUND_MESSAGE,
+    INFO_THREAD_COMMAND_DESCRIPTION,
+    INFO_THREAD_COMMAND_NAME_DESCRIPTION,
+    INFO_THREAD_FAILED_MESSAGE,
+    INFO_THREAD_INACTIVE_MESSAGE,
+    INFO_THREAD_NOT_FOUND_MESSAGE,
+    INFO_THREAD_REQUIRED_MESSAGE,
+    INFO_THREAD_SUCCESS_MESSAGE,
+    INVALID_LEADERBOARD_PAGE_MESSAGE,
+    LEADERBOARD_COMMAND_DESCRIPTION,
+    LEADERBOARD_FAILED_MESSAGE,
+    LEADERBOARD_MATCH_FORMAT_DESCRIPTION,
+    LEADERBOARD_PAGE_DESCRIPTION,
+    LEADERBOARD_PAGE_NOT_FOUND_MESSAGE,
+    LEADERBOARD_SEASON_COMMAND_DESCRIPTION,
+    LEADERBOARD_SEASON_FAILED_MESSAGE,
+    LEADERBOARD_SEASON_MATCH_FORMAT_DESCRIPTION,
+    LEADERBOARD_SEASON_PAGE_DESCRIPTION,
+    LEADERBOARD_SEASON_SEASON_ID_DESCRIPTION,
+    LEADERBOARD_SUCCESS_MESSAGE,
+    PLAYER_INFO_COMMAND_DESCRIPTION,
+    PLAYER_INFO_FAILED_MESSAGE,
+    PLAYER_INFO_SEASON_COMMAND_DESCRIPTION,
+    PLAYER_INFO_SEASON_SEASON_ID_DESCRIPTION,
+    PLAYER_INFO_SUCCESS_MESSAGE,
+    PLAYER_SEASON_INFO_FAILED_MESSAGE,
+    PLAYER_SEASON_INFO_NOT_FOUND_MESSAGE,
+    PLAYER_SEASON_INFO_SUCCESS_MESSAGE,
+    SEASON_NOT_FOUND_MESSAGE,
+    SEASON_NOT_STARTED_MESSAGE,
+    build_current_leaderboard_message,
+    build_info_thread_initial_message,
+    build_info_thread_name,
+    build_player_info_message,
+    build_season_leaderboard_message,
+)
+from dxd_rating.platform.discord.copy.match import (
+    MATCH_ACTION_FAILED_MESSAGE,
+    MATCH_ALREADY_FINALIZED_MESSAGE,
+    MATCH_APPROVAL_NOT_AVAILABLE_MESSAGE,
+    MATCH_APPROVAL_NOT_REQUIRED_MESSAGE,
+    MATCH_APPROVE_COMMAND_DESCRIPTION,
+    MATCH_APPROVE_SUCCESS_MESSAGE,
+    MATCH_COMMAND_MATCH_ID_DESCRIPTION,
+    MATCH_DRAW_COMMAND_DESCRIPTION,
+    MATCH_LOSE_COMMAND_DESCRIPTION,
+    MATCH_NOT_FINALIZED_MESSAGE,
+    MATCH_NOT_FOUND_MESSAGE,
+    MATCH_PARENT_ALREADY_ASSIGNED_MESSAGE,
+    MATCH_PARENT_COMMAND_DESCRIPTION,
+    MATCH_PARENT_RECRUITMENT_CLOSED_MESSAGE,
+    MATCH_PARENT_SUCCESS_MESSAGE,
+    MATCH_PARTICIPANT_CANNOT_SPECTATE_MESSAGE,
+    MATCH_PARTICIPANT_REQUIRED_MESSAGE,
+    MATCH_REPORT_APPROVAL_IN_PROGRESS_MESSAGE,
+    MATCH_REPORT_CLOSED_MESSAGE,
+    MATCH_REPORT_NOT_OPEN_MESSAGE,
+    MATCH_REPORT_SUCCESS_MESSAGE,
+    MATCH_RESULT_LABELS,
+    MATCH_SPECTATE_COMMAND_DESCRIPTION,
+    MATCH_SPECTATE_FAILED_MESSAGE,
+    MATCH_SPECTATE_RESTRICTED_MESSAGE,
+    MATCH_SPECTATING_CLOSED_MESSAGE,
+    MATCH_SPECTATOR_ALREADY_REGISTERED_MESSAGE,
+    MATCH_SPECTATOR_CAPACITY_MESSAGE,
+    MATCH_VOID_COMMAND_DESCRIPTION,
+    MATCH_WIN_COMMAND_DESCRIPTION,
+    build_match_operation_thread_name,
+    build_match_spectate_success_message,
+    get_penalty_type_label,
+)
+from dxd_rating.platform.discord.copy.matchmaking import (
+    INVALID_MATCH_FORMAT_MESSAGE,
+    INVALID_QUEUE_NAME_MESSAGE,
+    JOIN_ALREADY_JOINED_MESSAGE,
+    JOIN_COMMAND_DESCRIPTION,
+    JOIN_FAILED_MESSAGE,
+    JOIN_MATCH_FORMAT_DESCRIPTION,
+    JOIN_QUEUE_NAME_DESCRIPTION,
+    JOIN_SUCCESS_MESSAGE,
+    LEAVE_ALREADY_EXPIRED_MESSAGE,
+    LEAVE_COMMAND_DESCRIPTION,
+    LEAVE_FAILED_MESSAGE,
+    LEAVE_SUCCESS_MESSAGE,
+    MATCHMAKING_PRESENCE_THREAD_MISMATCH_MESSAGE,
+    MATCHMAKING_PRESENCE_THREAD_NOT_JOINED_MESSAGE,
+    PRESENT_COMMAND_DESCRIPTION,
+    PRESENT_EXPIRED_MESSAGE,
+    PRESENT_FAILED_MESSAGE,
+    PRESENT_NOT_JOINED_MESSAGE,
+    PRESENT_SUCCESS_MESSAGE,
+    QUEUE_JOIN_NOT_ALLOWED_MESSAGE,
+    QUEUE_JOIN_RESTRICTED_MESSAGE,
+    UPDATE_MATCHMAKING_STATUS_COMMAND_DESCRIPTION,
+    UPDATE_MATCHMAKING_STATUS_FAILED_MESSAGE,
+    UPDATE_MATCHMAKING_STATUS_SUCCESS_MESSAGE,
+    build_matchmaking_join_success_message,
+    build_matchmaking_presence_thread_name,
+    build_matchmaking_status_message,
+)
+from dxd_rating.platform.discord.copy.registration import (
+    PLAYER_REGISTRATION_REQUIRED_MESSAGE,
+    REGISTER_ALREADY_REGISTERED_MESSAGE,
+    REGISTER_COMMAND_DESCRIPTION,
+    REGISTER_FAILED_MESSAGE,
+    REGISTER_SUCCESS_MESSAGE,
+)
+from dxd_rating.platform.discord.copy.system import APPLICATION_COMMAND_INTERNAL_ERROR_MESSAGE
 from dxd_rating.platform.discord.ui import (
     INFO_THREAD_LEADERBOARD_SEASON_MAX_OPTIONS,
-    build_info_thread_initial_message,
     build_managed_ui_channel_overwrites,
-    build_matchmaking_status_message,
     create_info_thread_leaderboard_initial_view,
     create_info_thread_leaderboard_next_page_view,
     create_info_thread_leaderboard_season_initial_view,
@@ -122,172 +392,10 @@ from dxd_rating.shared.constants import (
     is_dummy_discord_user_id,
 )
 
-REGISTER_SUCCESS_MESSAGE = "登録が完了しました。"
-REGISTER_ALREADY_REGISTERED_MESSAGE = "すでに登録済みです。"
-REGISTER_FAILED_MESSAGE = "登録に失敗しました。管理者に確認してください。"
-
-PLAYER_REGISTRATION_REQUIRED_MESSAGE = (
-    "プレイヤー登録が必要です。先に /register を実行してください。"
-)
-INVALID_MATCH_FORMAT_MESSAGE = "指定したフォーマットは存在しません。"
-INVALID_QUEUE_NAME_MESSAGE = "指定したキューは存在しません。"
-QUEUE_JOIN_NOT_ALLOWED_MESSAGE = "現在のレーティングではそのキューに参加できません。"
-QUEUE_JOIN_RESTRICTED_MESSAGE = "現在キュー参加を制限されています。"
-JOIN_ALREADY_JOINED_MESSAGE = "すでにキュー参加中です。"
-JOIN_SUCCESS_MESSAGE = "キューに参加しました。5分間マッチングします。"
-PRESENT_SUCCESS_MESSAGE = "在席を更新しました。次の期限は5分後です。"
-PRESENT_NOT_JOINED_MESSAGE = "キューに参加していません。"
-PRESENT_EXPIRED_MESSAGE = "期限切れのためキューから外れました。"
-MATCHMAKING_PRESENCE_THREAD_NOT_JOINED_MESSAGE = (
-    "現在このキューには参加していません。"
-    "再参加する場合は親チャンネルの参加導線から参加してください。"
-)
-MATCHMAKING_PRESENCE_THREAD_MISMATCH_MESSAGE = (
-    "このスレッドは現在参加中のキューには紐づいていません。"
-    "再参加する場合は親チャンネルの参加ボタンから参加してください。"
-)
-JOIN_FAILED_MESSAGE = "キュー参加に失敗しました。管理者に確認してください。"
-PRESENT_FAILED_MESSAGE = "在席更新に失敗しました。管理者に確認してください。"
-LEAVE_SUCCESS_MESSAGE = "キューから退出しました。"
-LEAVE_ALREADY_EXPIRED_MESSAGE = "すでに期限切れでキューから外れています。"
-LEAVE_FAILED_MESSAGE = "キュー退出に失敗しました。管理者に確認してください。"
-UPDATE_MATCHMAKING_STATUS_SUCCESS_MESSAGE = "参加状況を更新しました。"
-UPDATE_MATCHMAKING_STATUS_FAILED_MESSAGE = (
-    "参加状況の更新に失敗しました。管理者に確認してください。"
-)
-PLAYER_INFO_SUCCESS_MESSAGE = "プレイヤー情報を表示しました。"
-PLAYER_INFO_FAILED_MESSAGE = "プレイヤー情報の取得に失敗しました。管理者に確認してください。"
-PLAYER_SEASON_INFO_SUCCESS_MESSAGE = "シーズン別プレイヤー情報を表示しました。"
-PLAYER_SEASON_INFO_FAILED_MESSAGE = (
-    "シーズン別プレイヤー情報の取得に失敗しました。管理者に確認してください。"
-)
-SEASON_NOT_FOUND_MESSAGE = "指定したシーズンが見つかりません。"
-PLAYER_SEASON_INFO_NOT_FOUND_MESSAGE = "指定したシーズンのプレイヤー情報はありません。"
-LEADERBOARD_SUCCESS_MESSAGE = "ランキングを表示しました。"
-LEADERBOARD_FAILED_MESSAGE = "ランキングの取得に失敗しました。管理者に確認してください。"
-LEADERBOARD_SEASON_FAILED_MESSAGE = (
-    "シーズン別ランキングの取得に失敗しました。管理者に確認してください。"
-)
-INVALID_LEADERBOARD_PAGE_MESSAGE = "page は 1 以上で指定してください。"
-LEADERBOARD_PAGE_NOT_FOUND_MESSAGE = "指定したページにはランキングがありません。"
-SEASON_NOT_STARTED_MESSAGE = "指定したシーズンはまだ開始していません。"
-INFO_THREAD_REQUIRED_MESSAGE = "先に /info_thread を実行してください。"
-INFO_THREAD_NOT_FOUND_MESSAGE = (
-    "情報確認用スレッドが見つかりません。先に /info_thread を実行してください。"
-)
-INFO_THREAD_INACTIVE_MESSAGE = (
-    "このスレッドは現在の情報確認用スレッドではありません。"
-    "最新の情報確認用スレッドを利用してください。"
-)
-INFO_THREAD_SUCCESS_MESSAGE = "情報確認用スレッドを作成しました。"
-INFO_THREAD_CHANNEL_NOT_FOUND_MESSAGE = (
-    "情報確認用チャンネルが見つかりません。管理者に確認してください。"
-)
-INFO_THREAD_FAILED_MESSAGE = "情報確認用スレッドの作成に失敗しました。管理者に確認してください。"
-
-MATCH_PARENT_SUCCESS_MESSAGE = "親に立候補しました。"
-MATCH_NOT_FOUND_MESSAGE = "指定した試合が見つかりません。"
-MATCH_NOT_FINALIZED_MESSAGE = "この試合はまだ結果確定していません。"
-MATCH_PARTICIPANT_REQUIRED_MESSAGE = "この試合の参加者ではありません。"
-MATCH_PARENT_ALREADY_ASSIGNED_MESSAGE = "この試合の親はすでに決まっています。"
-MATCH_PARENT_RECRUITMENT_CLOSED_MESSAGE = "親募集期間は終了しています。"
-MATCH_SPECTATE_RESTRICTED_MESSAGE = "現在観戦を制限されています。"
-MATCH_SPECTATING_CLOSED_MESSAGE = "この試合は観戦受付を終了しています。"
-MATCH_PARTICIPANT_CANNOT_SPECTATE_MESSAGE = "この試合の参加者は観戦応募できません。"
-MATCH_SPECTATOR_ALREADY_REGISTERED_MESSAGE = "すでにこの試合へ観戦応募済みです。"
-MATCH_SPECTATOR_CAPACITY_MESSAGE = "この試合の観戦枠は埋まっています。"
-MATCH_SPECTATE_FAILED_MESSAGE = "観戦応募に失敗しました。管理者に確認してください。"
-MATCH_REPORT_SUCCESS_MESSAGE = "勝敗報告を受け付けました。"
-MATCH_REPORT_APPROVAL_IN_PROGRESS_MESSAGE = "承認期間中は勝敗報告を変更できません。"
-MATCH_REPORT_CLOSED_MESSAGE = "この試合の勝敗報告は締め切られています。"
-MATCH_REPORT_NOT_OPEN_MESSAGE = "まだ勝敗報告を受け付けていません。"
-MATCH_APPROVE_SUCCESS_MESSAGE = "仮決定結果を承認しました。"
-MATCH_APPROVAL_NOT_AVAILABLE_MESSAGE = "この試合は承認期間中ではありません。"
-MATCH_APPROVAL_NOT_REQUIRED_MESSAGE = "この試合では承認は不要です。"
-MATCH_ALREADY_FINALIZED_MESSAGE = "この試合はすでに結果確定済みです。"
-MATCH_ACTION_FAILED_MESSAGE = "試合操作に失敗しました。管理者に確認してください。"
-
-ADMIN_ONLY_MESSAGE = "このコマンドは管理者のみ実行できます。"
-INVALID_DISCORD_USER_ID_MESSAGE = "discord_user_id が不正です。"
-INVALID_ADMIN_TARGET_USER_MESSAGE = "対象ユーザーの指定が不正です。"
-INVALID_MATCH_RESULT_MESSAGE = "result が不正です。"
-ADMIN_MATCH_RESULT_SUCCESS_MESSAGE = "試合結果を上書きしました。"
-ADMIN_MATCH_RESULT_FAILED_MESSAGE = "試合結果の上書きに失敗しました。管理者に確認してください。"
-ADMIN_TARGET_NOT_REGISTERED_MESSAGE = "指定したユーザーは未登録です。"
-ADMIN_RESTRICTION_FAILED_MESSAGE = "利用制限の設定に失敗しました。管理者に確認してください。"
-ADMIN_UNRESTRICTION_FAILED_MESSAGE = "利用制限の解除に失敗しました。管理者に確認してください。"
-ADMIN_RESTRICTION_ALREADY_EXISTS_MESSAGE = "指定したユーザーにはすでに同種別の制限が有効です。"
-INVALID_RESTRICTION_TYPE_MESSAGE = "restriction_type が不正です。"
-INVALID_RESTRICTION_DURATION_MESSAGE = "duration が不正です。"
-ADMIN_PENALTY_ADD_SUCCESS_MESSAGE = "ペナルティを加算しました。"
-ADMIN_PENALTY_SUB_SUCCESS_MESSAGE = "ペナルティを減算しました。"
-ADMIN_PENALTY_FAILED_MESSAGE = "ペナルティ操作に失敗しました。管理者に確認してください。"
-ADMIN_RENAME_SEASON_SUCCESS_MESSAGE = "シーズン名を変更しました。"
-ADMIN_RENAME_SEASON_FAILED_MESSAGE = "シーズン名の変更に失敗しました。管理者に確認してください。"
-SEASON_NAME_REQUIRED_MESSAGE = "シーズン名を入力してください。"
-SEASON_NAME_TOO_LONG_MESSAGE = "シーズン名が長すぎます。"
-SEASON_NAME_LEADING_DIGIT_MESSAGE = "シーズン名の先頭に数字は使えません。"
-SEASON_NAME_ALREADY_EXISTS_MESSAGE = "指定したシーズン名はすでに使われています。"
-ADMIN_SETUP_CUSTOM_UI_CHANNEL_SUCCESS_MESSAGE = "UI 設置チャンネルを作成しました。"
-ADMIN_INVALID_UI_TYPE_MESSAGE = "指定した UI は存在しません。"
-ADMIN_INVALID_CHANNEL_NAME_MESSAGE = "channel_name が不正です。"
-ADMIN_DUPLICATE_CHANNEL_NAME_MESSAGE = "同名のチャンネルがすでに存在します。"
-ADMIN_UI_ALREADY_INSTALLED_MESSAGE = "指定した UI はすでに設置済みです。"
-ADMIN_MANAGED_UI_PERMISSION_MESSAGE = "Bot に必要な権限がありません。"
-MANAGED_UI_PERMISSION_LABEL_MANAGE_CHANNELS = "チャンネルの管理"
-MANAGED_UI_PERMISSION_LABEL_MANAGE_ROLES = "ロールの管理"
-MANAGED_UI_PERMISSION_LABEL_CREATE_PRIVATE_THREADS = "プライベートスレッドの作成"
-MANAGED_UI_PERMISSION_LABEL_SEND_MESSAGES_IN_THREADS = "スレッドでメッセージを送信"
-ADMIN_SETUP_CUSTOM_UI_CHANNEL_FAILED_MESSAGE = (
-    "UI 設置チャンネルの作成に失敗しました。管理者に確認してください。"
-)
-ADMIN_SETUP_UI_CHANNELS_SUCCESS_MESSAGE = "必要な UI 設置チャンネルを作成しました。"
-ADMIN_SETUP_UI_CHANNELS_ALREADY_CREATED_MESSAGE = "必要な UI 設置チャンネルはすでに作成済みです。"
-ADMIN_RECOMMENDED_CHANNEL_NAME_CONFLICT_MESSAGE = "推奨チャンネル名のチャンネルがすでに存在します。"
-ADMIN_SETUP_UI_CHANNELS_FAILED_MESSAGE = (
-    "必要な UI 設置チャンネルの作成に失敗しました。管理者に確認してください。"
-)
-ADMIN_INVALID_CLEANUP_CONFIRM_MESSAGE = "confirm が不正です。"
-ADMIN_CLEANUP_UI_CHANNELS_SUCCESS_MESSAGE = "setup の障害となる重複チャンネルを削除しました。"
-ADMIN_CLEANUP_UI_CHANNELS_EMPTY_MESSAGE = "削除対象の重複チャンネルはありません。"
-ADMIN_CLEANUP_UI_CHANNELS_FAILED_MESSAGE = (
-    "重複チャンネルの cleanup に失敗しました。管理者に確認してください。"
-)
 ADMIN_CLEANUP_CONFIRM_VALUE = "cleanup"
-ADMIN_INVALID_TEARDOWN_CONFIRM_MESSAGE = "confirm が不正です。"
-ADMIN_TEARDOWN_UI_CHANNELS_SUCCESS_MESSAGE = "UI 設置チャンネルをすべて撤収しました。"
-ADMIN_TEARDOWN_UI_CHANNELS_EMPTY_MESSAGE = "撤収対象の UI 設置チャンネルはありません。"
-ADMIN_TEARDOWN_UI_CHANNELS_FAILED_MESSAGE = (
-    "UI 設置チャンネルの撤収に失敗しました。管理者に確認してください。"
-)
 ADMIN_TEARDOWN_CONFIRM_VALUE = "teardown"
-MATCHMAKING_PRESENCE_THREAD_NAME_PREFIX = "在席確認-"
-INFO_THREAD_NAME_PREFIX = "情報-"
 MAX_DISCORD_THREAD_NAME_LENGTH = 100
-MATCHMAKING_PRESENCE_THREAD_GUIDE_MESSAGE = "在席確認は {thread_mention} で行ってください。"
-
-DEV_REGISTER_SUCCESS_MESSAGE = "ダミーユーザーを登録しました。"
-DEV_REGISTER_ALREADY_REGISTERED_MESSAGE = "指定したユーザーはすでに登録済みです。"
-DEV_REGISTER_FAILED_MESSAGE = "ダミーユーザーの登録に失敗しました。管理者に確認してください。"
-
-DEV_TARGET_NOT_REGISTERED_MESSAGE = "指定したユーザーは未登録です。"
-DEV_JOIN_SUCCESS_MESSAGE = "指定したユーザーをキューに参加させました。"
-DEV_INVALID_QUEUE_NAME_MESSAGE = "指定したキューは存在しません。"
-DEV_JOIN_ALREADY_JOINED_MESSAGE = "指定したユーザーはすでにキュー参加中です。"
-DEV_JOIN_NOT_ALLOWED_MESSAGE = (
-    "指定したユーザーは現在のレーティングではそのキューに参加できません。"
-)
-DEV_JOIN_RESTRICTED_MESSAGE = "指定したユーザーは現在キュー参加を制限されています。"
-DEV_JOIN_FAILED_MESSAGE = "指定したユーザーのキュー参加に失敗しました。管理者に確認してください。"
-
-DEV_PRESENT_SUCCESS_MESSAGE = "指定したユーザーの在席を更新しました。"
-DEV_PRESENT_NOT_JOINED_MESSAGE = "指定したユーザーはキューに参加していません。"
-DEV_PRESENT_EXPIRED_MESSAGE = "指定したユーザーは期限切れのためキューから外れました。"
-DEV_PRESENT_FAILED_MESSAGE = "指定したユーザーの在席更新に失敗しました。管理者に確認してください。"
-
-DEV_LEAVE_SUCCESS_MESSAGE = "指定したユーザーをキューから退出させました。"
-DEV_LEAVE_EXPIRED_MESSAGE = "指定したユーザーはすでに期限切れでキューから外れています。"
-APPLICATION_COMMAND_INTERNAL_ERROR_MESSAGE = "内部エラーが発生しました。管理者に確認してください。"
+DUMMY_USER_REFERENCE_PATTERN = re.compile(r"<dummy_(\d+)>")
 
 
 @dataclass
@@ -296,80 +404,6 @@ class InteractionResponseContext:
     interaction_name: str
     deferred: bool = False
     executor_response_sent: bool = False
-
-
-DEV_LEAVE_FAILED_MESSAGE = "指定したユーザーのキュー退出に失敗しました。管理者に確認してください。"
-DEV_INFO_THREAD_SUCCESS_MESSAGE = "指定したユーザーの情報確認用スレッドを作成しました。"
-DEV_INFO_THREAD_FAILED_MESSAGE = (
-    "指定したユーザーの情報確認用スレッドの作成に失敗しました。管理者に確認してください。"
-)
-DEV_INFO_THREAD_REQUIRED_MESSAGE = "先に /info_thread または /dev_info_thread を実行してください。"
-DEV_INFO_THREAD_NOT_FOUND_MESSAGE = (
-    "情報確認用スレッドが見つかりません。"
-    "先に /info_thread または /dev_info_thread を実行してください。"
-)
-DEV_PLAYER_INFO_SUCCESS_MESSAGE = "指定したユーザーのプレイヤー情報を表示しました。"
-DEV_PLAYER_INFO_FAILED_MESSAGE = (
-    "指定したユーザーのプレイヤー情報の取得に失敗しました。管理者に確認してください。"
-)
-DEV_PLAYER_SEASON_INFO_SUCCESS_MESSAGE = (
-    "指定したユーザーのシーズン別プレイヤー情報を表示しました。"
-)
-DEV_PLAYER_SEASON_INFO_FAILED_MESSAGE = (
-    "指定したユーザーのシーズン別プレイヤー情報の取得に失敗しました。管理者に確認してください。"
-)
-DEV_LEADERBOARD_SUCCESS_MESSAGE = "指定したユーザーの情報確認用スレッドにランキングを表示しました。"
-DEV_LEADERBOARD_FAILED_MESSAGE = (
-    "指定したユーザーのランキングの取得に失敗しました。管理者に確認してください。"
-)
-DEV_LEADERBOARD_SEASON_SUCCESS_MESSAGE = (
-    "指定したユーザーの情報確認用スレッドにシーズン別ランキングを表示しました。"
-)
-DEV_LEADERBOARD_SEASON_FAILED_MESSAGE = (
-    "指定したユーザーのシーズン別ランキングの取得に失敗しました。管理者に確認してください。"
-)
-
-DEV_MATCH_PARENT_SUCCESS_MESSAGE = "指定したユーザーを親に立候補させました。"
-DEV_MATCH_SPECTATE_SUCCESS_MESSAGE = "指定したユーザーの観戦応募を受け付けました。"
-DEV_MATCH_SPECTATE_RESTRICTED_MESSAGE = "指定したユーザーは現在観戦を制限されています。"
-DEV_MATCH_REPORT_SUCCESS_MESSAGE = "指定したユーザーの勝敗報告を受け付けました。"
-DEV_MATCH_APPROVE_SUCCESS_MESSAGE = "指定したユーザーが仮決定結果を承認しました。"
-DEV_MATCH_ACTION_FAILED_MESSAGE = (
-    "ダミーユーザーの試合操作に失敗しました。管理者に確認してください。"
-)
-
-DEV_IS_ADMIN_ERROR_MESSAGE = "エラーが発生しました。管理者に確認してください。"
-
-PLAYER_ACCESS_RESTRICTION_TYPE_LABELS = {
-    PlayerAccessRestrictionType.QUEUE_JOIN: "キュー参加",
-    PlayerAccessRestrictionType.SPECTATE: "観戦",
-}
-PLAYER_ACCESS_RESTRICTION_DURATION_LABELS = {
-    PlayerAccessRestrictionDuration.ONE_DAY: "1日",
-    PlayerAccessRestrictionDuration.THREE_DAYS: "3日",
-    PlayerAccessRestrictionDuration.SEVEN_DAYS: "7日",
-    PlayerAccessRestrictionDuration.FOURTEEN_DAYS: "14日",
-    PlayerAccessRestrictionDuration.TWENTY_EIGHT_DAYS: "28日",
-    PlayerAccessRestrictionDuration.FIFTY_SIX_DAYS: "56日",
-    PlayerAccessRestrictionDuration.EIGHTY_FOUR_DAYS: "84日",
-    PlayerAccessRestrictionDuration.PERMANENT: "永久",
-}
-MATCH_RESULT_LABELS = {
-    MatchResult.TEAM_A_WIN: "チーム A の勝ち",
-    MatchResult.TEAM_B_WIN: "チーム B の勝ち",
-    MatchResult.DRAW: "引き分け",
-    MatchResult.VOID: "無効試合",
-}
-PENALTY_TYPE_LABELS = {
-    PenaltyType.INCORRECT_REPORT: "誤報告",
-    PenaltyType.NO_REPORT: "未報告",
-    PenaltyType.ROOM_SETUP_DELAY: "部屋立て遅延",
-    PenaltyType.MATCH_MISTAKE: "試合進行ミス",
-    PenaltyType.LATE: "遅刻",
-    PenaltyType.DISCONNECT: "切断",
-}
-
-DUMMY_USER_REFERENCE_PATTERN = re.compile(r"<dummy_(\d+)>")
 
 
 @dataclass(frozen=True, slots=True)
@@ -2397,10 +2431,9 @@ class BotCommandHandlers:
             )
             return
 
-        executor_message = (
-            f"指定したユーザーの"
-            f"{PLAYER_ACCESS_RESTRICTION_TYPE_LABELS[resolved_restriction_type]}を"
-            f"{PLAYER_ACCESS_RESTRICTION_DURATION_LABELS[resolved_duration]}制限しました。"
+        executor_message = build_admin_restriction_executor_message(
+            resolved_restriction_type,
+            resolved_duration,
         )
         await self._send_success_message_with_public_followup(
             interaction,
@@ -2471,9 +2504,8 @@ class BotCommandHandlers:
             )
             return
 
-        executor_message = (
-            f"指定したユーザーの"
-            f"{PLAYER_ACCESS_RESTRICTION_TYPE_LABELS[resolved_restriction_type]}制限を解除しました。"
+        executor_message = build_admin_unrestriction_executor_message(
+            resolved_restriction_type,
         )
         await self._send_success_message_with_public_followup(
             interaction,
@@ -3035,7 +3067,9 @@ class BotCommandHandlers:
     async def dev_is_admin(self, interaction: discord.Interaction[Any]) -> None:
         await self._sync_requesting_user_identity(interaction)
         try:
-            message = "はい" if is_super_admin(interaction.user.id, self.settings) else "いいえ"
+            message = build_dev_is_admin_message(
+                is_super_admin(interaction.user.id, self.settings)
+            )
         except Exception:
             self.logger.exception(
                 "Failed to execute /dev_is_admin command discord_user_id=%s",
@@ -3161,9 +3195,9 @@ class BotCommandHandlers:
 
         await self._send_message(
             interaction,
-            (
-                "観戦応募を受け付けました。"
-                f"現在 {result.active_spectator_count} / {result.max_spectators} 人です。"
+            build_match_spectate_success_message(
+                result.active_spectator_count,
+                result.max_spectators,
             ),
             ephemeral=ephemeral,
         )
@@ -3701,9 +3735,9 @@ class BotCommandHandlers:
         match_id: int,
         final_result: MatchResult,
     ) -> str:
-        return (
-            f"match_id: {match_id} の試合結果が"
-            f"管理者操作により「{MATCH_RESULT_LABELS[final_result]}」に上書きされました。"
+        return build_admin_match_result_public_message(
+            match_id,
+            MATCH_RESULT_LABELS[final_result],
         )
 
     def _format_admin_restriction_public_message(
@@ -3718,10 +3752,10 @@ class BotCommandHandlers:
             target_discord_user_id=target_discord_user_id,
             target_user=target_user,
         )
-        return (
-            f"{target_label} の"
-            f"{PLAYER_ACCESS_RESTRICTION_TYPE_LABELS[restriction_type]}を"
-            f"{PLAYER_ACCESS_RESTRICTION_DURATION_LABELS[duration]}制限しました。"
+        return build_admin_restriction_public_message(
+            target_label,
+            restriction_type,
+            duration,
         )
 
     def _format_admin_unrestriction_public_message(
@@ -3735,9 +3769,9 @@ class BotCommandHandlers:
             target_discord_user_id=target_discord_user_id,
             target_user=target_user,
         )
-        return (
-            f"{target_label} の"
-            f"{PLAYER_ACCESS_RESTRICTION_TYPE_LABELS[restriction_type]}制限を解除しました。"
+        return build_admin_unrestriction_public_message(
+            target_label,
+            restriction_type,
         )
 
     def _format_admin_penalty_public_message(
@@ -3753,11 +3787,11 @@ class BotCommandHandlers:
             target_discord_user_id=target_discord_user_id,
             target_user=target_user,
         )
-        adjustment = "+1" if delta > 0 else "-1"
-        return (
-            f"{target_label} の"
-            f"{PENALTY_TYPE_LABELS[penalty_type]}ペナルティを{adjustment}しました。"
-            f"現在の累積: {count}"
+        return build_admin_penalty_public_message(
+            target_label,
+            get_penalty_type_label(penalty_type),
+            delta,
+            count,
         )
 
     def _parse_match_result(self, value: str) -> MatchResult:
@@ -3789,54 +3823,13 @@ class BotCommandHandlers:
         *,
         include_season: bool = False,
     ) -> str:
-        lines = ["プレイヤー情報"]
-        if include_season:
-            lines.extend(
-                [
-                    f"season_id: {player_info.season.season_id}",
-                    f"season_name: {player_info.season.name}",
-                ]
-            )
-        for format_stats in player_info.format_stats:
-            last_played_at = (
-                "-"
-                if format_stats.last_played_at is None
-                else format_stats.last_played_at.isoformat()
-            )
-            lines.extend(
-                [
-                    format_stats.match_format.value,
-                    f"rating: {format_stats.rating:.2f}",
-                    f"games_played: {format_stats.games_played}",
-                    f"wins: {format_stats.wins}",
-                    f"losses: {format_stats.losses}",
-                    f"draws: {format_stats.draws}",
-                    f"last_played_at: {last_played_at}",
-                ]
-            )
-        return "\n".join(lines)
+        return build_player_info_message(
+            player_info,
+            include_season=include_season,
+        )
 
     def _format_leaderboard_message(self, leaderboard_page: CurrentLeaderboardPage) -> str:
-        first_rank = leaderboard_page.entries[0].rank
-        last_rank = leaderboard_page.entries[-1].rank
-        lines = [
-            "ランキング",
-            f"season: {leaderboard_page.season_name}",
-            f"match_format: {leaderboard_page.match_format.value}",
-            f"page: {leaderboard_page.page}",
-            f"items: {first_rank}-{last_rank}",
-            "",
-        ]
-        lines.extend(
-            (
-                f"{entry.rank} / {entry.display_name} / {entry.rating:.2f} / "
-                f"{self._format_leaderboard_rank_change(entry.rank_change_1d)} / "
-                f"{self._format_leaderboard_rank_change(entry.rank_change_3d)} / "
-                f"{self._format_leaderboard_rank_change(entry.rank_change_7d)}"
-            )
-            for entry in leaderboard_page.entries
-        )
-        return "\n".join(lines)
+        return build_current_leaderboard_message(leaderboard_page)
 
     async def _build_info_thread_initial_view(
         self,
@@ -3889,22 +3882,7 @@ class BotCommandHandlers:
         self,
         leaderboard_page: SeasonLeaderboardPage,
     ) -> str:
-        first_rank = leaderboard_page.entries[0].rank
-        last_rank = leaderboard_page.entries[-1].rank
-        lines = [
-            "ランキング",
-            f"season_id: {leaderboard_page.season_id}",
-            f"season_name: {leaderboard_page.season_name}",
-            f"match_format: {leaderboard_page.match_format.value}",
-            f"page: {leaderboard_page.page}",
-            f"items: {first_rank}-{last_rank}",
-            "",
-        ]
-        lines.extend(
-            f"{entry.rank} / {entry.display_name} / {entry.rating:.2f}"
-            for entry in leaderboard_page.entries
-        )
-        return "\n".join(lines)
+        return build_season_leaderboard_message(leaderboard_page)
 
     def _format_leaderboard_rank_change(self, rank_change: int | None) -> str:
         if rank_change is None:
@@ -3926,7 +3904,7 @@ class BotCommandHandlers:
             username=getattr(discord_user, "name", None),
         )
         suffix = str(discord_user_id) if display_name is None else display_name
-        return f"{MATCHMAKING_PRESENCE_THREAD_NAME_PREFIX}{suffix}"[:MAX_DISCORD_THREAD_NAME_LENGTH]
+        return build_matchmaking_presence_thread_name(suffix)[:MAX_DISCORD_THREAD_NAME_LENGTH]
 
     def _build_info_thread_name(
         self,
@@ -3941,10 +3919,10 @@ class BotCommandHandlers:
             username=getattr(discord_user, "name", None),
         )
         suffix = str(discord_user_id) if display_name is None else display_name
-        return f"{INFO_THREAD_NAME_PREFIX}{suffix}"[:MAX_DISCORD_THREAD_NAME_LENGTH]
+        return build_info_thread_name(suffix)[:MAX_DISCORD_THREAD_NAME_LENGTH]
 
     def _build_match_operation_thread_name(self, match_id: int) -> str:
-        return f"試合-{match_id}"
+        return build_match_operation_thread_name(match_id)
 
     def _build_matchmaking_presence_thread_initial_message(self) -> str:
         return JOIN_SUCCESS_MESSAGE
@@ -4049,12 +4027,7 @@ class BotCommandHandlers:
         if thread_id is None:
             return base_message
 
-        return "\n".join(
-            [
-                base_message,
-                MATCHMAKING_PRESENCE_THREAD_GUIDE_MESSAGE.format(thread_mention=f"<#{thread_id}>"),
-            ]
-        )
+        return build_matchmaking_join_success_message(f"<#{thread_id}>")
 
     async def _validate_matchmaking_presence_thread_binding(
         self,
@@ -4332,13 +4305,14 @@ class BotCommandHandlers:
         *,
         forbidden_error: discord.Forbidden | None = None,
     ) -> str:
-        parts = [ADMIN_MANAGED_UI_PERMISSION_MESSAGE]
-        if missing_permissions:
-            parts.append(f"不足している権限: {', '.join(missing_permissions)}")
-        if forbidden_error is not None:
-            parts.append(self._format_discord_forbidden_detail(forbidden_error))
-
-        return " ".join(parts)
+        return build_managed_ui_permission_message(
+            missing_permissions,
+            forbidden_detail=(
+                None
+                if forbidden_error is None
+                else self._format_discord_forbidden_detail(forbidden_error)
+            ),
+        )
 
     async def _ensure_registered_player_role(
         self,
@@ -5281,12 +5255,15 @@ def register_app_commands(
             **kwargs,
         )
 
-    @tree.command(name="register", description="プレイヤー登録を行います")
+    @tree.command(name="register", description=REGISTER_COMMAND_DESCRIPTION)
     async def register_command(interaction: discord.Interaction[Any]) -> None:
         await run_command("register", interaction, handlers.register)
 
-    @tree.command(name="join", description="マッチングキューに参加します")
-    @app_commands.describe(match_format="参加したいフォーマット", queue_name="参加したいキュー名")
+    @tree.command(name="join", description=JOIN_COMMAND_DESCRIPTION)
+    @app_commands.describe(
+        match_format=JOIN_MATCH_FORMAT_DESCRIPTION,
+        queue_name=JOIN_QUEUE_NAME_DESCRIPTION,
+    )
     @app_commands.choices(match_format=match_format_choices)
     @app_commands.choices(queue_name=queue_name_choices)
     async def join_command(
@@ -5296,17 +5273,17 @@ def register_app_commands(
     ) -> None:
         await run_command("join", interaction, handlers.join, match_format, queue_name)
 
-    @tree.command(name="present", description="在席を更新して期限を延長します")
+    @tree.command(name="present", description=PRESENT_COMMAND_DESCRIPTION)
     async def present_command(interaction: discord.Interaction[Any]) -> None:
         await run_command("present", interaction, handlers.present)
 
-    @tree.command(name="leave", description="マッチングキューから退出します")
+    @tree.command(name="leave", description=LEAVE_COMMAND_DESCRIPTION)
     async def leave_command(interaction: discord.Interaction[Any]) -> None:
         await run_command("leave", interaction, handlers.leave)
 
     @tree.command(
         name="update_matchmaking_status",
-        description="レート戦マッチングの参加状況表示を更新します",
+        description=UPDATE_MATCHMAKING_STATUS_COMMAND_DESCRIPTION,
     )
     async def update_matchmaking_status_command(interaction: discord.Interaction[Any]) -> None:
         await run_command(
@@ -5315,12 +5292,12 @@ def register_app_commands(
             handlers.update_matchmaking_status,
         )
 
-    @tree.command(name="player_info", description="自分のプレイヤー情報を表示します")
+    @tree.command(name="player_info", description=PLAYER_INFO_COMMAND_DESCRIPTION)
     async def player_info_command(interaction: discord.Interaction[Any]) -> None:
         await run_command("player_info", interaction, handlers.player_info)
 
-    @tree.command(name="info_thread", description="情報確認用スレッドを作成します")
-    @app_commands.describe(command_name="作成したい情報確認スレッドの用途")
+    @tree.command(name="info_thread", description=INFO_THREAD_COMMAND_DESCRIPTION)
+    @app_commands.describe(command_name=INFO_THREAD_COMMAND_NAME_DESCRIPTION)
     @app_commands.choices(command_name=info_thread_command_choices)
     async def info_thread_command(
         interaction: discord.Interaction[Any],
@@ -5330,9 +5307,9 @@ def register_app_commands(
 
     @tree.command(
         name="player_info_season",
-        description="指定したシーズンの自分のプレイヤー情報を表示します",
+        description=PLAYER_INFO_SEASON_COMMAND_DESCRIPTION,
     )
-    @app_commands.describe(season_id="対象の season_id")
+    @app_commands.describe(season_id=PLAYER_INFO_SEASON_SEASON_ID_DESCRIPTION)
     async def player_info_season_command(
         interaction: discord.Interaction[Any],
         season_id: int,
@@ -5344,8 +5321,11 @@ def register_app_commands(
             season_id,
         )
 
-    @tree.command(name="leaderboard", description="現在シーズンのランキングを表示します")
-    @app_commands.describe(match_format="対象のフォーマット", page="表示したいページ番号")
+    @tree.command(name="leaderboard", description=LEADERBOARD_COMMAND_DESCRIPTION)
+    @app_commands.describe(
+        match_format=LEADERBOARD_MATCH_FORMAT_DESCRIPTION,
+        page=LEADERBOARD_PAGE_DESCRIPTION,
+    )
     @app_commands.choices(match_format=match_format_choices)
     async def leaderboard_command(
         interaction: discord.Interaction[Any],
@@ -5362,12 +5342,12 @@ def register_app_commands(
 
     @tree.command(
         name="leaderboard_season",
-        description="指定したシーズンのランキングを表示します",
+        description=LEADERBOARD_SEASON_COMMAND_DESCRIPTION,
     )
     @app_commands.describe(
-        season_id="対象の season_id",
-        match_format="対象のフォーマット",
-        page="表示したいページ番号",
+        season_id=LEADERBOARD_SEASON_SEASON_ID_DESCRIPTION,
+        match_format=LEADERBOARD_SEASON_MATCH_FORMAT_DESCRIPTION,
+        page=LEADERBOARD_SEASON_PAGE_DESCRIPTION,
     )
     @app_commands.choices(match_format=match_format_choices)
     async def leaderboard_season_command(
@@ -5385,58 +5365,73 @@ def register_app_commands(
             page,
         )
 
-    @tree.command(name="match_parent", description="試合の親に立候補します")
-    @app_commands.describe(match_id="対象の match_id")
+    @tree.command(name="match_parent", description=MATCH_PARENT_COMMAND_DESCRIPTION)
+    @app_commands.describe(match_id=MATCH_COMMAND_MATCH_ID_DESCRIPTION)
     async def match_parent_command(
         interaction: discord.Interaction[Any],
         match_id: int,
     ) -> None:
         await run_command("match_parent", interaction, handlers.match_parent, match_id)
 
-    @tree.command(name="match_spectate", description="試合の観戦応募を行います")
-    @app_commands.describe(match_id="対象の match_id")
+    @tree.command(name="match_spectate", description=MATCH_SPECTATE_COMMAND_DESCRIPTION)
+    @app_commands.describe(match_id=MATCH_COMMAND_MATCH_ID_DESCRIPTION)
     async def match_spectate_command(
         interaction: discord.Interaction[Any],
         match_id: int,
     ) -> None:
         await run_command("match_spectate", interaction, handlers.match_spectate, match_id)
 
-    @tree.command(name="match_win", description="自分視点で勝ちを報告します")
-    @app_commands.describe(match_id="対象の match_id")
+    @tree.command(name="match_win", description=MATCH_WIN_COMMAND_DESCRIPTION)
+    @app_commands.describe(match_id=MATCH_COMMAND_MATCH_ID_DESCRIPTION)
     async def match_win_command(interaction: discord.Interaction[Any], match_id: int) -> None:
         await run_command("match_win", interaction, handlers.match_win, match_id)
 
-    @tree.command(name="match_lose", description="自分視点で負けを報告します")
-    @app_commands.describe(match_id="対象の match_id")
+    @tree.command(name="match_lose", description=MATCH_LOSE_COMMAND_DESCRIPTION)
+    @app_commands.describe(match_id=MATCH_COMMAND_MATCH_ID_DESCRIPTION)
     async def match_lose_command(interaction: discord.Interaction[Any], match_id: int) -> None:
         await run_command("match_lose", interaction, handlers.match_lose, match_id)
 
-    @tree.command(name="match_draw", description="引き分けを報告します")
-    @app_commands.describe(match_id="対象の match_id")
+    @tree.command(name="match_draw", description=MATCH_DRAW_COMMAND_DESCRIPTION)
+    @app_commands.describe(match_id=MATCH_COMMAND_MATCH_ID_DESCRIPTION)
     async def match_draw_command(interaction: discord.Interaction[Any], match_id: int) -> None:
         await run_command("match_draw", interaction, handlers.match_draw, match_id)
 
-    @tree.command(name="match_void", description="無効試合を報告します")
-    @app_commands.describe(match_id="対象の match_id")
+    @tree.command(name="match_void", description=MATCH_VOID_COMMAND_DESCRIPTION)
+    @app_commands.describe(match_id=MATCH_COMMAND_MATCH_ID_DESCRIPTION)
     async def match_void_command(interaction: discord.Interaction[Any], match_id: int) -> None:
         await run_command("match_void", interaction, handlers.match_void, match_id)
 
-    @tree.command(name="match_approve", description="仮決定結果を承認します")
-    @app_commands.describe(match_id="対象の match_id")
+    @tree.command(name="match_approve", description=MATCH_APPROVE_COMMAND_DESCRIPTION)
+    @app_commands.describe(match_id=MATCH_COMMAND_MATCH_ID_DESCRIPTION)
     async def match_approve_command(
         interaction: discord.Interaction[Any],
         match_id: int,
     ) -> None:
         await run_command("match_approve", interaction, handlers.match_approve, match_id)
 
-    @tree.command(name="admin_match_result", description="試合結果を上書きします")
-    @app_commands.describe(match_id="対象の match_id", result="上書きする結果")
+    @tree.command(name="admin_match_result", description=ADMIN_MATCH_RESULT_COMMAND_DESCRIPTION)
+    @app_commands.describe(
+        match_id=ADMIN_MATCH_RESULT_MATCH_ID_DESCRIPTION,
+        result=ADMIN_MATCH_RESULT_RESULT_DESCRIPTION,
+    )
     @app_commands.choices(
         result=[
-            app_commands.Choice(name="チーム A の勝ち", value=MatchResult.TEAM_A_WIN.value),
-            app_commands.Choice(name="チーム B の勝ち", value=MatchResult.TEAM_B_WIN.value),
-            app_commands.Choice(name="引き分け", value=MatchResult.DRAW.value),
-            app_commands.Choice(name="無効試合", value=MatchResult.VOID.value),
+            app_commands.Choice(
+                name=MATCH_RESULT_LABELS[MatchResult.TEAM_A_WIN],
+                value=MatchResult.TEAM_A_WIN.value,
+            ),
+            app_commands.Choice(
+                name=MATCH_RESULT_LABELS[MatchResult.TEAM_B_WIN],
+                value=MatchResult.TEAM_B_WIN.value,
+            ),
+            app_commands.Choice(
+                name=MATCH_RESULT_LABELS[MatchResult.DRAW],
+                value=MatchResult.DRAW.value,
+            ),
+            app_commands.Choice(
+                name=MATCH_RESULT_LABELS[MatchResult.VOID],
+                value=MatchResult.VOID.value,
+            ),
         ]
     )
     async def admin_match_result_command(
@@ -5452,8 +5447,11 @@ def register_app_commands(
             result,
         )
 
-    @tree.command(name="admin_rename_season", description="シーズン名を変更します")
-    @app_commands.describe(season_id="対象の season_id", name="新しいシーズン名")
+    @tree.command(name="admin_rename_season", description=ADMIN_RENAME_SEASON_COMMAND_DESCRIPTION)
+    @app_commands.describe(
+        season_id=ADMIN_RENAME_SEASON_SEASON_ID_DESCRIPTION,
+        name=ADMIN_RENAME_SEASON_NAME_DESCRIPTION,
+    )
     async def admin_rename_season_command(
         interaction: discord.Interaction[Any],
         season_id: int,
@@ -5469,11 +5467,11 @@ def register_app_commands(
 
     @tree.command(
         name="admin_setup_custom_ui_channel",
-        description="指定した UI 設置チャンネルを作成します",
+        description=ADMIN_SETUP_CUSTOM_UI_CHANNEL_COMMAND_DESCRIPTION,
     )
     @app_commands.describe(
-        ui_type="設置したい UI の種別",
-        channel_name="作成するチャンネル名",
+        ui_type=ADMIN_SETUP_CUSTOM_UI_CHANNEL_UI_TYPE_DESCRIPTION,
+        channel_name=ADMIN_SETUP_CUSTOM_UI_CHANNEL_CHANNEL_NAME_DESCRIPTION,
     )
     @app_commands.choices(ui_type=managed_ui_type_choices)
     async def admin_setup_custom_ui_channel_command(
@@ -5491,7 +5489,7 @@ def register_app_commands(
 
     @tree.command(
         name="admin_setup_ui_channels",
-        description="必要な UI 設置チャンネルをまとめて作成します",
+        description=ADMIN_SETUP_UI_CHANNELS_COMMAND_DESCRIPTION,
     )
     async def admin_setup_ui_channels_command(interaction: discord.Interaction[Any]) -> None:
         await run_command(
@@ -5502,9 +5500,9 @@ def register_app_commands(
 
     @tree.command(
         name="admin_cleanup_ui_channels",
-        description="setup の障害となる重複チャンネルを削除します",
+        description=ADMIN_CLEANUP_UI_CHANNELS_COMMAND_DESCRIPTION,
     )
-    @app_commands.describe(confirm="cleanup する場合は cleanup を入力")
+    @app_commands.describe(confirm=ADMIN_CLEANUP_UI_CHANNELS_CONFIRM_DESCRIPTION)
     async def admin_cleanup_ui_channels_command(
         interaction: discord.Interaction[Any],
         confirm: str,
@@ -5518,9 +5516,9 @@ def register_app_commands(
 
     @tree.command(
         name="admin_teardown_ui_channels",
-        description="管理対象の UI 設置チャンネルをまとめて撤収します",
+        description=ADMIN_TEARDOWN_UI_CHANNELS_COMMAND_DESCRIPTION,
     )
-    @app_commands.describe(confirm="撤収する場合は teardown を入力")
+    @app_commands.describe(confirm=ADMIN_TEARDOWN_UI_CHANNELS_CONFIRM_DESCRIPTION)
     async def admin_teardown_ui_channels_command(
         interaction: discord.Interaction[Any],
         confirm: str,
@@ -5532,13 +5530,13 @@ def register_app_commands(
             confirm,
         )
 
-    @tree.command(name="admin_restrict_user", description="ユーザーの利用権限を制限します")
+    @tree.command(name="admin_restrict_user", description=ADMIN_RESTRICT_USER_COMMAND_DESCRIPTION)
     @app_commands.describe(
-        restriction_type="制限したい権限",
-        duration="制限期間",
-        user="対象の Discord ユーザー",
-        dummy_user="対象のダミーユーザー。<dummy_123> 形式",
-        reason="制限理由",
+        restriction_type=ADMIN_RESTRICT_USER_RESTRICTION_TYPE_DESCRIPTION,
+        duration=ADMIN_RESTRICT_USER_DURATION_DESCRIPTION,
+        user=ADMIN_RESTRICT_USER_USER_DESCRIPTION,
+        dummy_user=ADMIN_RESTRICT_USER_DUMMY_USER_DESCRIPTION,
+        reason=ADMIN_RESTRICT_USER_REASON_DESCRIPTION,
     )
     @app_commands.choices(restriction_type=restriction_type_choices)
     @app_commands.choices(duration=restriction_duration_choices)
@@ -5561,11 +5559,14 @@ def register_app_commands(
             reason=reason,
         )
 
-    @tree.command(name="admin_unrestrict_user", description="ユーザーの利用権限制限を解除します")
+    @tree.command(
+        name="admin_unrestrict_user",
+        description=ADMIN_UNRESTRICT_USER_COMMAND_DESCRIPTION,
+    )
     @app_commands.describe(
-        restriction_type="解除したい制限種別",
-        user="対象の Discord ユーザー",
-        dummy_user="対象のダミーユーザー。<dummy_123> 形式",
+        restriction_type=ADMIN_UNRESTRICT_USER_RESTRICTION_TYPE_DESCRIPTION,
+        user=ADMIN_UNRESTRICT_USER_USER_DESCRIPTION,
+        dummy_user=ADMIN_UNRESTRICT_USER_DUMMY_USER_DESCRIPTION,
     )
     @app_commands.choices(restriction_type=restriction_type_choices)
     async def admin_unrestrict_user_command(
@@ -5590,10 +5591,13 @@ def register_app_commands(
         description: str,
         penalty_type: PenaltyType,
     ) -> None:
-        @tree.command(name=add_name, description=f"{description} を +1 します")
+        @tree.command(
+            name=add_name,
+            description=build_admin_penalty_command_description(description, 1),
+        )
         @app_commands.describe(
-            user="対象の Discord ユーザー",
-            dummy_user="対象のダミーユーザー。<dummy_123> 形式",
+            user=ADMIN_PENALTY_USER_DESCRIPTION,
+            dummy_user=ADMIN_PENALTY_DUMMY_USER_DESCRIPTION,
         )
         async def add_command(
             interaction: discord.Interaction[Any],
@@ -5609,10 +5613,13 @@ def register_app_commands(
                 dummy_user=dummy_user,
             )
 
-        @tree.command(name=sub_name, description=f"{description} を -1 します")
+        @tree.command(
+            name=sub_name,
+            description=build_admin_penalty_command_description(description, -1),
+        )
         @app_commands.describe(
-            user="対象の Discord ユーザー",
-            dummy_user="対象のダミーユーザー。<dummy_123> 形式",
+            user=ADMIN_PENALTY_USER_DESCRIPTION,
+            dummy_user=ADMIN_PENALTY_DUMMY_USER_DESCRIPTION,
         )
         async def sub_command(
             interaction: discord.Interaction[Any],
@@ -5633,53 +5640,53 @@ def register_app_commands(
     register_penalty_commands(
         add_name="admin_add_incorrect_report",
         sub_name="admin_sub_incorrect_report",
-        description="勝敗誤報告ペナルティ",
+        description=ADMIN_INCORRECT_REPORT_PENALTY_DESCRIPTION,
         penalty_type=PenaltyType.INCORRECT_REPORT,
     )
     register_penalty_commands(
         add_name="admin_add_no_report",
         sub_name="admin_sub_no_report",
-        description="勝敗無報告ペナルティ",
+        description=ADMIN_NO_REPORT_PENALTY_DESCRIPTION,
         penalty_type=PenaltyType.NO_REPORT,
     )
     register_penalty_commands(
         add_name="admin_add_room_setup_delay",
         sub_name="admin_sub_room_setup_delay",
-        description="部屋立て遅延ペナルティ",
+        description=ADMIN_ROOM_SETUP_DELAY_PENALTY_DESCRIPTION,
         penalty_type=PenaltyType.ROOM_SETUP_DELAY,
     )
     register_penalty_commands(
         add_name="admin_add_match_mistake",
         sub_name="admin_sub_match_mistake",
-        description="試合ミスペナルティ",
+        description=ADMIN_MATCH_MISTAKE_PENALTY_DESCRIPTION,
         penalty_type=PenaltyType.MATCH_MISTAKE,
     )
     register_penalty_commands(
         add_name="admin_add_late",
         sub_name="admin_sub_late",
-        description="遅刻ペナルティ",
+        description=ADMIN_LATE_PENALTY_DESCRIPTION,
         penalty_type=PenaltyType.LATE,
     )
     register_penalty_commands(
         add_name="admin_add_disconnect",
         sub_name="admin_sub_disconnect",
-        description="切断ペナルティ",
+        description=ADMIN_DISCONNECT_PENALTY_DESCRIPTION,
         penalty_type=PenaltyType.DISCONNECT,
     )
 
-    @tree.command(name="dev_register", description="任意の Discord user ID を登録します")
-    @app_commands.describe(discord_user_id="登録したい Discord user ID")
+    @tree.command(name="dev_register", description=DEV_REGISTER_COMMAND_DESCRIPTION)
+    @app_commands.describe(discord_user_id=DEV_REGISTER_DISCORD_USER_ID_DESCRIPTION)
     async def dev_register_command(
         interaction: discord.Interaction[Any],
         discord_user_id: str,
     ) -> None:
         await run_command("dev_register", interaction, handlers.dev_register, discord_user_id)
 
-    @tree.command(name="dev_join", description="任意の Discord user ID をキュー参加させます")
+    @tree.command(name="dev_join", description=DEV_JOIN_COMMAND_DESCRIPTION)
     @app_commands.describe(
-        match_format="参加させたいフォーマット",
-        queue_name="参加させたいキュー名",
-        discord_user_id="キュー参加させたい Discord user ID",
+        match_format=DEV_JOIN_MATCH_FORMAT_DESCRIPTION,
+        queue_name=DEV_JOIN_QUEUE_NAME_DESCRIPTION,
+        discord_user_id=DEV_JOIN_DISCORD_USER_ID_DESCRIPTION,
     )
     @app_commands.choices(match_format=match_format_choices)
     @app_commands.choices(queue_name=queue_name_choices)
@@ -5698,16 +5705,16 @@ def register_app_commands(
             discord_user_id,
         )
 
-    @tree.command(name="dev_present", description="任意の Discord user ID の在席を更新します")
-    @app_commands.describe(discord_user_id="在席を更新したい Discord user ID")
+    @tree.command(name="dev_present", description=DEV_PRESENT_COMMAND_DESCRIPTION)
+    @app_commands.describe(discord_user_id=DEV_PRESENT_DISCORD_USER_ID_DESCRIPTION)
     async def dev_present_command(
         interaction: discord.Interaction[Any],
         discord_user_id: str,
     ) -> None:
         await run_command("dev_present", interaction, handlers.dev_present, discord_user_id)
 
-    @tree.command(name="dev_leave", description="任意の Discord user ID をキューから退出させます")
-    @app_commands.describe(discord_user_id="キューから退出させたい Discord user ID")
+    @tree.command(name="dev_leave", description=DEV_LEAVE_COMMAND_DESCRIPTION)
+    @app_commands.describe(discord_user_id=DEV_LEAVE_DISCORD_USER_ID_DESCRIPTION)
     async def dev_leave_command(
         interaction: discord.Interaction[Any],
         discord_user_id: str,
@@ -5716,11 +5723,11 @@ def register_app_commands(
 
     @tree.command(
         name="dev_info_thread",
-        description="任意の Discord user ID に紐づく情報確認用スレッドを作成します",
+        description=DEV_INFO_THREAD_COMMAND_DESCRIPTION,
     )
     @app_commands.describe(
-        command_name="作成したい情報確認スレッドの用途",
-        discord_user_id="紐づけたい Discord user ID",
+        command_name=DEV_INFO_THREAD_COMMAND_NAME_DESCRIPTION,
+        discord_user_id=DEV_INFO_THREAD_DISCORD_USER_ID_DESCRIPTION,
     )
     @app_commands.choices(command_name=info_thread_command_choices)
     async def dev_info_thread_command(
@@ -5738,9 +5745,9 @@ def register_app_commands(
 
     @tree.command(
         name="dev_player_info",
-        description="任意の Discord user ID のプレイヤー情報を表示します",
+        description=DEV_PLAYER_INFO_COMMAND_DESCRIPTION,
     )
-    @app_commands.describe(discord_user_id="表示したい Discord user ID")
+    @app_commands.describe(discord_user_id=DEV_PLAYER_INFO_DISCORD_USER_ID_DESCRIPTION)
     async def dev_player_info_command(
         interaction: discord.Interaction[Any],
         discord_user_id: str,
@@ -5754,11 +5761,11 @@ def register_app_commands(
 
     @tree.command(
         name="dev_player_info_season",
-        description="指定したシーズンの任意の Discord user ID のプレイヤー情報を表示します",
+        description=DEV_PLAYER_INFO_SEASON_COMMAND_DESCRIPTION,
     )
     @app_commands.describe(
-        season_id="対象の season_id",
-        discord_user_id="表示したい Discord user ID",
+        season_id=DEV_PLAYER_INFO_SEASON_ID_DESCRIPTION,
+        discord_user_id=DEV_PLAYER_INFO_SEASON_DISCORD_USER_ID_DESCRIPTION,
     )
     async def dev_player_info_season_command(
         interaction: discord.Interaction[Any],
@@ -5775,14 +5782,12 @@ def register_app_commands(
 
     @tree.command(
         name="dev_leaderboard",
-        description=(
-            "任意の Discord user ID の情報確認スレッドに現在シーズンのランキングを表示します"
-        ),
+        description=DEV_LEADERBOARD_COMMAND_DESCRIPTION,
     )
     @app_commands.describe(
-        match_format="対象のフォーマット",
-        page="表示したいページ番号",
-        discord_user_id="表示先として使いたい Discord user ID",
+        match_format=DEV_LEADERBOARD_MATCH_FORMAT_DESCRIPTION,
+        page=DEV_LEADERBOARD_PAGE_DESCRIPTION,
+        discord_user_id=DEV_LEADERBOARD_DISCORD_USER_ID_DESCRIPTION,
     )
     @app_commands.choices(match_format=match_format_choices)
     async def dev_leaderboard_command(
@@ -5802,15 +5807,13 @@ def register_app_commands(
 
     @tree.command(
         name="dev_leaderboard_season",
-        description=(
-            "任意の Discord user ID の情報確認スレッドに指定シーズンのランキングを表示します"
-        ),
+        description=DEV_LEADERBOARD_SEASON_COMMAND_DESCRIPTION,
     )
     @app_commands.describe(
-        season_id="対象の season_id",
-        match_format="対象のフォーマット",
-        page="表示したいページ番号",
-        discord_user_id="表示先として使いたい Discord user ID",
+        season_id=DEV_LEADERBOARD_SEASON_ID_DESCRIPTION,
+        match_format=DEV_LEADERBOARD_SEASON_MATCH_FORMAT_DESCRIPTION,
+        page=DEV_LEADERBOARD_SEASON_PAGE_DESCRIPTION,
+        discord_user_id=DEV_LEADERBOARD_SEASON_DISCORD_USER_ID_DESCRIPTION,
     )
     @app_commands.choices(match_format=match_format_choices)
     async def dev_leaderboard_season_command(
@@ -5830,8 +5833,11 @@ def register_app_commands(
             discord_user_id,
         )
 
-    @tree.command(name="dev_match_parent", description="ダミーユーザーを親に立候補させます")
-    @app_commands.describe(match_id="対象の match_id", discord_user_id="対象の dummy_user_id")
+    @tree.command(name="dev_match_parent", description=DEV_MATCH_PARENT_COMMAND_DESCRIPTION)
+    @app_commands.describe(
+        match_id=DEV_MATCH_MATCH_ID_DESCRIPTION,
+        discord_user_id=DEV_MATCH_DISCORD_USER_ID_DESCRIPTION,
+    )
     async def dev_match_parent_command(
         interaction: discord.Interaction[Any],
         match_id: int,
@@ -5845,8 +5851,14 @@ def register_app_commands(
             discord_user_id,
         )
 
-    @tree.command(name="dev_match_spectate", description="ダミーユーザーに観戦応募させます")
-    @app_commands.describe(match_id="対象の match_id", discord_user_id="対象の dummy_user_id")
+    @tree.command(
+        name="dev_match_spectate",
+        description=DEV_MATCH_SPECTATE_COMMAND_DESCRIPTION,
+    )
+    @app_commands.describe(
+        match_id=DEV_MATCH_MATCH_ID_DESCRIPTION,
+        discord_user_id=DEV_MATCH_DISCORD_USER_ID_DESCRIPTION,
+    )
     async def dev_match_spectate_command(
         interaction: discord.Interaction[Any],
         match_id: int,
@@ -5860,8 +5872,11 @@ def register_app_commands(
             discord_user_id,
         )
 
-    @tree.command(name="dev_match_win", description="ダミーユーザーに勝ちを報告させます")
-    @app_commands.describe(match_id="対象の match_id", discord_user_id="対象の dummy_user_id")
+    @tree.command(name="dev_match_win", description=DEV_MATCH_WIN_COMMAND_DESCRIPTION)
+    @app_commands.describe(
+        match_id=DEV_MATCH_MATCH_ID_DESCRIPTION,
+        discord_user_id=DEV_MATCH_DISCORD_USER_ID_DESCRIPTION,
+    )
     async def dev_match_win_command(
         interaction: discord.Interaction[Any],
         match_id: int,
@@ -5875,8 +5890,11 @@ def register_app_commands(
             discord_user_id,
         )
 
-    @tree.command(name="dev_match_lose", description="ダミーユーザーに負けを報告させます")
-    @app_commands.describe(match_id="対象の match_id", discord_user_id="対象の dummy_user_id")
+    @tree.command(name="dev_match_lose", description=DEV_MATCH_LOSE_COMMAND_DESCRIPTION)
+    @app_commands.describe(
+        match_id=DEV_MATCH_MATCH_ID_DESCRIPTION,
+        discord_user_id=DEV_MATCH_DISCORD_USER_ID_DESCRIPTION,
+    )
     async def dev_match_lose_command(
         interaction: discord.Interaction[Any],
         match_id: int,
@@ -5890,8 +5908,11 @@ def register_app_commands(
             discord_user_id,
         )
 
-    @tree.command(name="dev_match_draw", description="ダミーユーザーに引き分けを報告させます")
-    @app_commands.describe(match_id="対象の match_id", discord_user_id="対象の dummy_user_id")
+    @tree.command(name="dev_match_draw", description=DEV_MATCH_DRAW_COMMAND_DESCRIPTION)
+    @app_commands.describe(
+        match_id=DEV_MATCH_MATCH_ID_DESCRIPTION,
+        discord_user_id=DEV_MATCH_DISCORD_USER_ID_DESCRIPTION,
+    )
     async def dev_match_draw_command(
         interaction: discord.Interaction[Any],
         match_id: int,
@@ -5905,8 +5926,11 @@ def register_app_commands(
             discord_user_id,
         )
 
-    @tree.command(name="dev_match_void", description="ダミーユーザーに無効試合を報告させます")
-    @app_commands.describe(match_id="対象の match_id", discord_user_id="対象の dummy_user_id")
+    @tree.command(name="dev_match_void", description=DEV_MATCH_VOID_COMMAND_DESCRIPTION)
+    @app_commands.describe(
+        match_id=DEV_MATCH_MATCH_ID_DESCRIPTION,
+        discord_user_id=DEV_MATCH_DISCORD_USER_ID_DESCRIPTION,
+    )
     async def dev_match_void_command(
         interaction: discord.Interaction[Any],
         match_id: int,
@@ -5922,9 +5946,12 @@ def register_app_commands(
 
     @tree.command(
         name="dev_match_approve",
-        description="ダミーユーザーに仮決定結果を承認させます",
+        description=DEV_MATCH_APPROVE_COMMAND_DESCRIPTION,
     )
-    @app_commands.describe(match_id="対象の match_id", discord_user_id="対象の dummy_user_id")
+    @app_commands.describe(
+        match_id=DEV_MATCH_MATCH_ID_DESCRIPTION,
+        discord_user_id=DEV_MATCH_DISCORD_USER_ID_DESCRIPTION,
+    )
     async def dev_match_approve_command(
         interaction: discord.Interaction[Any],
         match_id: int,
@@ -5938,6 +5965,6 @@ def register_app_commands(
             discord_user_id,
         )
 
-    @tree.command(name="dev_is_admin", description="実行者が admin かどうかを確認します")
+    @tree.command(name="dev_is_admin", description=DEV_IS_ADMIN_COMMAND_DESCRIPTION)
     async def dev_is_admin_command(interaction: discord.Interaction[Any]) -> None:
         await run_command("dev_is_admin", interaction, handlers.dev_is_admin)

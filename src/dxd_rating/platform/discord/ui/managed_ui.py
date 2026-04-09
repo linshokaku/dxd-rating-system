@@ -7,85 +7,59 @@ from typing import Any, Protocol
 
 import discord
 
-from dxd_rating.contexts.matchmaking.application import MatchmakingStatusSnapshotEntry
 from dxd_rating.contexts.ui.application import (
     InfoThreadCommandName,
     ManagedUiType,
     get_managed_ui_definition,
 )
 from dxd_rating.platform.db.models import MatchFormat
+from dxd_rating.platform.discord.copy.info import (
+    INFO_CHANNEL_FALLBACK_ERROR_MESSAGE,
+    INFO_CHANNEL_LEADERBOARD_BUTTON_LABEL,
+    INFO_CHANNEL_LEADERBOARD_SEASON_BUTTON_LABEL,
+    INFO_CHANNEL_MESSAGE,
+    INFO_CHANNEL_PLAYER_INFO_BUTTON_LABEL,
+    INFO_CHANNEL_PLAYER_INFO_SEASON_BUTTON_LABEL,
+)
+from dxd_rating.platform.discord.copy.match import MATCHMAKING_NEWS_CHANNEL_MESSAGE
+from dxd_rating.platform.discord.copy.matchmaking import (
+    MATCHMAKING_CHANNEL_FALLBACK_ERROR_MESSAGE,
+    MATCHMAKING_CHANNEL_JOIN_BUTTON_LABEL,
+    MATCHMAKING_CHANNEL_MATCH_FORMAT_PLACEHOLDER,
+    MATCHMAKING_CHANNEL_MESSAGE,
+    MATCHMAKING_CHANNEL_QUEUE_NAME_PLACEHOLDER,
+    MATCHMAKING_CHANNEL_SELECT_MATCH_FORMAT_MESSAGE,
+    MATCHMAKING_CHANNEL_SELECT_QUEUE_NAME_MESSAGE,
+    MATCHMAKING_CHANNEL_STATUS_PLACEHOLDER_MESSAGE,
+    MATCHMAKING_CHANNEL_STATUS_UPDATE_FALLBACK_ERROR_MESSAGE,
+    MATCHMAKING_CHANNEL_UPDATE_STATUS_BUTTON_LABEL,
+    build_matchmaking_guide_message,
+)
+from dxd_rating.platform.discord.copy.registration import (
+    REGISTER_PANEL_BUTTON_LABEL,
+    REGISTER_PANEL_FALLBACK_ERROR_MESSAGE,
+    REGISTER_PANEL_MESSAGE,
+)
+from dxd_rating.platform.discord.copy.system import (
+    ADMIN_CONTACT_CHANNEL_MESSAGE,
+    ADMIN_OPERATIONS_CHANNEL_MESSAGE,
+    SYSTEM_ANNOUNCEMENTS_CHANNEL_MESSAGE,
+)
 from dxd_rating.shared.constants import (
     get_match_format_definitions,
     get_match_queue_class_definitions,
     normalize_match_queue_name,
 )
-
-REGISTER_PANEL_MESSAGE = "\n".join(
-    [
-        "プレイヤー登録はこちらから行えます。",
-        "ボタンを押すと利用規約に同意したものとして扱います。",
-        "登録後は Bot の各種機能を利用できます。",
-        "登録後はマッチング関連チャンネルとシステムアナウンスを閲覧できます。",
-    ]
-)
-REGISTER_PANEL_BUTTON_LABEL = "利用規約に同意して登録"
 REGISTER_PANEL_BUTTON_CUSTOM_ID = "dxd_rating:register_panel:register"
-MATCHMAKING_CHANNEL_MESSAGE = "\n".join(
-    [
-        "この UI はマッチングキュー参加用です。",
-        "試合形式と階級を選んでから参加ボタンを押してください。",
-        "在席更新とキュー退出は /present と /leave を使ってください。",
-    ]
-)
-MATCHMAKING_CHANNEL_STATUS_PLACEHOLDER_MESSAGE = "\n".join(
-    [
-        "直近30分の参加状況",
-        "参加状況はまだ取得されていません",
-    ]
-)
-MATCHMAKING_CHANNEL_MATCH_FORMAT_PLACEHOLDER = "試合形式を選択"
-MATCHMAKING_CHANNEL_QUEUE_NAME_PLACEHOLDER = "階級を選択"
-MATCHMAKING_CHANNEL_JOIN_BUTTON_LABEL = "参加"
-MATCHMAKING_CHANNEL_UPDATE_STATUS_BUTTON_LABEL = "更新する"
 MATCHMAKING_CHANNEL_MATCH_FORMAT_SELECT_CUSTOM_ID = "dxd_rating:matchmaking_channel:match_format"
 MATCHMAKING_CHANNEL_QUEUE_NAME_SELECT_CUSTOM_ID = "dxd_rating:matchmaking_channel:queue_name"
 MATCHMAKING_CHANNEL_JOIN_BUTTON_CUSTOM_ID = "dxd_rating:matchmaking_channel:join"
 MATCHMAKING_CHANNEL_UPDATE_STATUS_BUTTON_CUSTOM_ID = "dxd_rating:matchmaking_channel:update_status"
-MATCHMAKING_CHANNEL_SELECT_MATCH_FORMAT_MESSAGE = "試合形式を選択してください。"
-MATCHMAKING_CHANNEL_SELECT_QUEUE_NAME_MESSAGE = "階級を選択してください。"
-MATCHMAKING_NEWS_CHANNEL_MESSAGE = "\n".join(
-    [
-        "このチャンネルにはマッチ成立時のアナウンスが投稿されます。",
-        "観戦ボタンもこのチャンネルのアナウンスメッセージに表示されます。",
-    ]
-)
-INFO_CHANNEL_MESSAGE = "\n".join(
-    [
-        "このチャンネルはレート戦の情報確認用です。",
-        "使いたい項目のボタンを押すと、自分用の情報確認スレッドを作成できます。",
-        "スレッド作成直後にランキングやプレイヤー情報は自動表示されません。",
-    ]
-)
-INFO_CHANNEL_LEADERBOARD_BUTTON_LABEL = "現在シーズンのランキング"
 INFO_CHANNEL_LEADERBOARD_BUTTON_CUSTOM_ID = "dxd_rating:info_channel:leaderboard"
-INFO_CHANNEL_LEADERBOARD_SEASON_BUTTON_LABEL = "シーズン別ランキング"
 INFO_CHANNEL_LEADERBOARD_SEASON_BUTTON_CUSTOM_ID = "dxd_rating:info_channel:leaderboard_season"
-INFO_CHANNEL_PLAYER_INFO_BUTTON_LABEL = "現在シーズンのプレイヤー情報"
 INFO_CHANNEL_PLAYER_INFO_BUTTON_CUSTOM_ID = "dxd_rating:info_channel:player_info"
-INFO_CHANNEL_PLAYER_INFO_SEASON_BUTTON_LABEL = "シーズン別プレイヤー情報"
 INFO_CHANNEL_PLAYER_INFO_SEASON_BUTTON_CUSTOM_ID = "dxd_rating:info_channel:player_info_season"
-SYSTEM_ANNOUNCEMENTS_CHANNEL_MESSAGE = "このチャンネルは運営からのシステムアナウンス専用です。"
-ADMIN_CONTACT_CHANNEL_MESSAGE = "運営への連絡やフィードバックはこちらへどうぞ。"
-ADMIN_OPERATIONS_CHANNEL_MESSAGE = "このチャンネルは super admin 専用の運用連絡チャンネルです。"
 MAX_MANAGED_UI_CHANNEL_NAME_LENGTH = 100
-REGISTER_PANEL_FALLBACK_ERROR_MESSAGE = "登録に失敗しました。管理者に確認してください。"
-MATCHMAKING_CHANNEL_FALLBACK_ERROR_MESSAGE = "操作に失敗しました。管理者に確認してください。"
-MATCHMAKING_CHANNEL_STATUS_UPDATE_FALLBACK_ERROR_MESSAGE = (
-    "参加状況の更新に失敗しました。管理者に確認してください。"
-)
-INFO_CHANNEL_FALLBACK_ERROR_MESSAGE = (
-    "情報確認用スレッドの作成に失敗しました。管理者に確認してください。"
-)
 
 logger = logging.getLogger(__name__)
 
@@ -200,32 +174,6 @@ class MatchmakingPanelSelectionState:
 class InitialManagedUiMessages:
     primary_message: discord.Message
     status_message: discord.Message | None = None
-
-
-def build_matchmaking_guide_message(guide_url: str) -> str:
-    return "\n".join(
-        [
-            "レート戦の遊び方",
-            "下のメッセージで試合形式と階級を選んで、参加ボタンを押すとマッチングを始められます。",
-            "マッチしたら、まず試合を進める人の「親」を1人決めてください。",
-            "試合は3セットで行い、勝ったセットが多いチームの勝ちです。",
-            "勝ったセット数が同じなら引き分けです。",
-            "どちらかが2回続けて勝ったら、その時点で試合終了です。",
-            "試合が終わったら、参加した **全員** が勝敗報告をしてください。",
-            f"くわしい遊び方は [こちらから]({guide_url}) 確認できます。",
-        ]
-    )
-
-
-def build_matchmaking_status_message(
-    snapshot: Sequence[MatchmakingStatusSnapshotEntry],
-) -> str:
-    lines = ["直近30分の参加状況"]
-    lines.extend(
-        f"{entry.match_format.value}-{entry.queue_name}: {entry.active_count}" for entry in snapshot
-    )
-    return "\n".join(lines)
-
 
 def _build_matchmaking_match_format_options() -> list[discord.SelectOption]:
     return [

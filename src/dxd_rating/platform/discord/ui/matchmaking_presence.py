@@ -6,13 +6,14 @@ from typing import Any, Protocol
 
 import discord
 
-MATCHMAKING_PRESENCE_THREAD_PRESENT_BUTTON_LABEL = "在席"
-MATCHMAKING_PRESENCE_THREAD_LEAVE_BUTTON_LABEL = "マッチングキャンセル"
+from dxd_rating.platform.discord.copy.matchmaking import (
+    MATCHMAKING_PRESENCE_THREAD_FALLBACK_ERROR_MESSAGE,
+    MATCHMAKING_PRESENCE_THREAD_LEAVE_BUTTON_LABEL,
+    MATCHMAKING_PRESENCE_THREAD_PRESENT_BUTTON_LABEL,
+)
+
 MATCHMAKING_PRESENCE_THREAD_PRESENT_BUTTON_CUSTOM_ID = "dxd_rating:matchmaking_presence:present"
 MATCHMAKING_PRESENCE_THREAD_LEAVE_BUTTON_CUSTOM_ID = "dxd_rating:matchmaking_presence:leave"
-MATCHMAKING_PRESENCE_THREAD_FALLBACK_ERROR_MESSAGE = (
-    "操作に失敗しました。管理者に確認してください。"
-)
 
 logger = logging.getLogger(__name__)
 

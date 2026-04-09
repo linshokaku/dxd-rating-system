@@ -7,18 +7,17 @@ from typing import Any, ClassVar, Protocol
 
 import discord
 
-MATCHMAKING_NEWS_MATCH_ANNOUNCEMENT_SPECTATE_BUTTON_LABEL = "観戦する"
+from dxd_rating.platform.discord.copy.match import (
+    MATCHMAKING_NEWS_MATCH_ANNOUNCEMENT_FALLBACK_ERROR_MESSAGE,
+    MATCHMAKING_NEWS_MATCH_ANNOUNCEMENT_SPECTATE_BUTTON_LABEL,
+    MATCHMAKING_NEWS_MATCH_ANNOUNCEMENT_SPECTATE_GUIDE_MESSAGE,
+)
+
 MATCHMAKING_NEWS_MATCH_ANNOUNCEMENT_SPECTATE_BUTTON_CUSTOM_ID_PREFIX = (
     "dxd_rating:matchmaking_news:spectate"
 )
 MATCHMAKING_NEWS_MATCH_ANNOUNCEMENT_SPECTATE_BUTTON_TEMPLATE = (
     r"^dxd_rating:matchmaking_news:spectate:(?P<match_id>\d+)$"
-)
-MATCHMAKING_NEWS_MATCH_ANNOUNCEMENT_SPECTATE_GUIDE_MESSAGE = (
-    "観戦希望者は下の「観戦する」ボタンから応募してください。"
-)
-MATCHMAKING_NEWS_MATCH_ANNOUNCEMENT_FALLBACK_ERROR_MESSAGE = (
-    "観戦応募に失敗しました。管理者に確認してください。"
 )
 
 logger = logging.getLogger(__name__)

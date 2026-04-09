@@ -7,40 +7,41 @@ from typing import Any, ClassVar, Protocol
 
 import discord
 
-MATCH_OPERATION_THREAD_WIN_BUTTON_LABEL = "勝ち"
+from dxd_rating.platform.discord.copy.match import (
+    MATCH_OPERATION_THREAD_APPROVE_BUTTON_LABEL,
+    MATCH_OPERATION_THREAD_DRAW_BUTTON_LABEL,
+    MATCH_OPERATION_THREAD_FALLBACK_ERROR_MESSAGE,
+    MATCH_OPERATION_THREAD_LOSE_BUTTON_LABEL,
+    MATCH_OPERATION_THREAD_PARENT_BUTTON_LABEL,
+    MATCH_OPERATION_THREAD_VOID_BUTTON_LABEL,
+    MATCH_OPERATION_THREAD_VOID_GUIDE_MESSAGE,
+    MATCH_OPERATION_THREAD_WIN_BUTTON_LABEL,
+)
+
 MATCH_OPERATION_THREAD_WIN_BUTTON_CUSTOM_ID_PREFIX = "dxd_rating:match_operation_thread:win"
 MATCH_OPERATION_THREAD_WIN_BUTTON_TEMPLATE = (
     r"^dxd_rating:match_operation_thread:win:(?P<match_id>\d+)$"
 )
-MATCH_OPERATION_THREAD_DRAW_BUTTON_LABEL = "引き分け"
 MATCH_OPERATION_THREAD_DRAW_BUTTON_CUSTOM_ID_PREFIX = "dxd_rating:match_operation_thread:draw"
 MATCH_OPERATION_THREAD_DRAW_BUTTON_TEMPLATE = (
     r"^dxd_rating:match_operation_thread:draw:(?P<match_id>\d+)$"
 )
-MATCH_OPERATION_THREAD_LOSE_BUTTON_LABEL = "負け"
 MATCH_OPERATION_THREAD_LOSE_BUTTON_CUSTOM_ID_PREFIX = "dxd_rating:match_operation_thread:lose"
 MATCH_OPERATION_THREAD_LOSE_BUTTON_TEMPLATE = (
     r"^dxd_rating:match_operation_thread:lose:(?P<match_id>\d+)$"
 )
-MATCH_OPERATION_THREAD_VOID_BUTTON_LABEL = "無効試合申請"
 MATCH_OPERATION_THREAD_VOID_BUTTON_CUSTOM_ID_PREFIX = "dxd_rating:match_operation_thread:void"
 MATCH_OPERATION_THREAD_VOID_BUTTON_TEMPLATE = (
     r"^dxd_rating:match_operation_thread:void:(?P<match_id>\d+)$"
 )
-MATCH_OPERATION_THREAD_PARENT_BUTTON_LABEL = "親に立候補する"
 MATCH_OPERATION_THREAD_PARENT_BUTTON_CUSTOM_ID_PREFIX = "dxd_rating:match_operation_thread:parent"
 MATCH_OPERATION_THREAD_PARENT_BUTTON_TEMPLATE = (
     r"^dxd_rating:match_operation_thread:parent:(?P<match_id>\d+)$"
 )
-MATCH_OPERATION_THREAD_APPROVE_BUTTON_LABEL = "承認"
 MATCH_OPERATION_THREAD_APPROVE_BUTTON_CUSTOM_ID_PREFIX = "dxd_rating:match_operation_thread:approve"
 MATCH_OPERATION_THREAD_APPROVE_BUTTON_TEMPLATE = (
     r"^dxd_rating:match_operation_thread:approve:(?P<match_id>\d+)$"
 )
-MATCH_OPERATION_THREAD_VOID_GUIDE_MESSAGE = (
-    "無効試合とする必要がある場合は下の「無効試合申請」ボタンを押してください。"
-)
-MATCH_OPERATION_THREAD_FALLBACK_ERROR_MESSAGE = "試合操作に失敗しました。管理者に確認してください。"
 
 logger = logging.getLogger(__name__)
 

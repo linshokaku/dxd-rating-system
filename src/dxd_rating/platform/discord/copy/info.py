@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from dxd_rating.contexts.leaderboard.application import CurrentLeaderboardPage, SeasonLeaderboardPage
+from dxd_rating.contexts.leaderboard.application import (
+    CurrentLeaderboardPage,
+    SeasonLeaderboardPage,
+)
 from dxd_rating.contexts.players.application import PlayerInfo
 from dxd_rating.contexts.ui.application import InfoThreadCommandName
 

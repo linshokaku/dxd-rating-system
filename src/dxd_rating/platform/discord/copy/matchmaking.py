@@ -3,15 +3,9 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from dxd_rating.contexts.matchmaking.application import MatchmakingStatusSnapshotEntry
+from dxd_rating.platform.db.models import MatchFormat
 
 # マッチング導線の UI 本文
-MATCHMAKING_CHANNEL_MESSAGE = "\n".join(
-    [
-        "この UI はマッチングキュー参加用です。",
-        "試合形式と階級を選んでから参加ボタンを押してください。",
-        "在席更新とキュー退出は /present と /leave を使ってください。",
-    ]
-)
 MATCHMAKING_CHANNEL_STATUS_PLACEHOLDER_MESSAGE = "\n".join(
     [
         "直近30分の参加状況",
@@ -20,11 +14,9 @@ MATCHMAKING_CHANNEL_STATUS_PLACEHOLDER_MESSAGE = "\n".join(
 )
 
 # マッチング導線のボタン・placeholder・補助文言
-MATCHMAKING_CHANNEL_MATCH_FORMAT_PLACEHOLDER = "試合形式を選択"
 MATCHMAKING_CHANNEL_QUEUE_NAME_PLACEHOLDER = "階級を選択"
 MATCHMAKING_CHANNEL_JOIN_BUTTON_LABEL = "参加"
 MATCHMAKING_CHANNEL_UPDATE_STATUS_BUTTON_LABEL = "更新する"
-MATCHMAKING_CHANNEL_SELECT_MATCH_FORMAT_MESSAGE = "試合形式を選択してください。"
 MATCHMAKING_CHANNEL_SELECT_QUEUE_NAME_MESSAGE = "階級を選択してください。"
 MATCHMAKING_PRESENCE_THREAD_PRESENT_BUTTON_LABEL = "在席"
 MATCHMAKING_PRESENCE_THREAD_LEAVE_BUTTON_LABEL = "マッチングキャンセル"
@@ -83,7 +75,7 @@ def build_matchmaking_guide_message(guide_url: str) -> str:
     return "\n".join(
         [
             "レート戦の遊び方",
-            "下のメッセージで試合形式と階級を選んで、参加ボタンを押すとマッチングを始められます。",
+            "下のパネルで参加したい試合形式の階級を選び、参加ボタンを押すとマッチングを始められます。",
             "マッチしたら、まず試合を進める人の「親」を1人決めてください。",
             "試合は3セットで行い、勝ったセットが多いチームの勝ちです。",
             "勝ったセット数が同じなら引き分けです。",
@@ -104,6 +96,18 @@ def build_matchmaking_status_message(
     return "\n".join(lines)
 
 
+def build_matchmaking_panel_message(match_format: MatchFormat | str) -> str:
+    resolved_match_format = (
+        match_format if isinstance(match_format, MatchFormat) else MatchFormat(match_format)
+    )
+    return "\n".join(
+        [
+            f"{resolved_match_format.value} の参加キューを選択してください。",
+            "在席更新とキュー退出は /present と /leave を使ってください。",
+        ]
+    )
+
+
 def build_matchmaking_presence_thread_guide_message(thread_mention: str) -> str:
     return f"在席確認は {thread_mention} で行ってください。"
 
@@ -121,4 +125,3 @@ def build_matchmaking_join_success_message(thread_mention: str | None = None) ->
 
 def build_matchmaking_presence_thread_name(suffix: str) -> str:
     return f"在席確認-{suffix}"
-

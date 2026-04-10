@@ -8,6 +8,8 @@ from typing import Any, ClassVar, Protocol, Sequence
 
 import discord
 
+from dxd_rating.contexts.seasons.application import SeasonInfo
+from dxd_rating.platform.db.models import MatchFormat
 from dxd_rating.platform.discord.copy.info import (
     INFO_THREAD_LEADERBOARD_FALLBACK_ERROR_MESSAGE,
     INFO_THREAD_LEADERBOARD_MATCH_FORMAT_PLACEHOLDER,
@@ -23,10 +25,8 @@ from dxd_rating.platform.discord.copy.info import (
     INFO_THREAD_PLAYER_INFO_SEASON_SELECT_SEASON_MESSAGE,
     INFO_THREAD_PLAYER_INFO_SHOW_BUTTON_LABEL,
 )
-from dxd_rating.contexts.seasons.application import SeasonInfo
-from dxd_rating.contexts.ui.application import InfoThreadCommandName
-from dxd_rating.platform.db.models import MatchFormat
 from dxd_rating.shared.constants import get_match_format_definitions
+
 INFO_THREAD_PLAYER_INFO_SHOW_BUTTON_CUSTOM_ID = "dxd_rating:info_thread:player_info:show"
 INFO_THREAD_PLAYER_INFO_SEASON_SEASON_SELECT_CUSTOM_ID = (
     "dxd_rating:info_thread:player_info_season:season_id"

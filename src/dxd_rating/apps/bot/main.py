@@ -19,6 +19,7 @@ from dxd_rating.platform.discord.ui import (
     create_info_thread_player_info_initial_view,
     create_info_thread_player_info_season_initial_view,
     create_managed_ui_view,
+    create_matchmaking_panel_view,
     create_matchmaking_presence_thread_view,
     create_matchmaking_status_view,
     has_persistent_managed_ui_view,
@@ -27,6 +28,7 @@ from dxd_rating.platform.discord.ui import (
     register_matchmaking_news_match_announcement_dynamic_items,
 )
 from dxd_rating.platform.runtime import BotRuntime, MatchRuntime, OutboxDispatcher
+from dxd_rating.shared.constants import get_match_format_definitions
 
 logger = logging.getLogger(__name__)
 
@@ -130,15 +132,32 @@ class BotClient(discord.Client):
         for managed_ui_channel in managed_ui_channels:
             if not has_persistent_managed_ui_view(managed_ui_channel.ui_type):
                 continue
-            if (
-                managed_ui_channel.ui_type is ManagedUiType.MATCHMAKING_CHANNEL
-                and managed_ui_channel.status_message_id is not None
-            ):
-                self.add_view(
-                    create_matchmaking_status_view(self.command_handlers),
-                    message_id=managed_ui_channel.status_message_id,
-                )
-                registered_message_ids.append(managed_ui_channel.status_message_id)
+            if managed_ui_channel.ui_type is ManagedUiType.MATCHMAKING_CHANNEL:
+                if managed_ui_channel.status_message_id is not None:
+                    self.add_view(
+                        create_matchmaking_status_view(self.command_handlers),
+                        message_id=managed_ui_channel.status_message_id,
+                    )
+                    registered_message_ids.append(managed_ui_channel.status_message_id)
+                for definition in get_match_format_definitions():
+                    panel_message_id = managed_ui_channel.get_matchmaking_panel_message_id(
+                        definition.match_format
+                    )
+                    if panel_message_id is None:
+                        continue
+                    self.add_view(
+                        create_matchmaking_panel_view(
+                            self.command_handlers,
+                            definition.match_format,
+                        ),
+                        message_id=panel_message_id,
+                    )
+                    registered_message_ids.append(panel_message_id)
+                continue
+
+            if managed_ui_channel.message_id is None:
+                continue
+
             self.add_view(
                 create_managed_ui_view(
                     managed_ui_channel.ui_type,

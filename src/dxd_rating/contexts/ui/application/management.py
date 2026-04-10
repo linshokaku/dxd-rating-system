@@ -313,8 +313,11 @@ class ManagedUiService:
         *,
         ui_type: ManagedUiType,
         channel_id: int,
-        message_id: int,
+        message_id: int | None = None,
         status_message_id: int | None = None,
+        matchmaking_one_v_one_message_id: int | None = None,
+        matchmaking_two_v_two_message_id: int | None = None,
+        matchmaking_three_v_three_message_id: int | None = None,
         created_by_discord_user_id: int,
     ) -> ManagedUiChannel:
         with session_scope(self.session_factory) as session:
@@ -324,6 +327,9 @@ class ManagedUiService:
                 channel_id=channel_id,
                 message_id=message_id,
                 status_message_id=status_message_id,
+                matchmaking_one_v_one_message_id=matchmaking_one_v_one_message_id,
+                matchmaking_two_v_two_message_id=matchmaking_two_v_two_message_id,
+                matchmaking_three_v_three_message_id=matchmaking_three_v_three_message_id,
                 created_by_discord_user_id=created_by_discord_user_id,
             )
 
@@ -362,8 +368,11 @@ def _create_managed_ui_channel(
     *,
     ui_type: ManagedUiType,
     channel_id: int,
-    message_id: int,
+    message_id: int | None,
     status_message_id: int | None,
+    matchmaking_one_v_one_message_id: int | None,
+    matchmaking_two_v_two_message_id: int | None,
+    matchmaking_three_v_three_message_id: int | None,
     created_by_discord_user_id: int,
 ) -> ManagedUiChannel:
     managed_ui_channel = ManagedUiChannel(
@@ -371,6 +380,9 @@ def _create_managed_ui_channel(
         channel_id=channel_id,
         message_id=message_id,
         status_message_id=status_message_id,
+        matchmaking_one_v_one_message_id=matchmaking_one_v_one_message_id,
+        matchmaking_two_v_two_message_id=matchmaking_two_v_two_message_id,
+        matchmaking_three_v_three_message_id=matchmaking_three_v_three_message_id,
         created_by_discord_user_id=created_by_discord_user_id,
     )
     session.add(managed_ui_channel)

@@ -228,8 +228,10 @@ def test_setup_hook_restores_matchmaking_status_and_panel_views(
         ManagedUiChannel(
             ui_type=ManagedUiType.MATCHMAKING_CHANNEL,
             channel_id=1003,
-            message_id=2003,
             status_message_id=2004,
+            matchmaking_one_v_one_message_id=2005,
+            matchmaking_two_v_two_message_id=2006,
+            matchmaking_three_v_three_message_id=2007,
             created_by_discord_user_id=3003,
         )
     )
@@ -244,8 +246,8 @@ def test_setup_hook_restores_matchmaking_status_and_panel_views(
     registered_message_ids = set(client._connection._view_store._synced_message_views)
 
     assert [MATCHMAKING_CHANNEL_UPDATE_STATUS_BUTTON_LABEL] in button_labels_by_view
-    assert [None, None, MATCHMAKING_CHANNEL_JOIN_BUTTON_LABEL] in button_labels_by_view
-    assert registered_message_ids == {2003, 2004}
+    assert button_labels_by_view.count([None, MATCHMAKING_CHANNEL_JOIN_BUTTON_LABEL]) == 3
+    assert registered_message_ids == {2004, 2005, 2006, 2007}
 
 
 def test_setup_hook_skips_matchmaking_status_view_when_status_message_id_is_missing(
@@ -265,8 +267,10 @@ def test_setup_hook_skips_matchmaking_status_view_when_status_message_id_is_miss
         ManagedUiChannel(
             ui_type=ManagedUiType.MATCHMAKING_CHANNEL,
             channel_id=1004,
-            message_id=2005,
             status_message_id=None,
+            matchmaking_one_v_one_message_id=2008,
+            matchmaking_two_v_two_message_id=2009,
+            matchmaking_three_v_three_message_id=2010,
             created_by_discord_user_id=3004,
         )
     )
@@ -281,5 +285,5 @@ def test_setup_hook_skips_matchmaking_status_view_when_status_message_id_is_miss
     registered_message_ids = set(client._connection._view_store._synced_message_views)
 
     assert [MATCHMAKING_CHANNEL_UPDATE_STATUS_BUTTON_LABEL] not in button_labels_by_view
-    assert [None, None, MATCHMAKING_CHANNEL_JOIN_BUTTON_LABEL] in button_labels_by_view
-    assert registered_message_ids == {2005}
+    assert button_labels_by_view.count([None, MATCHMAKING_CHANNEL_JOIN_BUTTON_LABEL]) == 3
+    assert registered_message_ids == {2008, 2009, 2010}

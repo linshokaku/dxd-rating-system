@@ -31,9 +31,7 @@ from dxd_rating.contexts.common.application.errors import (
     MatchSpectatingRestrictedError,
     MatchSpectatorAlreadyRegisteredError,
     MatchSpectatorCapacityError,
-    PlayerSeasonStatsNotFoundError,
     RetryableTaskError,
-    SeasonNotFoundError,
 )
 from dxd_rating.contexts.matches.domain.match_rules import (
     LatestMatchReportSnapshot,

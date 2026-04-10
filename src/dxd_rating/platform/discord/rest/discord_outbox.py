@@ -59,6 +59,7 @@ from dxd_rating.platform.runtime.outbox import (
     PendingOutboxEvent,
 )
 from dxd_rating.shared.constants import format_discord_user_mention, is_dummy_discord_user_id
+
 JST = ZoneInfo("Asia/Tokyo")
 
 

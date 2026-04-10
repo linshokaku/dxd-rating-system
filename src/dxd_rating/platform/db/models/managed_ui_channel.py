@@ -10,6 +10,7 @@ from sqlalchemy.sql import func
 
 from dxd_rating.platform.db.models.base import Base
 from dxd_rating.platform.db.models.enum_utils import enum_values
+from dxd_rating.platform.db.models.match_format import MatchFormat
 
 
 class ManagedUiType(StrEnum):
@@ -39,11 +40,36 @@ class ManagedUiChannel(Base):
         index=True,
     )
     channel_id: Mapped[int] = mapped_column(BigInteger, nullable=False, unique=True)
-    message_id: Mapped[int] = mapped_column(BigInteger, nullable=False, unique=True)
+    message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, unique=True)
     status_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, unique=True)
+    matchmaking_one_v_one_message_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        nullable=True,
+        unique=True,
+    )
+    matchmaking_two_v_two_message_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        nullable=True,
+        unique=True,
+    )
+    matchmaking_three_v_three_message_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        nullable=True,
+        unique=True,
+    )
     created_by_discord_user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
         nullable=False,
     )
+
+    def get_matchmaking_panel_message_id(self, match_format: MatchFormat) -> int | None:
+        if match_format is MatchFormat.ONE_VS_ONE:
+            return self.matchmaking_one_v_one_message_id
+        if match_format is MatchFormat.TWO_VS_TWO:
+            return self.matchmaking_two_v_two_message_id
+        if match_format is MatchFormat.THREE_VS_THREE:
+            return self.matchmaking_three_v_three_message_id
+
+        raise ValueError(f"Unsupported match_format: {match_format}")

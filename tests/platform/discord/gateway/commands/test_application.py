@@ -80,16 +80,14 @@ from dxd_rating.platform.discord.copy.info import (
 from dxd_rating.platform.discord.copy.match import MATCHMAKING_NEWS_CHANNEL_MESSAGE
 from dxd_rating.platform.discord.copy.matchmaking import (
     MATCHMAKING_CHANNEL_JOIN_BUTTON_LABEL,
-    MATCHMAKING_CHANNEL_MATCH_FORMAT_PLACEHOLDER,
-    MATCHMAKING_CHANNEL_MESSAGE,
     MATCHMAKING_CHANNEL_QUEUE_NAME_PLACEHOLDER,
-    MATCHMAKING_CHANNEL_SELECT_MATCH_FORMAT_MESSAGE,
     MATCHMAKING_CHANNEL_SELECT_QUEUE_NAME_MESSAGE,
     MATCHMAKING_CHANNEL_STATUS_PLACEHOLDER_MESSAGE,
     MATCHMAKING_CHANNEL_UPDATE_STATUS_BUTTON_LABEL,
     MATCHMAKING_PRESENCE_THREAD_LEAVE_BUTTON_LABEL,
     MATCHMAKING_PRESENCE_THREAD_PRESENT_BUTTON_LABEL,
     build_matchmaking_guide_message,
+    build_matchmaking_panel_message,
     build_matchmaking_status_message,
 )
 from dxd_rating.platform.discord.copy.registration import (
@@ -110,8 +108,8 @@ from dxd_rating.platform.discord.ui import (
     INFO_CHANNEL_PLAYER_INFO_SEASON_BUTTON_CUSTOM_ID,
     INFO_THREAD_LEADERBOARD_SEASON_MAX_OPTIONS,
     MATCHMAKING_CHANNEL_UPDATE_STATUS_BUTTON_CUSTOM_ID,
+    FormatSpecificMatchmakingPanelView,
     MatchmakingNewsMatchAnnouncementSpectateButton,
-    MatchmakingPanelView,
     MatchOperationThreadParentButton,
 )
 from dxd_rating.platform.runtime import MatchRuntime
@@ -725,14 +723,20 @@ def setup_matchmaking_managed_ui_channel(
     channel_id: int,
     *,
     created_by_discord_user_id: int = 10,
-    message_id: int = 70_001,
+    message_id: int | None = None,
     status_message_id: int | None = 70_000,
+    matchmaking_one_v_one_message_id: int | None = 70_001,
+    matchmaking_two_v_two_message_id: int | None = 70_002,
+    matchmaking_three_v_three_message_id: int | None = 70_003,
 ) -> None:
     handlers.managed_ui_service.create_managed_ui_channel(
         ui_type=ManagedUiType.MATCHMAKING_CHANNEL,
         channel_id=channel_id,
         message_id=message_id,
         status_message_id=status_message_id,
+        matchmaking_one_v_one_message_id=matchmaking_one_v_one_message_id,
+        matchmaking_two_v_two_message_id=matchmaking_two_v_two_message_id,
+        matchmaking_three_v_three_message_id=matchmaking_three_v_three_message_id,
         created_by_discord_user_id=created_by_discord_user_id,
     )
 
@@ -750,6 +754,25 @@ def setup_info_managed_ui_channel(
         message_id=message_id,
         created_by_discord_user_id=created_by_discord_user_id,
     )
+
+
+def assert_matchmaking_panel_message(
+    message: FakeMessage,
+    match_format: MatchFormat,
+) -> None:
+    assert message.content == build_matchmaking_panel_message(match_format)
+    assert message.view is not None
+    assert message.suppress_embeds is False
+    queue_name_select = cast(discord.ui.Select[Any], message.view.children[0])
+    join_button = cast(discord.ui.Button[Any], message.view.children[1])
+
+    assert queue_name_select.placeholder == MATCHMAKING_CHANNEL_QUEUE_NAME_PLACEHOLDER
+    assert [option.value for option in queue_name_select.options] == [
+        "beginner",
+        "regular",
+        "master",
+    ]
+    assert join_button.label == MATCHMAKING_CHANNEL_JOIN_BUTTON_LABEL
 
 
 def create_active_info_thread(
@@ -1391,42 +1414,17 @@ def test_join_command_returns_restricted_message_for_queue_join_restricted_playe
     assert_response(interaction, ["現在キュー参加を制限されています。"], ephemeral=True)
 
 
-def test_matchmaking_panel_join_button_requires_match_format_selection(
-    session_factory: sessionmaker[Session],
-) -> None:
-    handlers = create_handlers(session_factory)
-    view = MatchmakingPanelView(handlers)
-    interaction = FakeInteraction(user=FakeUser(id=123_456_789_012_345_681_3))
-    join_button = cast(discord.ui.Button[Any], view.children[2])
-
-    asyncio.run(join_button.callback(as_interaction(interaction)))
-
-    assert_response(
-        interaction,
-        [MATCHMAKING_CHANNEL_SELECT_MATCH_FORMAT_MESSAGE],
-        ephemeral=True,
-    )
-    assert_deferred_followup_response(interaction)
-
-
 def test_matchmaking_panel_join_button_requires_queue_selection(
     session_factory: sessionmaker[Session],
 ) -> None:
     handlers = create_handlers(session_factory)
-    view = MatchmakingPanelView(handlers)
+    view = FormatSpecificMatchmakingPanelView(handlers, MatchFormat.TWO_VS_TWO)
     user = FakeUser(id=123_456_789_012_345_681_4)
-    match_format_select = cast(discord.ui.Select[Any], view.children[0])
-    join_button = cast(discord.ui.Button[Any], view.children[2])
-
-    set_select_values(match_format_select, [MatchFormat.TWO_VS_TWO.value])
-    select_interaction = FakeInteraction(user=user)
-    asyncio.run(match_format_select.callback(as_interaction(select_interaction)))
+    join_button = cast(discord.ui.Button[Any], view.children[1])
 
     interaction = FakeInteraction(user=user)
     asyncio.run(join_button.callback(as_interaction(interaction)))
 
-    assert select_interaction.response.deferred is True
-    assert select_interaction.response.messages == []
     assert_response(
         interaction,
         [MATCHMAKING_CHANNEL_SELECT_QUEUE_NAME_MESSAGE],
@@ -1445,10 +1443,9 @@ def test_matchmaking_panel_join_button_uses_selected_values_for_join(
         session_factory,
         matching_queue_service=MatchingQueueService(session_factory),
     )
-    view = MatchmakingPanelView(handlers)
-    match_format_select = cast(discord.ui.Select[Any], view.children[0])
-    queue_name_select = cast(discord.ui.Select[Any], view.children[1])
-    join_button = cast(discord.ui.Button[Any], view.children[2])
+    view = FormatSpecificMatchmakingPanelView(handlers, MatchFormat.ONE_VS_ONE)
+    queue_name_select = cast(discord.ui.Select[Any], view.children[0])
+    join_button = cast(discord.ui.Button[Any], view.children[1])
     user = FakeUser(
         id=discord_user_id,
         name="ui-queue-user",
@@ -1463,9 +1460,6 @@ def test_matchmaking_panel_join_button_uses_selected_values_for_join(
     )
     guild.channels.append(channel)
     setup_matchmaking_managed_ui_channel(handlers, channel.id)
-
-    set_select_values(match_format_select, [MatchFormat.ONE_VS_ONE.value])
-    asyncio.run(match_format_select.callback(as_interaction(FakeInteraction(user=user))))
 
     set_select_values(queue_name_select, ["regular"])
     asyncio.run(queue_name_select.callback(as_interaction(FakeInteraction(user=user))))
@@ -1941,9 +1935,32 @@ def test_update_matchmaking_status_command_updates_second_message(
     assert len(matchmaking_channel.sent_messages[1].content.splitlines()) == (
         len(get_match_queue_class_definitions()) + 1
     )
-    assert matchmaking_channel.sent_messages[2].content == MATCHMAKING_CHANNEL_MESSAGE
+    assert_matchmaking_panel_message(
+        matchmaking_channel.sent_messages[2],
+        MatchFormat.ONE_VS_ONE,
+    )
+    assert_matchmaking_panel_message(
+        matchmaking_channel.sent_messages[3],
+        MatchFormat.TWO_VS_TWO,
+    )
+    assert_matchmaking_panel_message(
+        matchmaking_channel.sent_messages[4],
+        MatchFormat.THREE_VS_THREE,
+    )
     assert managed_ui_channel.status_message_id == matchmaking_channel.sent_messages[1].id
-    assert managed_ui_channel.message_id == matchmaking_channel.sent_messages[2].id
+    assert managed_ui_channel.message_id is None
+    assert (
+        managed_ui_channel.matchmaking_one_v_one_message_id
+        == matchmaking_channel.sent_messages[2].id
+    )
+    assert (
+        managed_ui_channel.matchmaking_two_v_two_message_id
+        == matchmaking_channel.sent_messages[3].id
+    )
+    assert (
+        managed_ui_channel.matchmaking_three_v_three_message_id
+        == matchmaking_channel.sent_messages[4].id
+    )
 
 
 def test_matchmaking_status_button_updates_second_message(
@@ -2003,7 +2020,7 @@ def test_matchmaking_status_button_updates_second_message(
     assert_response(interaction, ["参加状況を更新しました。"], ephemeral=True)
     assert_deferred_followup_response(interaction)
     assert status_message.content == expected_message
-    assert matchmaking_channel.sent_messages[2].content == MATCHMAKING_CHANNEL_MESSAGE
+    assert_matchmaking_panel_message(matchmaking_channel.sent_messages[2], MatchFormat.ONE_VS_ONE)
 
 
 def test_matchmaking_status_button_requires_registered_player(
@@ -2267,14 +2284,16 @@ def test_update_matchmaking_status_command_returns_generic_failure_when_edit_fai
     guild.channels.append(matchmaking_channel)
     guide_message = asyncio.run(matchmaking_channel.send(content="guide"))
     status_message = asyncio.run(matchmaking_channel.send(content="status"))
-    ui_message = asyncio.run(matchmaking_channel.send(content=MATCHMAKING_CHANNEL_MESSAGE))
+    panel_message = asyncio.run(
+        matchmaking_channel.send(content=build_matchmaking_panel_message(MatchFormat.ONE_VS_ONE))
+    )
     del guide_message
     status_message.fail_edit_with = RuntimeError("boom")
     setup_matchmaking_managed_ui_channel(
         handlers,
         matchmaking_channel.id,
-        message_id=ui_message.id,
         status_message_id=status_message.id,
+        matchmaking_one_v_one_message_id=panel_message.id,
     )
     interaction = FakeInteraction(
         user=FakeUser(id=discord_user_id),
@@ -8036,13 +8055,25 @@ def test_admin_setup_custom_ui_channel_creates_matchmaking_channel_with_placehol
     assert managed_ui_channel.ui_type == ManagedUiType.MATCHMAKING_CHANNEL
     assert managed_ui_channel.channel_id == persisted_channel.id
     assert managed_ui_channel.status_message_id == persisted_channel.sent_messages[1].id
-    assert managed_ui_channel.message_id == persisted_channel.sent_messages[2].id
+    assert managed_ui_channel.message_id is None
+    assert (
+        managed_ui_channel.matchmaking_one_v_one_message_id
+        == persisted_channel.sent_messages[2].id
+    )
+    assert (
+        managed_ui_channel.matchmaking_two_v_two_message_id
+        == persisted_channel.sent_messages[3].id
+    )
+    assert (
+        managed_ui_channel.matchmaking_three_v_three_message_id
+        == persisted_channel.sent_messages[4].id
+    )
     assert managed_ui_channel.created_by_discord_user_id == executor_discord_user_id
     assert persisted_channel.overwrites[guild.default_role].view_channel is False
     assert persisted_channel.overwrites[guild.default_role].send_messages is False
     assert persisted_channel.overwrites[registered_role].view_channel is True
     assert persisted_channel.overwrites[registered_role].send_messages is False
-    assert len(persisted_channel.sent_messages) == 3
+    assert len(persisted_channel.sent_messages) == 5
     assert persisted_channel.sent_messages[0].content == build_matchmaking_guide_message(
         matchmaking_guide_url
     )
@@ -8060,30 +8091,9 @@ def test_admin_setup_custom_ui_channel_creates_matchmaking_channel_with_placehol
     assert status_button.label == MATCHMAKING_CHANNEL_UPDATE_STATUS_BUTTON_LABEL
     assert status_button.style is discord.ButtonStyle.success
     assert status_button.custom_id == MATCHMAKING_CHANNEL_UPDATE_STATUS_BUTTON_CUSTOM_ID
-    assert persisted_channel.sent_messages[2].content == MATCHMAKING_CHANNEL_MESSAGE
-    assert persisted_channel.sent_messages[2].view is not None
-    assert persisted_channel.sent_messages[2].suppress_embeds is False
-    match_format_select = cast(
-        discord.ui.Select[Any],
-        persisted_channel.sent_messages[2].view.children[0],
-    )
-    queue_name_select = cast(
-        discord.ui.Select[Any],
-        persisted_channel.sent_messages[2].view.children[1],
-    )
-    join_button = cast(
-        discord.ui.Button[Any],
-        persisted_channel.sent_messages[2].view.children[2],
-    )
-    assert match_format_select.placeholder == MATCHMAKING_CHANNEL_MATCH_FORMAT_PLACEHOLDER
-    assert [option.value for option in match_format_select.options] == ["1v1", "2v2", "3v3"]
-    assert queue_name_select.placeholder == MATCHMAKING_CHANNEL_QUEUE_NAME_PLACEHOLDER
-    assert [option.value for option in queue_name_select.options] == [
-        "beginner",
-        "regular",
-        "master",
-    ]
-    assert join_button.label == MATCHMAKING_CHANNEL_JOIN_BUTTON_LABEL
+    assert_matchmaking_panel_message(persisted_channel.sent_messages[2], MatchFormat.ONE_VS_ONE)
+    assert_matchmaking_panel_message(persisted_channel.sent_messages[3], MatchFormat.TWO_VS_TWO)
+    assert_matchmaking_panel_message(persisted_channel.sent_messages[4], MatchFormat.THREE_VS_THREE)
 
 
 def test_admin_setup_custom_ui_channel_creates_admin_operations_channel_for_super_admins(
@@ -8562,7 +8572,7 @@ def test_admin_setup_ui_channels_creates_registered_channel_set(
     assert matchmaking_channel.overwrites[registered_role].send_messages is False
     assert matchmaking_channel.overwrites[guild.me].create_private_threads is True
     assert matchmaking_channel.overwrites[guild.me].send_messages_in_threads is True
-    assert len(matchmaking_channel.sent_messages) == 3
+    assert len(matchmaking_channel.sent_messages) == 5
     assert matchmaking_channel.sent_messages[0].content == build_matchmaking_guide_message(
         DEFAULT_MATCHMAKING_GUIDE_URL
     )
@@ -8581,37 +8591,37 @@ def test_admin_setup_ui_channels_creates_registered_channel_set(
     assert status_button.label == MATCHMAKING_CHANNEL_UPDATE_STATUS_BUTTON_LABEL
     assert status_button.style is discord.ButtonStyle.success
     assert status_button.custom_id == MATCHMAKING_CHANNEL_UPDATE_STATUS_BUTTON_CUSTOM_ID
-    assert matchmaking_channel.sent_messages[2].content == MATCHMAKING_CHANNEL_MESSAGE
-    assert matchmaking_channel.sent_messages[2].view is not None
-    assert matchmaking_channel.sent_messages[2].suppress_embeds is False
+    assert_matchmaking_panel_message(
+        matchmaking_channel.sent_messages[2],
+        MatchFormat.ONE_VS_ONE,
+    )
+    assert_matchmaking_panel_message(
+        matchmaking_channel.sent_messages[3],
+        MatchFormat.TWO_VS_TWO,
+    )
+    assert_matchmaking_panel_message(
+        matchmaking_channel.sent_messages[4],
+        MatchFormat.THREE_VS_THREE,
+    )
     matchmaking_channel_record = next(
         managed_ui_channel
         for managed_ui_channel in managed_ui_channels
         if managed_ui_channel.ui_type == ManagedUiType.MATCHMAKING_CHANNEL
     )
     assert matchmaking_channel_record.status_message_id == matchmaking_channel.sent_messages[1].id
-    assert matchmaking_channel_record.message_id == matchmaking_channel.sent_messages[2].id
-    match_format_select = cast(
-        discord.ui.Select[Any],
-        matchmaking_channel.sent_messages[2].view.children[0],
+    assert matchmaking_channel_record.message_id is None
+    assert (
+        matchmaking_channel_record.matchmaking_one_v_one_message_id
+        == matchmaking_channel.sent_messages[2].id
     )
-    queue_name_select = cast(
-        discord.ui.Select[Any],
-        matchmaking_channel.sent_messages[2].view.children[1],
+    assert (
+        matchmaking_channel_record.matchmaking_two_v_two_message_id
+        == matchmaking_channel.sent_messages[3].id
     )
-    join_button = cast(
-        discord.ui.Button[Any],
-        matchmaking_channel.sent_messages[2].view.children[2],
+    assert (
+        matchmaking_channel_record.matchmaking_three_v_three_message_id
+        == matchmaking_channel.sent_messages[4].id
     )
-    assert match_format_select.placeholder == MATCHMAKING_CHANNEL_MATCH_FORMAT_PLACEHOLDER
-    assert [option.value for option in match_format_select.options] == ["1v1", "2v2", "3v3"]
-    assert queue_name_select.placeholder == MATCHMAKING_CHANNEL_QUEUE_NAME_PLACEHOLDER
-    assert [option.value for option in queue_name_select.options] == [
-        "beginner",
-        "regular",
-        "master",
-    ]
-    assert join_button.label == MATCHMAKING_CHANNEL_JOIN_BUTTON_LABEL
 
     matchmaking_news_channel = find_channel_by_name(guild, "レート戦マッチ速報")
     assert matchmaking_news_channel.overwrites[guild.default_role].view_channel is False

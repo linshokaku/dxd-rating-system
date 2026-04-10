@@ -13,9 +13,9 @@ from dxd_rating.contexts.common.application.errors import (
     InvalidSeasonNameRequiredError,
     PlayerNotRegisteredError,
     PlayerSeasonStatsNotFoundError,
+    SeasonAlreadyExistsError,
     SeasonNameLeadingDigitError,
     SeasonNameTooLongError,
-    SeasonAlreadyExistsError,
     SeasonNotFoundError,
     SeasonStateError,
 )

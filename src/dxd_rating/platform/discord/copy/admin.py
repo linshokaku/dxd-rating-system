@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from dxd_rating.contexts.restrictions.application import PlayerAccessRestrictionDuration
-from dxd_rating.platform.db.models import PenaltyType, PlayerAccessRestrictionType
+from dxd_rating.platform.db.models import PlayerAccessRestrictionType
 
 # 管理者向けの基本応答文言
 ADMIN_ONLY_MESSAGE = "このコマンドは管理者のみ実行できます。"

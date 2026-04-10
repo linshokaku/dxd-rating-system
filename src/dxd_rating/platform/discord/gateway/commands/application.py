@@ -46,9 +46,9 @@ from dxd_rating.contexts.common.application import (
     QueueJoinNotAllowedError,
     QueueJoinRestrictedError,
     QueueNotJoinedError,
+    SeasonAlreadyExistsError,
     SeasonNameLeadingDigitError,
     SeasonNameTooLongError,
-    SeasonAlreadyExistsError,
     SeasonNotFoundError,
     SeasonStateError,
 )
@@ -195,6 +195,7 @@ from dxd_rating.platform.discord.copy.dev import (
     DEV_INFO_THREAD_NOT_FOUND_MESSAGE,
     DEV_INFO_THREAD_REQUIRED_MESSAGE,
     DEV_INFO_THREAD_SUCCESS_MESSAGE,
+    DEV_INVALID_QUEUE_NAME_MESSAGE,
     DEV_IS_ADMIN_COMMAND_DESCRIPTION,
     DEV_IS_ADMIN_ERROR_MESSAGE,
     DEV_JOIN_ALREADY_JOINED_MESSAGE,
@@ -206,7 +207,6 @@ from dxd_rating.platform.discord.copy.dev import (
     DEV_JOIN_QUEUE_NAME_DESCRIPTION,
     DEV_JOIN_RESTRICTED_MESSAGE,
     DEV_JOIN_SUCCESS_MESSAGE,
-    DEV_INVALID_QUEUE_NAME_MESSAGE,
     DEV_LEADERBOARD_COMMAND_DESCRIPTION,
     DEV_LEADERBOARD_DISCORD_USER_ID_DESCRIPTION,
     DEV_LEADERBOARD_FAILED_MESSAGE,
@@ -724,7 +724,7 @@ class BotCommandHandlers:
                     invite_target_user=True,
                 )
 
-            result = await service.join_queue(
+            await service.join_queue(
                 player_id,
                 match_format,
                 queue_name,
@@ -776,7 +776,10 @@ class BotCommandHandlers:
 
         await self._send_player_operation_message(
             interaction,
-            self._format_matchmaking_join_success_message(JOIN_SUCCESS_MESSAGE, thread_id=thread_id),
+            self._format_matchmaking_join_success_message(
+                JOIN_SUCCESS_MESSAGE,
+                thread_id=thread_id,
+            ),
         )
 
     async def present(self, interaction: discord.Interaction[Any]) -> None:
@@ -3470,8 +3473,11 @@ class BotCommandHandlers:
         self,
         ui_type: ManagedUiType,
         channel_id: int,
-        message_id: int,
+        message_id: int | None,
         status_message_id: int | None,
+        matchmaking_one_v_one_message_id: int | None,
+        matchmaking_two_v_two_message_id: int | None,
+        matchmaking_three_v_three_message_id: int | None,
         created_by_discord_user_id: int,
     ) -> ManagedUiChannel:
         return self.managed_ui_service.create_managed_ui_channel(
@@ -3479,6 +3485,9 @@ class BotCommandHandlers:
             channel_id=channel_id,
             message_id=message_id,
             status_message_id=status_message_id,
+            matchmaking_one_v_one_message_id=matchmaking_one_v_one_message_id,
+            matchmaking_two_v_two_message_id=matchmaking_two_v_two_message_id,
+            matchmaking_three_v_three_message_id=matchmaking_three_v_three_message_id,
             created_by_discord_user_id=created_by_discord_user_id,
         )
 
@@ -4925,8 +4934,17 @@ class BotCommandHandlers:
                 self._create_managed_ui_channel_record,
                 definition.ui_type,
                 channel.id,
-                messages.primary_message.id,
+                None if messages.primary_message is None else messages.primary_message.id,
                 None if messages.status_message is None else messages.status_message.id,
+                None
+                if messages.matchmaking_one_v_one_message is None
+                else messages.matchmaking_one_v_one_message.id,
+                None
+                if messages.matchmaking_two_v_two_message is None
+                else messages.matchmaking_two_v_two_message.id,
+                None
+                if messages.matchmaking_three_v_three_message is None
+                else messages.matchmaking_three_v_three_message.id,
                 created_by_discord_user_id,
             )
         except Exception as exc:

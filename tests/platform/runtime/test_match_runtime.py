@@ -95,6 +95,7 @@ from dxd_rating.platform.runtime import (
     PendingOutboxEvent,
 )
 from dxd_rating.shared.constants import (
+    DEVELOPMENT_MATCH_TIMING_WINDOWS,
     MATCH_QUEUE_TTL,
     PRESENCE_REMINDER_LEAD_TIME,
     get_match_queue_class_definition_by_name,
@@ -624,6 +625,101 @@ def test_match_runtime_join_queue_calls_service_and_schedules_timers(
     assert execution_order == [
         ("after_join", join_result.queue_entry_id),
         ("try_create_matches", DEFAULT_QUEUE_CLASS_ID),
+    ]
+
+
+def test_match_runtime_try_create_matches_uses_injected_parent_selection_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = Mock()
+    created_at = datetime.now(timezone.utc)
+    created_match = CreatedMatchResult(
+        match_id=601,
+        queue_entry_ids=(101, 102),
+        player_ids=(201, 202),
+        match_format=DEFAULT_MATCH_FORMAT,
+        created_at=created_at,
+    )
+    service.try_create_matches.return_value = (created_match,)
+    runtime = MatchRuntime(
+        service=service,
+        match_timing_windows=DEVELOPMENT_MATCH_TIMING_WINDOWS,
+    )
+    cancelled_queue_keys: list[object] = []
+    cancelled_match_keys: list[object] = []
+    handler_calls: list[dict[str, object]] = []
+    scheduled: list[dict[str, object]] = []
+
+    def fake_handler_call(
+        handler: Callable[..., object],
+        *args: object,
+        **kwargs: object,
+    ) -> Callable[[], Awaitable[object]]:
+        handler_calls.append(
+            {
+                "handler_name": handler.__name__,
+                "args": args,
+                "kwargs": kwargs,
+            }
+        )
+
+        async def call_handler() -> object:
+            return None
+
+        return call_handler
+
+    def fake_schedule_match_task(
+        *,
+        key: object,
+        task_name: str,
+        scheduled_at: datetime,
+        deadline: datetime | None,
+        handler_call: Callable[[], Awaitable[object]],
+    ) -> bool:
+        scheduled.append(
+            {
+                "key": key,
+                "task_name": task_name,
+                "scheduled_at": scheduled_at,
+                "deadline": deadline,
+                "handler_call": handler_call,
+            }
+        )
+        return True
+
+    monkeypatch.setattr(
+        runtime, "_cancel_scheduled_task", lambda key: cancelled_queue_keys.append(key)
+    )
+    monkeypatch.setattr(runtime, "_cancel_match_task", lambda key: cancelled_match_keys.append(key))
+    monkeypatch.setattr(runtime, "_handler_call", fake_handler_call)
+    monkeypatch.setattr(runtime, "_schedule_match_task", fake_schedule_match_task)
+
+    result = asyncio.run(runtime._try_create_matches(DEFAULT_QUEUE_CLASS_ID))
+
+    assert result == (created_match,)
+    service.try_create_matches.assert_called_once_with(DEFAULT_QUEUE_CLASS_ID)
+    assert cancelled_queue_keys == [
+        runtime._presence_reminder_task_key(101),
+        runtime._expire_task_key(101),
+        runtime._presence_reminder_task_key(102),
+        runtime._expire_task_key(102),
+    ]
+    assert cancelled_match_keys == [runtime._parent_deadline_task_key(created_match.match_id)]
+    assert handler_calls == [
+        {
+            "handler_name": "process_parent_deadline",
+            "args": (created_match.match_id,),
+            "kwargs": {},
+        }
+    ]
+    assert [scheduled_item | {"handler_call": None} for scheduled_item in scheduled] == [
+        {
+            "key": runtime._parent_deadline_task_key(created_match.match_id),
+            "task_name": "match parent deadline",
+            "scheduled_at": (created_at + DEVELOPMENT_MATCH_TIMING_WINDOWS.parent_selection_window),
+            "deadline": None,
+            "handler_call": None,
+        }
     ]
 
 

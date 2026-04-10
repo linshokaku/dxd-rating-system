@@ -94,11 +94,10 @@ from dxd_rating.platform.db.models import (
 )
 from dxd_rating.platform.db.session import session_scope
 from dxd_rating.shared.constants import (
-    MATCH_APPROVAL_WINDOW,
-    MATCH_REPORT_DEADLINE_DELAY,
-    MATCH_REPORT_OPEN_DELAY,
     OUTBOX_NOTIFY_CHANNEL,
+    PRODUCTION_MATCH_TIMING_WINDOWS,
     MatchFormatDefinition,
+    MatchTimingWindows,
     get_match_format_definition,
 )
 
@@ -220,10 +219,12 @@ class MatchFlowService:
         *,
         admin_discord_user_ids: frozenset[int] = frozenset(),
         logger: logging.Logger | None = None,
+        match_timing_windows: MatchTimingWindows = PRODUCTION_MATCH_TIMING_WINDOWS,
     ) -> None:
         self.session_factory = session_factory
         self.admin_discord_user_ids = admin_discord_user_ids
         self.logger = logger or logging.getLogger(__name__)
+        self.match_timing_windows = match_timing_windows
 
     def volunteer_parent(
         self,
@@ -891,7 +892,7 @@ class MatchFlowService:
             )
 
         active_state.approval_started_at = started_at
-        active_state.approval_deadline_at = started_at + MATCH_APPROVAL_WINDOW
+        active_state.approval_deadline_at = started_at + self.match_timing_windows.approval_window
         active_state.state = MatchState.AWAITING_RESULT_APPROVALS
 
         for payload in self._build_match_notification_payloads(
@@ -1764,9 +1765,11 @@ class MatchFlowService:
     ) -> MatchParentAssignmentResult:
         active_state.parent_player_id = parent_player_id
         active_state.parent_decided_at = decided_at
-        active_state.report_open_at = decided_at + MATCH_REPORT_OPEN_DELAY
+        active_state.report_open_at = decided_at + self.match_timing_windows.report_open_delay
         active_state.reporting_opened_at = None
-        active_state.report_deadline_at = decided_at + MATCH_REPORT_DEADLINE_DELAY
+        active_state.report_deadline_at = (
+            decided_at + self.match_timing_windows.report_deadline_delay
+        )
         active_state.state = MatchState.WAITING_FOR_RESULT_REPORTS
         parent_participant = next(
             participant for participant in participants if participant.player_id == parent_player_id

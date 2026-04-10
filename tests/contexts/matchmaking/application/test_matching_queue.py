@@ -31,6 +31,7 @@ from dxd_rating.contexts.restrictions.application import (
 )
 from dxd_rating.contexts.seasons.application import ensure_active_and_upcoming_seasons
 from dxd_rating.platform.db.models import (
+    ActiveMatchState,
     CarryoverStatus,
     ManagedUiChannel,
     ManagedUiType,
@@ -48,7 +49,10 @@ from dxd_rating.platform.db.models import (
     PlayerFormatStats,
 )
 from dxd_rating.shared.constants import (
+    DEVELOPMENT_MATCH_TIMING_WINDOWS,
+    PRODUCTION_MATCH_TIMING_WINDOWS,
     MatchQueueClassDefinition,
+    MatchTimingWindows,
     get_match_queue_class_definition_by_id,
     get_match_queue_class_definition_by_name,
     get_match_queue_class_definitions,
@@ -75,11 +79,13 @@ def create_matching_queue_service(
     *,
     queue_class_definitions: Sequence[MatchQueueClassDefinition] | None = None,
     random_generator: object | None = None,
+    match_timing_windows: MatchTimingWindows = PRODUCTION_MATCH_TIMING_WINDOWS,
 ) -> MatchingQueueService:
     return MatchingQueueService(
         session_factory=session_factory,
         queue_class_definitions=queue_class_definitions,
         random_generator=random_generator,
+        match_timing_windows=match_timing_windows,
     )
 
 
@@ -1140,19 +1146,47 @@ def test_try_create_matches_creates_single_match_and_marks_entries_matched(
 
     session.expire_all()
     match = session.scalar(select(Match))
+    active_state = session.scalar(select(ActiveMatchState))
     participants = session.scalars(select(MatchParticipant).order_by(MatchParticipant.id)).all()
     entries = session.scalars(select(MatchQueueEntry).order_by(MatchQueueEntry.id)).all()
     outbox_events = get_outbox_events(session)
 
     assert len(created_matches) == 1
     assert match is not None
+    assert active_state is not None
     assert created_matches[0].match_id == match.id
     assert created_matches[0].queue_entry_ids == tuple(entry.id for entry in queue_entries)
     assert len(participants) == 6
     assert all(entry.status == MatchQueueEntryStatus.MATCHED for entry in entries)
+    assert active_state.parent_deadline_at == (
+        active_state.created_at + PRODUCTION_MATCH_TIMING_WINDOWS.parent_selection_window
+    )
     assert outbox_events == []
     assert all(event.event_type == OutboxEventType.MATCH_CREATED for event in outbox_events)
     assert all("destination" in event.payload for event in outbox_events)
+
+
+def test_try_create_matches_uses_development_parent_selection_window(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    players = create_players(session, 6, start_discord_user_id=30_111)
+    create_waiting_entries(session, players)
+    service = create_matching_queue_service(
+        session_factory,
+        match_timing_windows=DEVELOPMENT_MATCH_TIMING_WINDOWS,
+    )
+
+    created_matches = service.try_create_matches()
+
+    session.expire_all()
+    active_state = session.scalar(select(ActiveMatchState))
+
+    assert len(created_matches) == 1
+    assert active_state is not None
+    assert active_state.parent_deadline_at == (
+        active_state.created_at + DEVELOPMENT_MATCH_TIMING_WINDOWS.parent_selection_window
+    )
 
 
 def test_try_create_matches_routes_match_created_to_matchmaking_news_channel_when_configured(

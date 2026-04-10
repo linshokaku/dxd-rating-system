@@ -57,12 +57,13 @@ from dxd_rating.platform.db.models import (
 )
 from dxd_rating.platform.db.session import session_scope
 from dxd_rating.shared.constants import (
-    MATCH_PARENT_SELECTION_WINDOW,
     MATCH_QUEUE_TTL,
     OUTBOX_NOTIFY_CHANNEL,
     PRESENCE_REMINDER_LEAD_TIME,
+    PRODUCTION_MATCH_TIMING_WINDOWS,
     MatchFormatDefinition,
     MatchQueueClassDefinition,
+    MatchTimingWindows,
     get_match_format_definition,
     get_match_queue_class_definitions,
     normalize_match_queue_name,
@@ -177,9 +178,11 @@ class MatchingQueueService:
         *,
         queue_class_definitions: Sequence[MatchQueueClassDefinition] | None = None,
         random_generator: RandomLike | None = None,
+        match_timing_windows: MatchTimingWindows = PRODUCTION_MATCH_TIMING_WINDOWS,
     ) -> None:
         self.session_factory = session_factory
         self.logger = logger or logging.getLogger(__name__)
+        self.match_timing_windows = match_timing_windows
         self._match_format_definitions_by_format = {
             definition.match_format: definition
             for definition in (
@@ -686,7 +689,9 @@ class MatchingQueueService:
                     ActiveMatchState(
                         match_id=match.id,
                         created_at=current_time,
-                        parent_deadline_at=current_time + MATCH_PARENT_SELECTION_WINDOW,
+                        parent_deadline_at=(
+                            current_time + self.match_timing_windows.parent_selection_window
+                        ),
                         parent_player_id=None,
                         parent_decided_at=None,
                         report_open_at=None,

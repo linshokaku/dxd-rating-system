@@ -43,9 +43,11 @@ from dxd_rating.platform.db.models import (
 )
 from dxd_rating.platform.runtime.outbox import retry_delay_for_failure_count
 from dxd_rating.shared.constants import (
-    MATCH_PARENT_SELECTION_WINDOW,
     MATCH_QUEUE_TTL,
     PRESENCE_REMINDER_LEAD_TIME,
+    PRODUCTION_MATCH_TIMING_WINDOWS,
+    MatchTimingWindows,
+    resolve_match_timing_windows,
 )
 
 DEFAULT_RECONCILE_INTERVAL = timedelta(minutes=5)
@@ -222,11 +224,13 @@ class MatchRuntime:
         service: MatchRuntimeService,
         *,
         match_service: MatchFlowRuntimeService | None = None,
+        match_timing_windows: MatchTimingWindows = PRODUCTION_MATCH_TIMING_WINDOWS,
         reconcile_interval: timedelta = DEFAULT_RECONCILE_INTERVAL,
         logger: logging.Logger | None = None,
     ) -> None:
         self.service = service
         self.match_service = match_service
+        self.match_timing_windows = match_timing_windows
         self.reconcile_interval = reconcile_interval
         self.logger = logger or logging.getLogger(__name__)
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -243,21 +247,26 @@ class MatchRuntime:
         session_factory: sessionmaker[Session],
         *,
         admin_discord_user_ids: frozenset[int] = frozenset(),
+        development_mode: bool = False,
         reconcile_interval: timedelta = DEFAULT_RECONCILE_INTERVAL,
         logger: logging.Logger | None = None,
     ) -> MatchRuntime:
+        match_timing_windows = resolve_match_timing_windows(development_mode)
         queue_service = MatchingQueueService(
             session_factory=session_factory,
             logger=logger,
+            match_timing_windows=match_timing_windows,
         )
         match_service = MatchFlowService(
             session_factory=session_factory,
             admin_discord_user_ids=admin_discord_user_ids,
             logger=logger,
+            match_timing_windows=match_timing_windows,
         )
         return cls(
             service=queue_service,
             match_service=match_service,
+            match_timing_windows=match_timing_windows,
             reconcile_interval=reconcile_interval,
             logger=logger,
         )
@@ -889,7 +898,9 @@ class MatchRuntime:
                 self._schedule_match_task(
                     key=self._parent_deadline_task_key(created_match.match_id),
                     task_name="match parent deadline",
-                    scheduled_at=created_match.created_at + MATCH_PARENT_SELECTION_WINDOW,
+                    scheduled_at=(
+                        created_match.created_at + self.match_timing_windows.parent_selection_window
+                    ),
                     deadline=None,
                     handler_call=self._handler_call(
                         self.process_parent_deadline,

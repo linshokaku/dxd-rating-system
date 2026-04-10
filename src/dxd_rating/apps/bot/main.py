@@ -223,6 +223,7 @@ def main() -> None:
     match_runtime = MatchRuntime.create(
         session_factory=session_factory,
         admin_discord_user_ids=settings.super_admin_user_ids,
+        development_mode=settings.development_mode,
     )
     outbox_dispatcher = OutboxDispatcher(
         session_factory=session_factory,

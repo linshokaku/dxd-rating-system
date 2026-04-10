@@ -58,7 +58,12 @@ from dxd_rating.platform.db.models import (
     PlayerPenaltyAdjustment,
     Season,
 )
-from dxd_rating.shared.constants import MATCH_PARENT_SELECTION_WINDOW, get_match_format_definition
+from dxd_rating.shared.constants import (
+    DEVELOPMENT_MATCH_TIMING_WINDOWS,
+    PRODUCTION_MATCH_TIMING_WINDOWS,
+    MatchTimingWindows,
+    get_match_format_definition,
+)
 
 DEFAULT_MATCH_FORMAT = MatchFormat.THREE_VS_THREE
 DEFAULT_QUEUE_NAME = "beginner"
@@ -159,6 +164,7 @@ def create_matches_for_format(
     channel_id: int,
     guild_id: int,
     ensure_matchmaking_channel_configured: bool = True,
+    match_timing_windows: MatchTimingWindows = PRODUCTION_MATCH_TIMING_WINDOWS,
 ) -> tuple[list[Player], dict[int, list[MatchParticipant]]]:
     if ensure_matchmaking_channel_configured:
         ensure_matchmaking_channel(session)
@@ -169,7 +175,10 @@ def create_matches_for_format(
         format_definition.players_per_batch,
         start_discord_user_id=start_discord_user_id,
     )
-    queue_service = MatchingQueueService(session_factory)
+    queue_service = MatchingQueueService(
+        session_factory,
+        match_timing_windows=match_timing_windows,
+    )
     for player in players:
         queue_service.join_queue(
             player.id,
@@ -222,6 +231,7 @@ def create_first_match_for_format(
     channel_id: int,
     guild_id: int,
     ensure_matchmaking_channel_configured: bool = True,
+    match_timing_windows: MatchTimingWindows = PRODUCTION_MATCH_TIMING_WINDOWS,
 ) -> tuple[int, list[MatchParticipant]]:
     _, participants_by_match_id = create_matches_for_format(
         session,
@@ -231,9 +241,23 @@ def create_first_match_for_format(
         channel_id=channel_id,
         guild_id=guild_id,
         ensure_matchmaking_channel_configured=ensure_matchmaking_channel_configured,
+        match_timing_windows=match_timing_windows,
     )
     match_id = sorted(participants_by_match_id)[0]
     return match_id, participants_by_match_id[match_id]
+
+
+def create_match_flow_service(
+    session_factory: sessionmaker[Session],
+    *,
+    admin_discord_user_ids: frozenset[int] = frozenset(),
+    match_timing_windows: MatchTimingWindows = PRODUCTION_MATCH_TIMING_WINDOWS,
+) -> MatchFlowService:
+    return MatchFlowService(
+        session_factory,
+        admin_discord_user_ids=admin_discord_user_ids,
+        match_timing_windows=match_timing_windows,
+    )
 
 
 def set_report_window_open(session: Session, match_id: int) -> ActiveMatchState:
@@ -509,7 +533,7 @@ def test_try_create_matches_initializes_active_match_state_and_notification_cont
     assert active_state.admin_review_required is False
     assert active_state.admin_review_reasons == []
     assert active_state.parent_deadline_at == (
-        active_state.created_at + MATCH_PARENT_SELECTION_WINDOW
+        active_state.created_at + PRODUCTION_MATCH_TIMING_WINDOWS.parent_selection_window
     )
     assert (
         session.scalars(
@@ -951,6 +975,70 @@ def test_volunteer_parent_assigns_parent_and_notifies_for_all_formats(
     assert len(parent_events) == 1
     assert parent_events[0].payload["parent_discord_user_id"] == (
         parent.notification_mention_discord_user_id
+    )
+
+
+def test_match_flow_uses_development_match_timing_windows(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    match_id, participants = create_first_match_for_format(
+        session,
+        session_factory,
+        match_format=MatchFormat.THREE_VS_THREE,
+        start_discord_user_id=60_183,
+        channel_id=91_001_13,
+        guild_id=92_001_13,
+    )
+    match_service = create_match_flow_service(
+        session_factory,
+        match_timing_windows=DEVELOPMENT_MATCH_TIMING_WINDOWS,
+    )
+    parent = participants[0]
+
+    assignment = match_service.volunteer_parent(match_id, parent.player_id)
+
+    session.expire_all()
+    active_state = session.get(ActiveMatchState, match_id)
+
+    assert assignment.parent_decided_at is not None
+    assert assignment.report_open_at == (
+        assignment.parent_decided_at + DEVELOPMENT_MATCH_TIMING_WINDOWS.report_open_delay
+    )
+    assert assignment.report_deadline_at == (
+        assignment.parent_decided_at + DEVELOPMENT_MATCH_TIMING_WINDOWS.report_deadline_delay
+    )
+    assert active_state is not None
+    assert active_state.report_open_at == assignment.report_open_at
+    assert active_state.report_deadline_at == assignment.report_deadline_at
+
+    set_report_window_open(session, match_id)
+
+    dissenting_participant = next(
+        participant
+        for participant in reversed(participants)
+        if participant.team == MatchParticipantTeam.TEAM_B
+    )
+    last_result = None
+    for participant in participants:
+        if participant.team == MatchParticipantTeam.TEAM_A:
+            input_result = MatchReportInputResult.WIN
+        elif participant.player_id == dissenting_participant.player_id:
+            input_result = MatchReportInputResult.DRAW
+        else:
+            input_result = MatchReportInputResult.LOSE
+        last_result = match_service.submit_report(match_id, participant.player_id, input_result)
+
+    session.expire_all()
+    active_state = session.get(ActiveMatchState, match_id)
+
+    assert last_result is not None
+    assert last_result.approval_started is True
+    assert last_result.approval_deadline_at is not None
+    assert active_state is not None
+    assert active_state.approval_started_at is not None
+    assert last_result.approval_deadline_at == (
+        active_state.approval_started_at + DEVELOPMENT_MATCH_TIMING_WINDOWS.approval_window
     )
 
 

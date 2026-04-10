@@ -1,6 +1,7 @@
 import asyncio
+import importlib
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import discord
 import pytest
@@ -39,6 +40,7 @@ from dxd_rating.platform.discord.ui import (
 DEFAULT_MATCHMAKING_GUIDE_URL = (
     "https://github.com/linshokaku/dxd-rating-system/blob/main/docs/README.md"
 )
+bot_main_module = importlib.import_module("dxd_rating.apps.bot.main")
 
 
 def find_button_labels(client: discord.Client) -> list[list[str | None]]:
@@ -96,6 +98,48 @@ def test_load_settings_requires_matchmaking_guide_url(
         match="Missing required environment variables: MATCHMAKING_GUIDE_URL",
     ):
         load_settings()
+
+
+def test_main_passes_development_mode_to_match_runtime_create(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = BotSettings.model_construct(
+        discord_bot_token="discord-token",
+        database_url="postgresql+psycopg://user:password@localhost:5432/dxd_rating",
+        log_level="INFO",
+        matchmaking_guide_url=DEFAULT_MATCHMAKING_GUIDE_URL,
+        development_mode=True,
+        super_admin_user_ids=frozenset({123}),
+    )
+    engine = Mock()
+    session_factory = Mock()
+    client = Mock()
+    client.command_handlers = Mock()
+    client.run = Mock()
+    match_runtime = Mock()
+    match_runtime_create = Mock(return_value=match_runtime)
+
+    monkeypatch.setattr(bot_main_module, "load_settings", Mock(return_value=settings))
+    monkeypatch.setattr(bot_main_module, "configure_logging", Mock())
+    monkeypatch.setattr(bot_main_module, "create_db_engine", Mock(return_value=engine))
+    monkeypatch.setattr(
+        bot_main_module, "create_session_factory", Mock(return_value=session_factory)
+    )
+    monkeypatch.setattr(bot_main_module, "initialize_seasons", Mock())
+    monkeypatch.setattr(bot_main_module, "create_client", Mock(return_value=client))
+    monkeypatch.setattr(bot_main_module, "DiscordOutboxEventPublisher", Mock())
+    monkeypatch.setattr(bot_main_module.MatchRuntime, "create", match_runtime_create)
+    monkeypatch.setattr(bot_main_module, "OutboxDispatcher", Mock())
+    monkeypatch.setattr(bot_main_module, "BotRuntime", Mock(return_value=Mock()))
+
+    bot_main_module.main()
+
+    match_runtime_create.assert_called_once_with(
+        session_factory=session_factory,
+        admin_discord_user_ids=settings.super_admin_user_ids,
+        development_mode=True,
+    )
+    engine.dispose.assert_called_once_with()
 
 
 def test_setup_hook_restores_persistent_register_panel_view(

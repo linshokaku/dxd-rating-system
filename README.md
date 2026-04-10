@@ -99,6 +99,9 @@ DEVELOPMENT_MODE=true uv run python -m dxd_rating.apps.bot.main
 開発モードでは `/admin_setup_ui_channels` が作成する UI チャンネルをすべて private channel として作成します。
 加えて、親募集・結果報告・承認の各タイマーも開発用の短い設定で動作します。
 
+本番モードでは一般ユーザー向け slash command を公開せず、基本操作は Bot が管理するボタン UI 経由で行う想定です。
+本番運用前に、管理者が `/admin_setup_ui_channels` を実行して required UI channels を作成してください。
+
 ## Cron Job
 定期実行処理は `src/dxd_rating/apps/worker/` 配下に置き、Railway の Cron Job からコマンド実行する想定です。
 現時点の日次エントリーポイントは次のとおりです。

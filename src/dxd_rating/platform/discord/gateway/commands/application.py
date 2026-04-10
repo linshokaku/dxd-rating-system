@@ -5257,6 +5257,7 @@ def register_app_commands(
         app_commands.Choice(name=command_name.value, value=command_name.value)
         for command_name in InfoThreadCommandName
     ]
+    development_mode = handlers.settings.development_mode
 
     async def run_command(
         command_name: str,
@@ -5273,716 +5274,742 @@ def register_app_commands(
             **kwargs,
         )
 
-    @tree.command(name="register", description=REGISTER_COMMAND_DESCRIPTION)
-    async def register_command(interaction: discord.Interaction[Any]) -> None:
-        await run_command("register", interaction, handlers.register)
+    def register_general_commands() -> None:
+        @tree.command(name="register", description=REGISTER_COMMAND_DESCRIPTION)
+        async def register_command(interaction: discord.Interaction[Any]) -> None:
+            await run_command("register", interaction, handlers.register)
 
-    @tree.command(name="join", description=JOIN_COMMAND_DESCRIPTION)
-    @app_commands.describe(
-        match_format=JOIN_MATCH_FORMAT_DESCRIPTION,
-        queue_name=JOIN_QUEUE_NAME_DESCRIPTION,
-    )
-    @app_commands.choices(match_format=match_format_choices)
-    @app_commands.choices(queue_name=queue_name_choices)
-    async def join_command(
-        interaction: discord.Interaction[Any],
-        match_format: str,
-        queue_name: str,
-    ) -> None:
-        await run_command("join", interaction, handlers.join, match_format, queue_name)
-
-    @tree.command(name="present", description=PRESENT_COMMAND_DESCRIPTION)
-    async def present_command(interaction: discord.Interaction[Any]) -> None:
-        await run_command("present", interaction, handlers.present)
-
-    @tree.command(name="leave", description=LEAVE_COMMAND_DESCRIPTION)
-    async def leave_command(interaction: discord.Interaction[Any]) -> None:
-        await run_command("leave", interaction, handlers.leave)
-
-    @tree.command(
-        name="update_matchmaking_status",
-        description=UPDATE_MATCHMAKING_STATUS_COMMAND_DESCRIPTION,
-    )
-    async def update_matchmaking_status_command(interaction: discord.Interaction[Any]) -> None:
-        await run_command(
-            "update_matchmaking_status",
-            interaction,
-            handlers.update_matchmaking_status,
+        @tree.command(name="join", description=JOIN_COMMAND_DESCRIPTION)
+        @app_commands.describe(
+            match_format=JOIN_MATCH_FORMAT_DESCRIPTION,
+            queue_name=JOIN_QUEUE_NAME_DESCRIPTION,
         )
+        @app_commands.choices(match_format=match_format_choices)
+        @app_commands.choices(queue_name=queue_name_choices)
+        async def join_command(
+            interaction: discord.Interaction[Any],
+            match_format: str,
+            queue_name: str,
+        ) -> None:
+            await run_command("join", interaction, handlers.join, match_format, queue_name)
 
-    @tree.command(name="player_info", description=PLAYER_INFO_COMMAND_DESCRIPTION)
-    async def player_info_command(interaction: discord.Interaction[Any]) -> None:
-        await run_command("player_info", interaction, handlers.player_info)
+        @tree.command(name="present", description=PRESENT_COMMAND_DESCRIPTION)
+        async def present_command(interaction: discord.Interaction[Any]) -> None:
+            await run_command("present", interaction, handlers.present)
 
-    @tree.command(name="info_thread", description=INFO_THREAD_COMMAND_DESCRIPTION)
-    @app_commands.describe(command_name=INFO_THREAD_COMMAND_NAME_DESCRIPTION)
-    @app_commands.choices(command_name=info_thread_command_choices)
-    async def info_thread_command(
-        interaction: discord.Interaction[Any],
-        command_name: str,
-    ) -> None:
-        await run_command("info_thread", interaction, handlers.info_thread, command_name)
+        @tree.command(name="leave", description=LEAVE_COMMAND_DESCRIPTION)
+        async def leave_command(interaction: discord.Interaction[Any]) -> None:
+            await run_command("leave", interaction, handlers.leave)
 
-    @tree.command(
-        name="player_info_season",
-        description=PLAYER_INFO_SEASON_COMMAND_DESCRIPTION,
-    )
-    @app_commands.describe(season_id=PLAYER_INFO_SEASON_SEASON_ID_DESCRIPTION)
-    async def player_info_season_command(
-        interaction: discord.Interaction[Any],
-        season_id: int,
-    ) -> None:
-        await run_command(
-            "player_info_season",
-            interaction,
-            handlers.player_info_season,
-            season_id,
-        )
-
-    @tree.command(name="leaderboard", description=LEADERBOARD_COMMAND_DESCRIPTION)
-    @app_commands.describe(
-        match_format=LEADERBOARD_MATCH_FORMAT_DESCRIPTION,
-        page=LEADERBOARD_PAGE_DESCRIPTION,
-    )
-    @app_commands.choices(match_format=match_format_choices)
-    async def leaderboard_command(
-        interaction: discord.Interaction[Any],
-        match_format: str,
-        page: int,
-    ) -> None:
-        await run_command(
-            "leaderboard",
-            interaction,
-            handlers.leaderboard,
-            match_format,
-            page,
-        )
-
-    @tree.command(
-        name="leaderboard_season",
-        description=LEADERBOARD_SEASON_COMMAND_DESCRIPTION,
-    )
-    @app_commands.describe(
-        season_id=LEADERBOARD_SEASON_SEASON_ID_DESCRIPTION,
-        match_format=LEADERBOARD_SEASON_MATCH_FORMAT_DESCRIPTION,
-        page=LEADERBOARD_SEASON_PAGE_DESCRIPTION,
-    )
-    @app_commands.choices(match_format=match_format_choices)
-    async def leaderboard_season_command(
-        interaction: discord.Interaction[Any],
-        season_id: int,
-        match_format: str,
-        page: int,
-    ) -> None:
-        await run_command(
-            "leaderboard_season",
-            interaction,
-            handlers.leaderboard_season,
-            season_id,
-            match_format,
-            page,
-        )
-
-    @tree.command(name="match_parent", description=MATCH_PARENT_COMMAND_DESCRIPTION)
-    @app_commands.describe(match_id=MATCH_COMMAND_MATCH_ID_DESCRIPTION)
-    async def match_parent_command(
-        interaction: discord.Interaction[Any],
-        match_id: int,
-    ) -> None:
-        await run_command("match_parent", interaction, handlers.match_parent, match_id)
-
-    @tree.command(name="match_spectate", description=MATCH_SPECTATE_COMMAND_DESCRIPTION)
-    @app_commands.describe(match_id=MATCH_COMMAND_MATCH_ID_DESCRIPTION)
-    async def match_spectate_command(
-        interaction: discord.Interaction[Any],
-        match_id: int,
-    ) -> None:
-        await run_command("match_spectate", interaction, handlers.match_spectate, match_id)
-
-    @tree.command(name="match_win", description=MATCH_WIN_COMMAND_DESCRIPTION)
-    @app_commands.describe(match_id=MATCH_COMMAND_MATCH_ID_DESCRIPTION)
-    async def match_win_command(interaction: discord.Interaction[Any], match_id: int) -> None:
-        await run_command("match_win", interaction, handlers.match_win, match_id)
-
-    @tree.command(name="match_lose", description=MATCH_LOSE_COMMAND_DESCRIPTION)
-    @app_commands.describe(match_id=MATCH_COMMAND_MATCH_ID_DESCRIPTION)
-    async def match_lose_command(interaction: discord.Interaction[Any], match_id: int) -> None:
-        await run_command("match_lose", interaction, handlers.match_lose, match_id)
-
-    @tree.command(name="match_draw", description=MATCH_DRAW_COMMAND_DESCRIPTION)
-    @app_commands.describe(match_id=MATCH_COMMAND_MATCH_ID_DESCRIPTION)
-    async def match_draw_command(interaction: discord.Interaction[Any], match_id: int) -> None:
-        await run_command("match_draw", interaction, handlers.match_draw, match_id)
-
-    @tree.command(name="match_void", description=MATCH_VOID_COMMAND_DESCRIPTION)
-    @app_commands.describe(match_id=MATCH_COMMAND_MATCH_ID_DESCRIPTION)
-    async def match_void_command(interaction: discord.Interaction[Any], match_id: int) -> None:
-        await run_command("match_void", interaction, handlers.match_void, match_id)
-
-    @tree.command(name="match_approve", description=MATCH_APPROVE_COMMAND_DESCRIPTION)
-    @app_commands.describe(match_id=MATCH_COMMAND_MATCH_ID_DESCRIPTION)
-    async def match_approve_command(
-        interaction: discord.Interaction[Any],
-        match_id: int,
-    ) -> None:
-        await run_command("match_approve", interaction, handlers.match_approve, match_id)
-
-    @tree.command(name="admin_match_result", description=ADMIN_MATCH_RESULT_COMMAND_DESCRIPTION)
-    @app_commands.describe(
-        match_id=ADMIN_MATCH_RESULT_MATCH_ID_DESCRIPTION,
-        result=ADMIN_MATCH_RESULT_RESULT_DESCRIPTION,
-    )
-    @app_commands.choices(
-        result=[
-            app_commands.Choice(
-                name=MATCH_RESULT_LABELS[MatchResult.TEAM_A_WIN],
-                value=MatchResult.TEAM_A_WIN.value,
-            ),
-            app_commands.Choice(
-                name=MATCH_RESULT_LABELS[MatchResult.TEAM_B_WIN],
-                value=MatchResult.TEAM_B_WIN.value,
-            ),
-            app_commands.Choice(
-                name=MATCH_RESULT_LABELS[MatchResult.DRAW],
-                value=MatchResult.DRAW.value,
-            ),
-            app_commands.Choice(
-                name=MATCH_RESULT_LABELS[MatchResult.VOID],
-                value=MatchResult.VOID.value,
-            ),
-        ]
-    )
-    async def admin_match_result_command(
-        interaction: discord.Interaction[Any],
-        match_id: int,
-        result: str,
-    ) -> None:
-        await run_command(
-            "admin_match_result",
-            interaction,
-            handlers.admin_match_result,
-            match_id,
-            result,
-        )
-
-    @tree.command(name="admin_rename_season", description=ADMIN_RENAME_SEASON_COMMAND_DESCRIPTION)
-    @app_commands.describe(
-        season_id=ADMIN_RENAME_SEASON_SEASON_ID_DESCRIPTION,
-        name=ADMIN_RENAME_SEASON_NAME_DESCRIPTION,
-    )
-    async def admin_rename_season_command(
-        interaction: discord.Interaction[Any],
-        season_id: int,
-        name: str,
-    ) -> None:
-        await run_command(
-            "admin_rename_season",
-            interaction,
-            handlers.admin_rename_season,
-            season_id,
-            name,
-        )
-
-    @tree.command(
-        name="admin_setup_custom_ui_channel",
-        description=ADMIN_SETUP_CUSTOM_UI_CHANNEL_COMMAND_DESCRIPTION,
-    )
-    @app_commands.describe(
-        ui_type=ADMIN_SETUP_CUSTOM_UI_CHANNEL_UI_TYPE_DESCRIPTION,
-        channel_name=ADMIN_SETUP_CUSTOM_UI_CHANNEL_CHANNEL_NAME_DESCRIPTION,
-    )
-    @app_commands.choices(ui_type=managed_ui_type_choices)
-    async def admin_setup_custom_ui_channel_command(
-        interaction: discord.Interaction[Any],
-        ui_type: str,
-        channel_name: str,
-    ) -> None:
-        await run_command(
-            "admin_setup_custom_ui_channel",
-            interaction,
-            handlers.admin_setup_custom_ui_channel,
-            ui_type,
-            channel_name,
-        )
-
-    @tree.command(
-        name="admin_setup_ui_channels",
-        description=ADMIN_SETUP_UI_CHANNELS_COMMAND_DESCRIPTION,
-    )
-    async def admin_setup_ui_channels_command(interaction: discord.Interaction[Any]) -> None:
-        await run_command(
-            "admin_setup_ui_channels",
-            interaction,
-            handlers.admin_setup_ui_channels,
-        )
-
-    @tree.command(
-        name="admin_cleanup_ui_channels",
-        description=ADMIN_CLEANUP_UI_CHANNELS_COMMAND_DESCRIPTION,
-    )
-    @app_commands.describe(confirm=ADMIN_CLEANUP_UI_CHANNELS_CONFIRM_DESCRIPTION)
-    async def admin_cleanup_ui_channels_command(
-        interaction: discord.Interaction[Any],
-        confirm: str,
-    ) -> None:
-        await run_command(
-            "admin_cleanup_ui_channels",
-            interaction,
-            handlers.admin_cleanup_ui_channels,
-            confirm,
-        )
-
-    @tree.command(
-        name="admin_teardown_ui_channels",
-        description=ADMIN_TEARDOWN_UI_CHANNELS_COMMAND_DESCRIPTION,
-    )
-    @app_commands.describe(confirm=ADMIN_TEARDOWN_UI_CHANNELS_CONFIRM_DESCRIPTION)
-    async def admin_teardown_ui_channels_command(
-        interaction: discord.Interaction[Any],
-        confirm: str,
-    ) -> None:
-        await run_command(
-            "admin_teardown_ui_channels",
-            interaction,
-            handlers.admin_teardown_ui_channels,
-            confirm,
-        )
-
-    @tree.command(name="admin_restrict_user", description=ADMIN_RESTRICT_USER_COMMAND_DESCRIPTION)
-    @app_commands.describe(
-        restriction_type=ADMIN_RESTRICT_USER_RESTRICTION_TYPE_DESCRIPTION,
-        duration=ADMIN_RESTRICT_USER_DURATION_DESCRIPTION,
-        user=ADMIN_RESTRICT_USER_USER_DESCRIPTION,
-        dummy_user=ADMIN_RESTRICT_USER_DUMMY_USER_DESCRIPTION,
-        reason=ADMIN_RESTRICT_USER_REASON_DESCRIPTION,
-    )
-    @app_commands.choices(restriction_type=restriction_type_choices)
-    @app_commands.choices(duration=restriction_duration_choices)
-    async def admin_restrict_user_command(
-        interaction: discord.Interaction[Any],
-        restriction_type: str,
-        duration: str,
-        user: discord.Member | discord.User | None = None,
-        dummy_user: str | None = None,
-        reason: str | None = None,
-    ) -> None:
-        await run_command(
-            "admin_restrict_user",
-            interaction,
-            handlers.admin_restrict_user,
-            restriction_type,
-            duration,
-            target_user=user,
-            dummy_user=dummy_user,
-            reason=reason,
-        )
-
-    @tree.command(
-        name="admin_unrestrict_user",
-        description=ADMIN_UNRESTRICT_USER_COMMAND_DESCRIPTION,
-    )
-    @app_commands.describe(
-        restriction_type=ADMIN_UNRESTRICT_USER_RESTRICTION_TYPE_DESCRIPTION,
-        user=ADMIN_UNRESTRICT_USER_USER_DESCRIPTION,
-        dummy_user=ADMIN_UNRESTRICT_USER_DUMMY_USER_DESCRIPTION,
-    )
-    @app_commands.choices(restriction_type=restriction_type_choices)
-    async def admin_unrestrict_user_command(
-        interaction: discord.Interaction[Any],
-        restriction_type: str,
-        user: discord.Member | discord.User | None = None,
-        dummy_user: str | None = None,
-    ) -> None:
-        await run_command(
-            "admin_unrestrict_user",
-            interaction,
-            handlers.admin_unrestrict_user,
-            restriction_type,
-            target_user=user,
-            dummy_user=dummy_user,
-        )
-
-    def register_penalty_commands(
-        *,
-        add_name: str,
-        sub_name: str,
-        description: str,
-        penalty_type: PenaltyType,
-    ) -> None:
         @tree.command(
-            name=add_name,
-            description=build_admin_penalty_command_description(description, 1),
+            name="update_matchmaking_status",
+            description=UPDATE_MATCHMAKING_STATUS_COMMAND_DESCRIPTION,
+        )
+        async def update_matchmaking_status_command(interaction: discord.Interaction[Any]) -> None:
+            await run_command(
+                "update_matchmaking_status",
+                interaction,
+                handlers.update_matchmaking_status,
+            )
+
+        @tree.command(name="player_info", description=PLAYER_INFO_COMMAND_DESCRIPTION)
+        async def player_info_command(interaction: discord.Interaction[Any]) -> None:
+            await run_command("player_info", interaction, handlers.player_info)
+
+        @tree.command(name="info_thread", description=INFO_THREAD_COMMAND_DESCRIPTION)
+        @app_commands.describe(command_name=INFO_THREAD_COMMAND_NAME_DESCRIPTION)
+        @app_commands.choices(command_name=info_thread_command_choices)
+        async def info_thread_command(
+            interaction: discord.Interaction[Any],
+            command_name: str,
+        ) -> None:
+            await run_command("info_thread", interaction, handlers.info_thread, command_name)
+
+        @tree.command(
+            name="player_info_season",
+            description=PLAYER_INFO_SEASON_COMMAND_DESCRIPTION,
+        )
+        @app_commands.describe(season_id=PLAYER_INFO_SEASON_SEASON_ID_DESCRIPTION)
+        async def player_info_season_command(
+            interaction: discord.Interaction[Any],
+            season_id: int,
+        ) -> None:
+            await run_command(
+                "player_info_season",
+                interaction,
+                handlers.player_info_season,
+                season_id,
+            )
+
+        @tree.command(name="leaderboard", description=LEADERBOARD_COMMAND_DESCRIPTION)
+        @app_commands.describe(
+            match_format=LEADERBOARD_MATCH_FORMAT_DESCRIPTION,
+            page=LEADERBOARD_PAGE_DESCRIPTION,
+        )
+        @app_commands.choices(match_format=match_format_choices)
+        async def leaderboard_command(
+            interaction: discord.Interaction[Any],
+            match_format: str,
+            page: int,
+        ) -> None:
+            await run_command(
+                "leaderboard",
+                interaction,
+                handlers.leaderboard,
+                match_format,
+                page,
+            )
+
+        @tree.command(
+            name="leaderboard_season",
+            description=LEADERBOARD_SEASON_COMMAND_DESCRIPTION,
         )
         @app_commands.describe(
-            user=ADMIN_PENALTY_USER_DESCRIPTION,
-            dummy_user=ADMIN_PENALTY_DUMMY_USER_DESCRIPTION,
+            season_id=LEADERBOARD_SEASON_SEASON_ID_DESCRIPTION,
+            match_format=LEADERBOARD_SEASON_MATCH_FORMAT_DESCRIPTION,
+            page=LEADERBOARD_SEASON_PAGE_DESCRIPTION,
         )
-        async def add_command(
+        @app_commands.choices(match_format=match_format_choices)
+        async def leaderboard_season_command(
             interaction: discord.Interaction[Any],
+            season_id: int,
+            match_format: str,
+            page: int,
+        ) -> None:
+            await run_command(
+                "leaderboard_season",
+                interaction,
+                handlers.leaderboard_season,
+                season_id,
+                match_format,
+                page,
+            )
+
+        @tree.command(name="match_parent", description=MATCH_PARENT_COMMAND_DESCRIPTION)
+        @app_commands.describe(match_id=MATCH_COMMAND_MATCH_ID_DESCRIPTION)
+        async def match_parent_command(
+            interaction: discord.Interaction[Any],
+            match_id: int,
+        ) -> None:
+            await run_command("match_parent", interaction, handlers.match_parent, match_id)
+
+        @tree.command(name="match_spectate", description=MATCH_SPECTATE_COMMAND_DESCRIPTION)
+        @app_commands.describe(match_id=MATCH_COMMAND_MATCH_ID_DESCRIPTION)
+        async def match_spectate_command(
+            interaction: discord.Interaction[Any],
+            match_id: int,
+        ) -> None:
+            await run_command("match_spectate", interaction, handlers.match_spectate, match_id)
+
+        @tree.command(name="match_win", description=MATCH_WIN_COMMAND_DESCRIPTION)
+        @app_commands.describe(match_id=MATCH_COMMAND_MATCH_ID_DESCRIPTION)
+        async def match_win_command(
+            interaction: discord.Interaction[Any],
+            match_id: int,
+        ) -> None:
+            await run_command("match_win", interaction, handlers.match_win, match_id)
+
+        @tree.command(name="match_lose", description=MATCH_LOSE_COMMAND_DESCRIPTION)
+        @app_commands.describe(match_id=MATCH_COMMAND_MATCH_ID_DESCRIPTION)
+        async def match_lose_command(
+            interaction: discord.Interaction[Any],
+            match_id: int,
+        ) -> None:
+            await run_command("match_lose", interaction, handlers.match_lose, match_id)
+
+        @tree.command(name="match_draw", description=MATCH_DRAW_COMMAND_DESCRIPTION)
+        @app_commands.describe(match_id=MATCH_COMMAND_MATCH_ID_DESCRIPTION)
+        async def match_draw_command(
+            interaction: discord.Interaction[Any],
+            match_id: int,
+        ) -> None:
+            await run_command("match_draw", interaction, handlers.match_draw, match_id)
+
+        @tree.command(name="match_void", description=MATCH_VOID_COMMAND_DESCRIPTION)
+        @app_commands.describe(match_id=MATCH_COMMAND_MATCH_ID_DESCRIPTION)
+        async def match_void_command(
+            interaction: discord.Interaction[Any],
+            match_id: int,
+        ) -> None:
+            await run_command("match_void", interaction, handlers.match_void, match_id)
+
+        @tree.command(name="match_approve", description=MATCH_APPROVE_COMMAND_DESCRIPTION)
+        @app_commands.describe(match_id=MATCH_COMMAND_MATCH_ID_DESCRIPTION)
+        async def match_approve_command(
+            interaction: discord.Interaction[Any],
+            match_id: int,
+        ) -> None:
+            await run_command("match_approve", interaction, handlers.match_approve, match_id)
+
+    def register_admin_commands() -> None:
+        @tree.command(name="admin_match_result", description=ADMIN_MATCH_RESULT_COMMAND_DESCRIPTION)
+        @app_commands.describe(
+            match_id=ADMIN_MATCH_RESULT_MATCH_ID_DESCRIPTION,
+            result=ADMIN_MATCH_RESULT_RESULT_DESCRIPTION,
+        )
+        @app_commands.choices(
+            result=[
+                app_commands.Choice(
+                    name=MATCH_RESULT_LABELS[MatchResult.TEAM_A_WIN],
+                    value=MatchResult.TEAM_A_WIN.value,
+                ),
+                app_commands.Choice(
+                    name=MATCH_RESULT_LABELS[MatchResult.TEAM_B_WIN],
+                    value=MatchResult.TEAM_B_WIN.value,
+                ),
+                app_commands.Choice(
+                    name=MATCH_RESULT_LABELS[MatchResult.DRAW],
+                    value=MatchResult.DRAW.value,
+                ),
+                app_commands.Choice(
+                    name=MATCH_RESULT_LABELS[MatchResult.VOID],
+                    value=MatchResult.VOID.value,
+                ),
+            ]
+        )
+        async def admin_match_result_command(
+            interaction: discord.Interaction[Any],
+            match_id: int,
+            result: str,
+        ) -> None:
+            await run_command(
+                "admin_match_result",
+                interaction,
+                handlers.admin_match_result,
+                match_id,
+                result,
+            )
+
+        @tree.command(
+            name="admin_rename_season",
+            description=ADMIN_RENAME_SEASON_COMMAND_DESCRIPTION,
+        )
+        @app_commands.describe(
+            season_id=ADMIN_RENAME_SEASON_SEASON_ID_DESCRIPTION,
+            name=ADMIN_RENAME_SEASON_NAME_DESCRIPTION,
+        )
+        async def admin_rename_season_command(
+            interaction: discord.Interaction[Any],
+            season_id: int,
+            name: str,
+        ) -> None:
+            await run_command(
+                "admin_rename_season",
+                interaction,
+                handlers.admin_rename_season,
+                season_id,
+                name,
+            )
+
+        @tree.command(
+            name="admin_setup_custom_ui_channel",
+            description=ADMIN_SETUP_CUSTOM_UI_CHANNEL_COMMAND_DESCRIPTION,
+        )
+        @app_commands.describe(
+            ui_type=ADMIN_SETUP_CUSTOM_UI_CHANNEL_UI_TYPE_DESCRIPTION,
+            channel_name=ADMIN_SETUP_CUSTOM_UI_CHANNEL_CHANNEL_NAME_DESCRIPTION,
+        )
+        @app_commands.choices(ui_type=managed_ui_type_choices)
+        async def admin_setup_custom_ui_channel_command(
+            interaction: discord.Interaction[Any],
+            ui_type: str,
+            channel_name: str,
+        ) -> None:
+            await run_command(
+                "admin_setup_custom_ui_channel",
+                interaction,
+                handlers.admin_setup_custom_ui_channel,
+                ui_type,
+                channel_name,
+            )
+
+        @tree.command(
+            name="admin_setup_ui_channels",
+            description=ADMIN_SETUP_UI_CHANNELS_COMMAND_DESCRIPTION,
+        )
+        async def admin_setup_ui_channels_command(interaction: discord.Interaction[Any]) -> None:
+            await run_command(
+                "admin_setup_ui_channels",
+                interaction,
+                handlers.admin_setup_ui_channels,
+            )
+
+        @tree.command(
+            name="admin_cleanup_ui_channels",
+            description=ADMIN_CLEANUP_UI_CHANNELS_COMMAND_DESCRIPTION,
+        )
+        @app_commands.describe(confirm=ADMIN_CLEANUP_UI_CHANNELS_CONFIRM_DESCRIPTION)
+        async def admin_cleanup_ui_channels_command(
+            interaction: discord.Interaction[Any],
+            confirm: str,
+        ) -> None:
+            await run_command(
+                "admin_cleanup_ui_channels",
+                interaction,
+                handlers.admin_cleanup_ui_channels,
+                confirm,
+            )
+
+        @tree.command(
+            name="admin_teardown_ui_channels",
+            description=ADMIN_TEARDOWN_UI_CHANNELS_COMMAND_DESCRIPTION,
+        )
+        @app_commands.describe(confirm=ADMIN_TEARDOWN_UI_CHANNELS_CONFIRM_DESCRIPTION)
+        async def admin_teardown_ui_channels_command(
+            interaction: discord.Interaction[Any],
+            confirm: str,
+        ) -> None:
+            await run_command(
+                "admin_teardown_ui_channels",
+                interaction,
+                handlers.admin_teardown_ui_channels,
+                confirm,
+            )
+
+        @tree.command(
+            name="admin_restrict_user",
+            description=ADMIN_RESTRICT_USER_COMMAND_DESCRIPTION,
+        )
+        @app_commands.describe(
+            restriction_type=ADMIN_RESTRICT_USER_RESTRICTION_TYPE_DESCRIPTION,
+            duration=ADMIN_RESTRICT_USER_DURATION_DESCRIPTION,
+            user=ADMIN_RESTRICT_USER_USER_DESCRIPTION,
+            dummy_user=ADMIN_RESTRICT_USER_DUMMY_USER_DESCRIPTION,
+            reason=ADMIN_RESTRICT_USER_REASON_DESCRIPTION,
+        )
+        @app_commands.choices(restriction_type=restriction_type_choices)
+        @app_commands.choices(duration=restriction_duration_choices)
+        async def admin_restrict_user_command(
+            interaction: discord.Interaction[Any],
+            restriction_type: str,
+            duration: str,
+            user: discord.Member | discord.User | None = None,
+            dummy_user: str | None = None,
+            reason: str | None = None,
+        ) -> None:
+            await run_command(
+                "admin_restrict_user",
+                interaction,
+                handlers.admin_restrict_user,
+                restriction_type,
+                duration,
+                target_user=user,
+                dummy_user=dummy_user,
+                reason=reason,
+            )
+
+        @tree.command(
+            name="admin_unrestrict_user",
+            description=ADMIN_UNRESTRICT_USER_COMMAND_DESCRIPTION,
+        )
+        @app_commands.describe(
+            restriction_type=ADMIN_UNRESTRICT_USER_RESTRICTION_TYPE_DESCRIPTION,
+            user=ADMIN_UNRESTRICT_USER_USER_DESCRIPTION,
+            dummy_user=ADMIN_UNRESTRICT_USER_DUMMY_USER_DESCRIPTION,
+        )
+        @app_commands.choices(restriction_type=restriction_type_choices)
+        async def admin_unrestrict_user_command(
+            interaction: discord.Interaction[Any],
+            restriction_type: str,
             user: discord.Member | discord.User | None = None,
             dummy_user: str | None = None,
         ) -> None:
             await run_command(
-                add_name,
+                "admin_unrestrict_user",
                 interaction,
-                handlers.admin_add_penalty,
-                penalty_type,
+                handlers.admin_unrestrict_user,
+                restriction_type,
                 target_user=user,
                 dummy_user=dummy_user,
+            )
+
+        def register_penalty_commands(
+            *,
+            add_name: str,
+            sub_name: str,
+            description: str,
+            penalty_type: PenaltyType,
+        ) -> None:
+            @tree.command(
+                name=add_name,
+                description=build_admin_penalty_command_description(description, 1),
+            )
+            @app_commands.describe(
+                user=ADMIN_PENALTY_USER_DESCRIPTION,
+                dummy_user=ADMIN_PENALTY_DUMMY_USER_DESCRIPTION,
+            )
+            async def add_command(
+                interaction: discord.Interaction[Any],
+                user: discord.Member | discord.User | None = None,
+                dummy_user: str | None = None,
+            ) -> None:
+                await run_command(
+                    add_name,
+                    interaction,
+                    handlers.admin_add_penalty,
+                    penalty_type,
+                    target_user=user,
+                    dummy_user=dummy_user,
+                )
+
+            @tree.command(
+                name=sub_name,
+                description=build_admin_penalty_command_description(description, -1),
+            )
+            @app_commands.describe(
+                user=ADMIN_PENALTY_USER_DESCRIPTION,
+                dummy_user=ADMIN_PENALTY_DUMMY_USER_DESCRIPTION,
+            )
+            async def sub_command(
+                interaction: discord.Interaction[Any],
+                user: discord.Member | discord.User | None = None,
+                dummy_user: str | None = None,
+            ) -> None:
+                await run_command(
+                    sub_name,
+                    interaction,
+                    handlers.admin_sub_penalty,
+                    penalty_type,
+                    target_user=user,
+                    dummy_user=dummy_user,
+                )
+
+            del add_command, sub_command
+
+        register_penalty_commands(
+            add_name="admin_add_incorrect_report",
+            sub_name="admin_sub_incorrect_report",
+            description=ADMIN_INCORRECT_REPORT_PENALTY_DESCRIPTION,
+            penalty_type=PenaltyType.INCORRECT_REPORT,
+        )
+        register_penalty_commands(
+            add_name="admin_add_no_report",
+            sub_name="admin_sub_no_report",
+            description=ADMIN_NO_REPORT_PENALTY_DESCRIPTION,
+            penalty_type=PenaltyType.NO_REPORT,
+        )
+        register_penalty_commands(
+            add_name="admin_add_room_setup_delay",
+            sub_name="admin_sub_room_setup_delay",
+            description=ADMIN_ROOM_SETUP_DELAY_PENALTY_DESCRIPTION,
+            penalty_type=PenaltyType.ROOM_SETUP_DELAY,
+        )
+        register_penalty_commands(
+            add_name="admin_add_match_mistake",
+            sub_name="admin_sub_match_mistake",
+            description=ADMIN_MATCH_MISTAKE_PENALTY_DESCRIPTION,
+            penalty_type=PenaltyType.MATCH_MISTAKE,
+        )
+        register_penalty_commands(
+            add_name="admin_add_late",
+            sub_name="admin_sub_late",
+            description=ADMIN_LATE_PENALTY_DESCRIPTION,
+            penalty_type=PenaltyType.LATE,
+        )
+        register_penalty_commands(
+            add_name="admin_add_disconnect",
+            sub_name="admin_sub_disconnect",
+            description=ADMIN_DISCONNECT_PENALTY_DESCRIPTION,
+            penalty_type=PenaltyType.DISCONNECT,
+        )
+
+    def register_dev_commands() -> None:
+        @tree.command(name="dev_register", description=DEV_REGISTER_COMMAND_DESCRIPTION)
+        @app_commands.describe(discord_user_id=DEV_REGISTER_DISCORD_USER_ID_DESCRIPTION)
+        async def dev_register_command(
+            interaction: discord.Interaction[Any],
+            discord_user_id: str,
+        ) -> None:
+            await run_command("dev_register", interaction, handlers.dev_register, discord_user_id)
+
+        @tree.command(name="dev_join", description=DEV_JOIN_COMMAND_DESCRIPTION)
+        @app_commands.describe(
+            match_format=DEV_JOIN_MATCH_FORMAT_DESCRIPTION,
+            queue_name=DEV_JOIN_QUEUE_NAME_DESCRIPTION,
+            discord_user_id=DEV_JOIN_DISCORD_USER_ID_DESCRIPTION,
+        )
+        @app_commands.choices(match_format=match_format_choices)
+        @app_commands.choices(queue_name=queue_name_choices)
+        async def dev_join_command(
+            interaction: discord.Interaction[Any],
+            match_format: str,
+            queue_name: str,
+            discord_user_id: str,
+        ) -> None:
+            await run_command(
+                "dev_join",
+                interaction,
+                handlers.dev_join,
+                match_format,
+                queue_name,
+                discord_user_id,
+            )
+
+        @tree.command(name="dev_present", description=DEV_PRESENT_COMMAND_DESCRIPTION)
+        @app_commands.describe(discord_user_id=DEV_PRESENT_DISCORD_USER_ID_DESCRIPTION)
+        async def dev_present_command(
+            interaction: discord.Interaction[Any],
+            discord_user_id: str,
+        ) -> None:
+            await run_command("dev_present", interaction, handlers.dev_present, discord_user_id)
+
+        @tree.command(name="dev_leave", description=DEV_LEAVE_COMMAND_DESCRIPTION)
+        @app_commands.describe(discord_user_id=DEV_LEAVE_DISCORD_USER_ID_DESCRIPTION)
+        async def dev_leave_command(
+            interaction: discord.Interaction[Any],
+            discord_user_id: str,
+        ) -> None:
+            await run_command("dev_leave", interaction, handlers.dev_leave, discord_user_id)
+
+        @tree.command(
+            name="dev_info_thread",
+            description=DEV_INFO_THREAD_COMMAND_DESCRIPTION,
+        )
+        @app_commands.describe(
+            command_name=DEV_INFO_THREAD_COMMAND_NAME_DESCRIPTION,
+            discord_user_id=DEV_INFO_THREAD_DISCORD_USER_ID_DESCRIPTION,
+        )
+        @app_commands.choices(command_name=info_thread_command_choices)
+        async def dev_info_thread_command(
+            interaction: discord.Interaction[Any],
+            command_name: str,
+            discord_user_id: str,
+        ) -> None:
+            await run_command(
+                "dev_info_thread",
+                interaction,
+                handlers.dev_info_thread,
+                command_name,
+                discord_user_id,
             )
 
         @tree.command(
-            name=sub_name,
-            description=build_admin_penalty_command_description(description, -1),
+            name="dev_player_info",
+            description=DEV_PLAYER_INFO_COMMAND_DESCRIPTION,
         )
-        @app_commands.describe(
-            user=ADMIN_PENALTY_USER_DESCRIPTION,
-            dummy_user=ADMIN_PENALTY_DUMMY_USER_DESCRIPTION,
-        )
-        async def sub_command(
+        @app_commands.describe(discord_user_id=DEV_PLAYER_INFO_DISCORD_USER_ID_DESCRIPTION)
+        async def dev_player_info_command(
             interaction: discord.Interaction[Any],
-            user: discord.Member | discord.User | None = None,
-            dummy_user: str | None = None,
+            discord_user_id: str,
         ) -> None:
             await run_command(
-                sub_name,
+                "dev_player_info",
                 interaction,
-                handlers.admin_sub_penalty,
-                penalty_type,
-                target_user=user,
-                dummy_user=dummy_user,
+                handlers.dev_player_info,
+                discord_user_id,
             )
 
-        del add_command, sub_command
-
-    register_penalty_commands(
-        add_name="admin_add_incorrect_report",
-        sub_name="admin_sub_incorrect_report",
-        description=ADMIN_INCORRECT_REPORT_PENALTY_DESCRIPTION,
-        penalty_type=PenaltyType.INCORRECT_REPORT,
-    )
-    register_penalty_commands(
-        add_name="admin_add_no_report",
-        sub_name="admin_sub_no_report",
-        description=ADMIN_NO_REPORT_PENALTY_DESCRIPTION,
-        penalty_type=PenaltyType.NO_REPORT,
-    )
-    register_penalty_commands(
-        add_name="admin_add_room_setup_delay",
-        sub_name="admin_sub_room_setup_delay",
-        description=ADMIN_ROOM_SETUP_DELAY_PENALTY_DESCRIPTION,
-        penalty_type=PenaltyType.ROOM_SETUP_DELAY,
-    )
-    register_penalty_commands(
-        add_name="admin_add_match_mistake",
-        sub_name="admin_sub_match_mistake",
-        description=ADMIN_MATCH_MISTAKE_PENALTY_DESCRIPTION,
-        penalty_type=PenaltyType.MATCH_MISTAKE,
-    )
-    register_penalty_commands(
-        add_name="admin_add_late",
-        sub_name="admin_sub_late",
-        description=ADMIN_LATE_PENALTY_DESCRIPTION,
-        penalty_type=PenaltyType.LATE,
-    )
-    register_penalty_commands(
-        add_name="admin_add_disconnect",
-        sub_name="admin_sub_disconnect",
-        description=ADMIN_DISCONNECT_PENALTY_DESCRIPTION,
-        penalty_type=PenaltyType.DISCONNECT,
-    )
-
-    @tree.command(name="dev_register", description=DEV_REGISTER_COMMAND_DESCRIPTION)
-    @app_commands.describe(discord_user_id=DEV_REGISTER_DISCORD_USER_ID_DESCRIPTION)
-    async def dev_register_command(
-        interaction: discord.Interaction[Any],
-        discord_user_id: str,
-    ) -> None:
-        await run_command("dev_register", interaction, handlers.dev_register, discord_user_id)
-
-    @tree.command(name="dev_join", description=DEV_JOIN_COMMAND_DESCRIPTION)
-    @app_commands.describe(
-        match_format=DEV_JOIN_MATCH_FORMAT_DESCRIPTION,
-        queue_name=DEV_JOIN_QUEUE_NAME_DESCRIPTION,
-        discord_user_id=DEV_JOIN_DISCORD_USER_ID_DESCRIPTION,
-    )
-    @app_commands.choices(match_format=match_format_choices)
-    @app_commands.choices(queue_name=queue_name_choices)
-    async def dev_join_command(
-        interaction: discord.Interaction[Any],
-        match_format: str,
-        queue_name: str,
-        discord_user_id: str,
-    ) -> None:
-        await run_command(
-            "dev_join",
-            interaction,
-            handlers.dev_join,
-            match_format,
-            queue_name,
-            discord_user_id,
+        @tree.command(
+            name="dev_player_info_season",
+            description=DEV_PLAYER_INFO_SEASON_COMMAND_DESCRIPTION,
         )
-
-    @tree.command(name="dev_present", description=DEV_PRESENT_COMMAND_DESCRIPTION)
-    @app_commands.describe(discord_user_id=DEV_PRESENT_DISCORD_USER_ID_DESCRIPTION)
-    async def dev_present_command(
-        interaction: discord.Interaction[Any],
-        discord_user_id: str,
-    ) -> None:
-        await run_command("dev_present", interaction, handlers.dev_present, discord_user_id)
-
-    @tree.command(name="dev_leave", description=DEV_LEAVE_COMMAND_DESCRIPTION)
-    @app_commands.describe(discord_user_id=DEV_LEAVE_DISCORD_USER_ID_DESCRIPTION)
-    async def dev_leave_command(
-        interaction: discord.Interaction[Any],
-        discord_user_id: str,
-    ) -> None:
-        await run_command("dev_leave", interaction, handlers.dev_leave, discord_user_id)
-
-    @tree.command(
-        name="dev_info_thread",
-        description=DEV_INFO_THREAD_COMMAND_DESCRIPTION,
-    )
-    @app_commands.describe(
-        command_name=DEV_INFO_THREAD_COMMAND_NAME_DESCRIPTION,
-        discord_user_id=DEV_INFO_THREAD_DISCORD_USER_ID_DESCRIPTION,
-    )
-    @app_commands.choices(command_name=info_thread_command_choices)
-    async def dev_info_thread_command(
-        interaction: discord.Interaction[Any],
-        command_name: str,
-        discord_user_id: str,
-    ) -> None:
-        await run_command(
-            "dev_info_thread",
-            interaction,
-            handlers.dev_info_thread,
-            command_name,
-            discord_user_id,
+        @app_commands.describe(
+            season_id=DEV_PLAYER_INFO_SEASON_ID_DESCRIPTION,
+            discord_user_id=DEV_PLAYER_INFO_SEASON_DISCORD_USER_ID_DESCRIPTION,
         )
+        async def dev_player_info_season_command(
+            interaction: discord.Interaction[Any],
+            season_id: int,
+            discord_user_id: str,
+        ) -> None:
+            await run_command(
+                "dev_player_info_season",
+                interaction,
+                handlers.dev_player_info_season,
+                season_id,
+                discord_user_id,
+            )
 
-    @tree.command(
-        name="dev_player_info",
-        description=DEV_PLAYER_INFO_COMMAND_DESCRIPTION,
-    )
-    @app_commands.describe(discord_user_id=DEV_PLAYER_INFO_DISCORD_USER_ID_DESCRIPTION)
-    async def dev_player_info_command(
-        interaction: discord.Interaction[Any],
-        discord_user_id: str,
-    ) -> None:
-        await run_command(
-            "dev_player_info",
-            interaction,
-            handlers.dev_player_info,
-            discord_user_id,
+        @tree.command(
+            name="dev_leaderboard",
+            description=DEV_LEADERBOARD_COMMAND_DESCRIPTION,
         )
-
-    @tree.command(
-        name="dev_player_info_season",
-        description=DEV_PLAYER_INFO_SEASON_COMMAND_DESCRIPTION,
-    )
-    @app_commands.describe(
-        season_id=DEV_PLAYER_INFO_SEASON_ID_DESCRIPTION,
-        discord_user_id=DEV_PLAYER_INFO_SEASON_DISCORD_USER_ID_DESCRIPTION,
-    )
-    async def dev_player_info_season_command(
-        interaction: discord.Interaction[Any],
-        season_id: int,
-        discord_user_id: str,
-    ) -> None:
-        await run_command(
-            "dev_player_info_season",
-            interaction,
-            handlers.dev_player_info_season,
-            season_id,
-            discord_user_id,
+        @app_commands.describe(
+            match_format=DEV_LEADERBOARD_MATCH_FORMAT_DESCRIPTION,
+            page=DEV_LEADERBOARD_PAGE_DESCRIPTION,
+            discord_user_id=DEV_LEADERBOARD_DISCORD_USER_ID_DESCRIPTION,
         )
+        @app_commands.choices(match_format=match_format_choices)
+        async def dev_leaderboard_command(
+            interaction: discord.Interaction[Any],
+            match_format: str,
+            page: int,
+            discord_user_id: str,
+        ) -> None:
+            await run_command(
+                "dev_leaderboard",
+                interaction,
+                handlers.dev_leaderboard,
+                match_format,
+                page,
+                discord_user_id,
+            )
 
-    @tree.command(
-        name="dev_leaderboard",
-        description=DEV_LEADERBOARD_COMMAND_DESCRIPTION,
-    )
-    @app_commands.describe(
-        match_format=DEV_LEADERBOARD_MATCH_FORMAT_DESCRIPTION,
-        page=DEV_LEADERBOARD_PAGE_DESCRIPTION,
-        discord_user_id=DEV_LEADERBOARD_DISCORD_USER_ID_DESCRIPTION,
-    )
-    @app_commands.choices(match_format=match_format_choices)
-    async def dev_leaderboard_command(
-        interaction: discord.Interaction[Any],
-        match_format: str,
-        page: int,
-        discord_user_id: str,
-    ) -> None:
-        await run_command(
-            "dev_leaderboard",
-            interaction,
-            handlers.dev_leaderboard,
-            match_format,
-            page,
-            discord_user_id,
+        @tree.command(
+            name="dev_leaderboard_season",
+            description=DEV_LEADERBOARD_SEASON_COMMAND_DESCRIPTION,
         )
-
-    @tree.command(
-        name="dev_leaderboard_season",
-        description=DEV_LEADERBOARD_SEASON_COMMAND_DESCRIPTION,
-    )
-    @app_commands.describe(
-        season_id=DEV_LEADERBOARD_SEASON_ID_DESCRIPTION,
-        match_format=DEV_LEADERBOARD_SEASON_MATCH_FORMAT_DESCRIPTION,
-        page=DEV_LEADERBOARD_SEASON_PAGE_DESCRIPTION,
-        discord_user_id=DEV_LEADERBOARD_SEASON_DISCORD_USER_ID_DESCRIPTION,
-    )
-    @app_commands.choices(match_format=match_format_choices)
-    async def dev_leaderboard_season_command(
-        interaction: discord.Interaction[Any],
-        season_id: int,
-        match_format: str,
-        page: int,
-        discord_user_id: str,
-    ) -> None:
-        await run_command(
-            "dev_leaderboard_season",
-            interaction,
-            handlers.dev_leaderboard_season,
-            season_id,
-            match_format,
-            page,
-            discord_user_id,
+        @app_commands.describe(
+            season_id=DEV_LEADERBOARD_SEASON_ID_DESCRIPTION,
+            match_format=DEV_LEADERBOARD_SEASON_MATCH_FORMAT_DESCRIPTION,
+            page=DEV_LEADERBOARD_SEASON_PAGE_DESCRIPTION,
+            discord_user_id=DEV_LEADERBOARD_SEASON_DISCORD_USER_ID_DESCRIPTION,
         )
+        @app_commands.choices(match_format=match_format_choices)
+        async def dev_leaderboard_season_command(
+            interaction: discord.Interaction[Any],
+            season_id: int,
+            match_format: str,
+            page: int,
+            discord_user_id: str,
+        ) -> None:
+            await run_command(
+                "dev_leaderboard_season",
+                interaction,
+                handlers.dev_leaderboard_season,
+                season_id,
+                match_format,
+                page,
+                discord_user_id,
+            )
 
-    @tree.command(name="dev_match_parent", description=DEV_MATCH_PARENT_COMMAND_DESCRIPTION)
-    @app_commands.describe(
-        match_id=DEV_MATCH_MATCH_ID_DESCRIPTION,
-        discord_user_id=DEV_MATCH_DISCORD_USER_ID_DESCRIPTION,
-    )
-    async def dev_match_parent_command(
-        interaction: discord.Interaction[Any],
-        match_id: int,
-        discord_user_id: str,
-    ) -> None:
-        await run_command(
-            "dev_match_parent",
-            interaction,
-            handlers.dev_match_parent,
-            match_id,
-            discord_user_id,
+        @tree.command(name="dev_match_parent", description=DEV_MATCH_PARENT_COMMAND_DESCRIPTION)
+        @app_commands.describe(
+            match_id=DEV_MATCH_MATCH_ID_DESCRIPTION,
+            discord_user_id=DEV_MATCH_DISCORD_USER_ID_DESCRIPTION,
         )
+        async def dev_match_parent_command(
+            interaction: discord.Interaction[Any],
+            match_id: int,
+            discord_user_id: str,
+        ) -> None:
+            await run_command(
+                "dev_match_parent",
+                interaction,
+                handlers.dev_match_parent,
+                match_id,
+                discord_user_id,
+            )
 
-    @tree.command(
-        name="dev_match_spectate",
-        description=DEV_MATCH_SPECTATE_COMMAND_DESCRIPTION,
-    )
-    @app_commands.describe(
-        match_id=DEV_MATCH_MATCH_ID_DESCRIPTION,
-        discord_user_id=DEV_MATCH_DISCORD_USER_ID_DESCRIPTION,
-    )
-    async def dev_match_spectate_command(
-        interaction: discord.Interaction[Any],
-        match_id: int,
-        discord_user_id: str,
-    ) -> None:
-        await run_command(
-            "dev_match_spectate",
-            interaction,
-            handlers.dev_match_spectate,
-            match_id,
-            discord_user_id,
+        @tree.command(
+            name="dev_match_spectate",
+            description=DEV_MATCH_SPECTATE_COMMAND_DESCRIPTION,
         )
-
-    @tree.command(name="dev_match_win", description=DEV_MATCH_WIN_COMMAND_DESCRIPTION)
-    @app_commands.describe(
-        match_id=DEV_MATCH_MATCH_ID_DESCRIPTION,
-        discord_user_id=DEV_MATCH_DISCORD_USER_ID_DESCRIPTION,
-    )
-    async def dev_match_win_command(
-        interaction: discord.Interaction[Any],
-        match_id: int,
-        discord_user_id: str,
-    ) -> None:
-        await run_command(
-            "dev_match_win",
-            interaction,
-            handlers.dev_match_win,
-            match_id,
-            discord_user_id,
+        @app_commands.describe(
+            match_id=DEV_MATCH_MATCH_ID_DESCRIPTION,
+            discord_user_id=DEV_MATCH_DISCORD_USER_ID_DESCRIPTION,
         )
+        async def dev_match_spectate_command(
+            interaction: discord.Interaction[Any],
+            match_id: int,
+            discord_user_id: str,
+        ) -> None:
+            await run_command(
+                "dev_match_spectate",
+                interaction,
+                handlers.dev_match_spectate,
+                match_id,
+                discord_user_id,
+            )
 
-    @tree.command(name="dev_match_lose", description=DEV_MATCH_LOSE_COMMAND_DESCRIPTION)
-    @app_commands.describe(
-        match_id=DEV_MATCH_MATCH_ID_DESCRIPTION,
-        discord_user_id=DEV_MATCH_DISCORD_USER_ID_DESCRIPTION,
-    )
-    async def dev_match_lose_command(
-        interaction: discord.Interaction[Any],
-        match_id: int,
-        discord_user_id: str,
-    ) -> None:
-        await run_command(
-            "dev_match_lose",
-            interaction,
-            handlers.dev_match_lose,
-            match_id,
-            discord_user_id,
+        @tree.command(name="dev_match_win", description=DEV_MATCH_WIN_COMMAND_DESCRIPTION)
+        @app_commands.describe(
+            match_id=DEV_MATCH_MATCH_ID_DESCRIPTION,
+            discord_user_id=DEV_MATCH_DISCORD_USER_ID_DESCRIPTION,
         )
+        async def dev_match_win_command(
+            interaction: discord.Interaction[Any],
+            match_id: int,
+            discord_user_id: str,
+        ) -> None:
+            await run_command(
+                "dev_match_win",
+                interaction,
+                handlers.dev_match_win,
+                match_id,
+                discord_user_id,
+            )
 
-    @tree.command(name="dev_match_draw", description=DEV_MATCH_DRAW_COMMAND_DESCRIPTION)
-    @app_commands.describe(
-        match_id=DEV_MATCH_MATCH_ID_DESCRIPTION,
-        discord_user_id=DEV_MATCH_DISCORD_USER_ID_DESCRIPTION,
-    )
-    async def dev_match_draw_command(
-        interaction: discord.Interaction[Any],
-        match_id: int,
-        discord_user_id: str,
-    ) -> None:
-        await run_command(
-            "dev_match_draw",
-            interaction,
-            handlers.dev_match_draw,
-            match_id,
-            discord_user_id,
+        @tree.command(name="dev_match_lose", description=DEV_MATCH_LOSE_COMMAND_DESCRIPTION)
+        @app_commands.describe(
+            match_id=DEV_MATCH_MATCH_ID_DESCRIPTION,
+            discord_user_id=DEV_MATCH_DISCORD_USER_ID_DESCRIPTION,
         )
+        async def dev_match_lose_command(
+            interaction: discord.Interaction[Any],
+            match_id: int,
+            discord_user_id: str,
+        ) -> None:
+            await run_command(
+                "dev_match_lose",
+                interaction,
+                handlers.dev_match_lose,
+                match_id,
+                discord_user_id,
+            )
 
-    @tree.command(name="dev_match_void", description=DEV_MATCH_VOID_COMMAND_DESCRIPTION)
-    @app_commands.describe(
-        match_id=DEV_MATCH_MATCH_ID_DESCRIPTION,
-        discord_user_id=DEV_MATCH_DISCORD_USER_ID_DESCRIPTION,
-    )
-    async def dev_match_void_command(
-        interaction: discord.Interaction[Any],
-        match_id: int,
-        discord_user_id: str,
-    ) -> None:
-        await run_command(
-            "dev_match_void",
-            interaction,
-            handlers.dev_match_void,
-            match_id,
-            discord_user_id,
+        @tree.command(name="dev_match_draw", description=DEV_MATCH_DRAW_COMMAND_DESCRIPTION)
+        @app_commands.describe(
+            match_id=DEV_MATCH_MATCH_ID_DESCRIPTION,
+            discord_user_id=DEV_MATCH_DISCORD_USER_ID_DESCRIPTION,
         )
+        async def dev_match_draw_command(
+            interaction: discord.Interaction[Any],
+            match_id: int,
+            discord_user_id: str,
+        ) -> None:
+            await run_command(
+                "dev_match_draw",
+                interaction,
+                handlers.dev_match_draw,
+                match_id,
+                discord_user_id,
+            )
 
-    @tree.command(
-        name="dev_match_approve",
-        description=DEV_MATCH_APPROVE_COMMAND_DESCRIPTION,
-    )
-    @app_commands.describe(
-        match_id=DEV_MATCH_MATCH_ID_DESCRIPTION,
-        discord_user_id=DEV_MATCH_DISCORD_USER_ID_DESCRIPTION,
-    )
-    async def dev_match_approve_command(
-        interaction: discord.Interaction[Any],
-        match_id: int,
-        discord_user_id: str,
-    ) -> None:
-        await run_command(
-            "dev_match_approve",
-            interaction,
-            handlers.dev_match_approve,
-            match_id,
-            discord_user_id,
+        @tree.command(name="dev_match_void", description=DEV_MATCH_VOID_COMMAND_DESCRIPTION)
+        @app_commands.describe(
+            match_id=DEV_MATCH_MATCH_ID_DESCRIPTION,
+            discord_user_id=DEV_MATCH_DISCORD_USER_ID_DESCRIPTION,
         )
+        async def dev_match_void_command(
+            interaction: discord.Interaction[Any],
+            match_id: int,
+            discord_user_id: str,
+        ) -> None:
+            await run_command(
+                "dev_match_void",
+                interaction,
+                handlers.dev_match_void,
+                match_id,
+                discord_user_id,
+            )
 
-    @tree.command(name="dev_is_admin", description=DEV_IS_ADMIN_COMMAND_DESCRIPTION)
-    async def dev_is_admin_command(interaction: discord.Interaction[Any]) -> None:
-        await run_command("dev_is_admin", interaction, handlers.dev_is_admin)
+        @tree.command(
+            name="dev_match_approve",
+            description=DEV_MATCH_APPROVE_COMMAND_DESCRIPTION,
+        )
+        @app_commands.describe(
+            match_id=DEV_MATCH_MATCH_ID_DESCRIPTION,
+            discord_user_id=DEV_MATCH_DISCORD_USER_ID_DESCRIPTION,
+        )
+        async def dev_match_approve_command(
+            interaction: discord.Interaction[Any],
+            match_id: int,
+            discord_user_id: str,
+        ) -> None:
+            await run_command(
+                "dev_match_approve",
+                interaction,
+                handlers.dev_match_approve,
+                match_id,
+                discord_user_id,
+            )
+
+        @tree.command(name="dev_is_admin", description=DEV_IS_ADMIN_COMMAND_DESCRIPTION)
+        async def dev_is_admin_command(interaction: discord.Interaction[Any]) -> None:
+            await run_command("dev_is_admin", interaction, handlers.dev_is_admin)
+
+    register_admin_commands()
+    if development_mode:
+        register_general_commands()
+        register_dev_commands()

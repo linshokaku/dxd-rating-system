@@ -9254,7 +9254,7 @@ def test_admin_add_penalty_accepts_dummy_user_reference(
 
 def test_dev_commands_register_discord_user_id_as_last_option() -> None:
     handlers = BotCommandHandlers(
-        settings=create_settings(),
+        settings=create_settings(development_mode=True),
         session_factory=sessionmaker(),
     )
     client = discord.Client(intents=discord.Intents.none())
@@ -9285,6 +9285,70 @@ def test_dev_commands_register_discord_user_id_as_last_option() -> None:
         command = tree.get_command(command_name)
         assert command is not None
         assert [parameter.name for parameter in command.parameters] == expected
+
+
+def test_production_registers_only_admin_commands() -> None:
+    handlers = BotCommandHandlers(
+        settings=create_settings(),
+        session_factory=sessionmaker(),
+    )
+    client = discord.Client(intents=discord.Intents.none())
+    tree = discord.app_commands.CommandTree(client)
+
+    register_app_commands(tree, handlers)
+
+    admin_command_names = [
+        "admin_match_result",
+        "admin_setup_ui_channels",
+        "admin_add_late",
+        "admin_sub_late",
+        "admin_restrict_user",
+        "admin_unrestrict_user",
+    ]
+    general_command_names = [
+        "register",
+        "join",
+        "present",
+        "leave",
+        "update_matchmaking_status",
+        "player_info",
+        "info_thread",
+        "player_info_season",
+        "leaderboard",
+        "leaderboard_season",
+        "match_parent",
+        "match_spectate",
+        "match_win",
+        "match_lose",
+        "match_draw",
+        "match_void",
+        "match_approve",
+    ]
+    dev_command_names = [
+        "dev_register",
+        "dev_join",
+        "dev_present",
+        "dev_leave",
+        "dev_info_thread",
+        "dev_player_info",
+        "dev_player_info_season",
+        "dev_leaderboard",
+        "dev_leaderboard_season",
+        "dev_match_parent",
+        "dev_match_spectate",
+        "dev_match_win",
+        "dev_match_lose",
+        "dev_match_draw",
+        "dev_match_void",
+        "dev_match_approve",
+        "dev_is_admin",
+    ]
+
+    for command_name in admin_command_names:
+        assert tree.get_command(command_name) is not None
+
+    for command_name in general_command_names + dev_command_names:
+        assert tree.get_command(command_name) is None
 
 
 def test_admin_restriction_commands_are_registered_with_expected_parameters() -> None:
@@ -9368,7 +9432,7 @@ def test_admin_managed_ui_commands_are_registered_with_expected_parameters() -> 
 
 def test_update_matchmaking_status_command_is_registered_without_parameters() -> None:
     handlers = BotCommandHandlers(
-        settings=create_settings(),
+        settings=create_settings(development_mode=True),
         session_factory=sessionmaker(),
     )
     client = discord.Client(intents=discord.Intents.none())
@@ -9384,7 +9448,7 @@ def test_update_matchmaking_status_command_is_registered_without_parameters() ->
 
 def test_info_thread_command_is_registered_with_expected_parameters_and_choices() -> None:
     handlers = BotCommandHandlers(
-        settings=create_settings(),
+        settings=create_settings(development_mode=True),
         session_factory=sessionmaker(),
     )
     client = discord.Client(intents=discord.Intents.none())
@@ -9406,7 +9470,7 @@ def test_info_thread_command_is_registered_with_expected_parameters_and_choices(
 
 def test_leaderboard_command_is_registered_with_expected_parameters_and_choices() -> None:
     handlers = BotCommandHandlers(
-        settings=create_settings(),
+        settings=create_settings(development_mode=True),
         session_factory=sessionmaker(),
     )
     client = discord.Client(intents=discord.Intents.none())
@@ -9423,7 +9487,7 @@ def test_leaderboard_command_is_registered_with_expected_parameters_and_choices(
 
 def test_leaderboard_season_command_is_registered_with_expected_parameters_and_choices() -> None:
     handlers = BotCommandHandlers(
-        settings=create_settings(),
+        settings=create_settings(development_mode=True),
         session_factory=sessionmaker(),
     )
     client = discord.Client(intents=discord.Intents.none())
@@ -9444,7 +9508,7 @@ def test_leaderboard_season_command_is_registered_with_expected_parameters_and_c
 
 def test_match_spectate_command_is_registered_with_match_id_parameter() -> None:
     handlers = BotCommandHandlers(
-        settings=create_settings(),
+        settings=create_settings(development_mode=True),
         session_factory=sessionmaker(),
     )
     client = discord.Client(intents=discord.Intents.none())
@@ -9461,7 +9525,7 @@ def test_register_command_defers_and_replies_via_followup(
     session: Session,
     session_factory: sessionmaker[Session],
 ) -> None:
-    handlers = create_handlers(session_factory)
+    handlers = create_handlers(session_factory, development_mode=True)
     client = discord.Client(intents=discord.Intents.none())
     tree = discord.app_commands.CommandTree(client)
     interaction = FakeInteraction(user=FakeUser(id=10))
@@ -9485,7 +9549,7 @@ def test_register_command_returns_generic_internal_error_on_unhandled_exception(
     session_factory: sessionmaker[Session],
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    handlers = create_handlers(session_factory)
+    handlers = create_handlers(session_factory, development_mode=True)
     client = discord.Client(intents=discord.Intents.none())
     tree = discord.app_commands.CommandTree(client)
     interaction = FakeInteraction(user=FakeUser(id=10))
@@ -9512,7 +9576,7 @@ def test_register_command_returns_generic_internal_error_when_handler_sends_no_r
     session_factory: sessionmaker[Session],
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    handlers = create_handlers(session_factory)
+    handlers = create_handlers(session_factory, development_mode=True)
     client = discord.Client(intents=discord.Intents.none())
     tree = discord.app_commands.CommandTree(client)
     interaction = FakeInteraction(user=FakeUser(id=10))

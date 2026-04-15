@@ -1247,6 +1247,22 @@ def test_try_create_matches_routes_match_created_to_matchmaking_news_channel_whe
         for participant in participants
         if participant.team == MatchParticipantTeam.TEAM_B
     ]
+    expected_team_a_rating_entries = [
+        {
+            "discord_user_id": players_by_id[participant.player_id].discord_user_id,
+            "rating": get_player_format_stats(session, participant.player_id).rating,
+        }
+        for participant in participants
+        if participant.team == MatchParticipantTeam.TEAM_A
+    ]
+    expected_team_b_rating_entries = [
+        {
+            "discord_user_id": players_by_id[participant.player_id].discord_user_id,
+            "rating": get_player_format_stats(session, participant.player_id).rating,
+        }
+        for participant in participants
+        if participant.team == MatchParticipantTeam.TEAM_B
+    ]
     announcement_events = [
         event
         for event in outbox_events
@@ -1275,6 +1291,8 @@ def test_try_create_matches_routes_match_created_to_matchmaking_news_channel_whe
         },
         "team_a_discord_user_ids": expected_team_a_discord_user_ids,
         "team_b_discord_user_ids": expected_team_b_discord_user_ids,
+        "team_a_rating_entries": expected_team_a_rating_entries,
+        "team_b_rating_entries": expected_team_b_rating_entries,
         "team_a_player_display_names": expected_team_a_display_names,
         "team_b_player_display_names": expected_team_b_display_names,
         "match_operation_thread_parent_channel_id": matchmaking_channel.channel_id,
@@ -1333,6 +1351,22 @@ def test_try_create_matches_routes_match_created_to_presence_threads_when_availa
         for participant in participants
         if participant.team == MatchParticipantTeam.TEAM_B
     ]
+    expected_team_a_rating_entries = [
+        {
+            "discord_user_id": players_by_id[participant.player_id].discord_user_id,
+            "rating": get_player_format_stats(session, participant.player_id).rating,
+        }
+        for participant in participants
+        if participant.team == MatchParticipantTeam.TEAM_A
+    ]
+    expected_team_b_rating_entries = [
+        {
+            "discord_user_id": players_by_id[participant.player_id].discord_user_id,
+            "rating": get_player_format_stats(session, participant.player_id).rating,
+        }
+        for participant in participants
+        if participant.team == MatchParticipantTeam.TEAM_B
+    ]
     announcement_events = [
         event
         for event in outbox_events
@@ -1374,6 +1408,8 @@ def test_try_create_matches_routes_match_created_to_presence_threads_when_availa
         )
         assert event.payload["team_a_discord_user_ids"] == expected_team_a_discord_user_ids
         assert event.payload["team_b_discord_user_ids"] == expected_team_b_discord_user_ids
+        assert event.payload["team_a_rating_entries"] == expected_team_a_rating_entries
+        assert event.payload["team_b_rating_entries"] == expected_team_b_rating_entries
         assert (
             event.payload["match_operation_thread_parent_channel_id"]
             == matchmaking_channel.channel_id

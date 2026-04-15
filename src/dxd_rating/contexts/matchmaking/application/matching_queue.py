@@ -170,6 +170,11 @@ class NotificationDestinationPayload(TypedDict, total=False):
     guild_id: int | None
 
 
+class TeamRatingEntryPayload(TypedDict):
+    discord_user_id: int
+    rating: float
+
+
 class MatchingQueueService:
     def __init__(
         self,
@@ -668,13 +673,14 @@ class MatchingQueueService:
                 match_format=format_definition.match_format,
                 lock_rows=True,
             )
+            ratings_by_player_id = {
+                player_id: player_format_stats.rating
+                for player_id, player_format_stats in player_format_stats_by_player_id.items()
+            }
             prepared_matches = self._prepare_matches_for_batch(
                 queue_entries,
                 format_definition,
-                ratings_by_player_id={
-                    player_id: player_format_stats.rating
-                    for player_id, player_format_stats in player_format_stats_by_player_id.items()
-                },
+                ratings_by_player_id=ratings_by_player_id,
             )
             for prepared_match in prepared_matches:
                 match = Match(
@@ -738,6 +744,7 @@ class MatchingQueueService:
                     queue_class_id,
                     prepared_match.team_a_entries,
                     prepared_match.team_b_entries,
+                    ratings_by_player_id=ratings_by_player_id,
                 ):
                     destination = payload["destination"]
                     channel_id = destination["channel_id"]
@@ -823,11 +830,21 @@ class MatchingQueueService:
         queue_class_id: str,
         team_a_entries: Sequence[MatchQueueEntry],
         team_b_entries: Sequence[MatchQueueEntry],
+        *,
+        ratings_by_player_id: dict[int, float],
     ) -> tuple[dict[str, Any], ...]:
         queue_class_definition = self._require_queue_class_definition_by_id(queue_class_id)
         matchmaking_channel = self._get_managed_ui_channel(
             session,
             ManagedUiType.MATCHMAKING_CHANNEL,
+        )
+        team_a_rating_entries = self._build_team_rating_entries(
+            team_entries=team_a_entries,
+            ratings_by_player_id=ratings_by_player_id,
+        )
+        team_b_rating_entries = self._build_team_rating_entries(
+            team_entries=team_b_entries,
+            ratings_by_player_id=ratings_by_player_id,
         )
         participant_payloads = self._build_participant_match_created_payloads(
             match_id=match_id,
@@ -836,6 +853,8 @@ class MatchingQueueService:
             matchmaking_channel=matchmaking_channel,
             team_a_entries=team_a_entries,
             team_b_entries=team_b_entries,
+            team_a_rating_entries=team_a_rating_entries,
+            team_b_rating_entries=team_b_rating_entries,
         )
         matchmaking_news_payload = self._build_matchmaking_news_match_created_payload(
             session,
@@ -845,6 +864,8 @@ class MatchingQueueService:
             matchmaking_channel=matchmaking_channel,
             team_a_entries=team_a_entries,
             team_b_entries=team_b_entries,
+            team_a_rating_entries=team_a_rating_entries,
+            team_b_rating_entries=team_b_rating_entries,
         )
         if matchmaking_news_payload is not None:
             return (matchmaking_news_payload, *participant_payloads)
@@ -861,6 +882,8 @@ class MatchingQueueService:
         matchmaking_channel: ManagedUiChannel | None,
         team_a_entries: Sequence[MatchQueueEntry],
         team_b_entries: Sequence[MatchQueueEntry],
+        team_a_rating_entries: Sequence[TeamRatingEntryPayload],
+        team_b_rating_entries: Sequence[TeamRatingEntryPayload],
     ) -> dict[str, Any] | None:
         matchmaking_news_channel = self._get_managed_ui_channel(
             session,
@@ -906,6 +929,8 @@ class MatchingQueueService:
             },
             "team_a_discord_user_ids": team_a_discord_user_ids,
             "team_b_discord_user_ids": team_b_discord_user_ids,
+            "team_a_rating_entries": list(team_a_rating_entries),
+            "team_b_rating_entries": list(team_b_rating_entries),
             "team_a_player_display_names": [
                 self._resolve_match_announcement_player_display_name(
                     players_by_id,
@@ -937,6 +962,8 @@ class MatchingQueueService:
         matchmaking_channel: ManagedUiChannel | None,
         team_a_entries: Sequence[MatchQueueEntry],
         team_b_entries: Sequence[MatchQueueEntry],
+        team_a_rating_entries: Sequence[TeamRatingEntryPayload],
+        team_b_rating_entries: Sequence[TeamRatingEntryPayload],
     ) -> tuple[dict[str, Any], ...]:
         all_entries = tuple(
             sorted(
@@ -974,6 +1001,8 @@ class MatchingQueueService:
                     queue_entry=queue_entry,
                     team_a_discord_user_ids=team_a_discord_user_ids,
                     team_b_discord_user_ids=team_b_discord_user_ids,
+                    team_a_rating_entries=team_a_rating_entries,
+                    team_b_rating_entries=team_b_rating_entries,
                     queue_entry_ids=queue_entry_ids,
                     player_ids=player_ids,
                 )
@@ -991,6 +1020,8 @@ class MatchingQueueService:
         queue_entry: MatchQueueEntry,
         team_a_discord_user_ids: Sequence[int],
         team_b_discord_user_ids: Sequence[int],
+        team_a_rating_entries: Sequence[TeamRatingEntryPayload],
+        team_b_rating_entries: Sequence[TeamRatingEntryPayload],
         queue_entry_ids: Sequence[int],
         player_ids: Sequence[int],
     ) -> dict[str, Any]:
@@ -1007,6 +1038,8 @@ class MatchingQueueService:
             "mention_discord_user_id": queue_entry.notification_mention_discord_user_id,
             "team_a_discord_user_ids": list(team_a_discord_user_ids),
             "team_b_discord_user_ids": list(team_b_discord_user_ids),
+            "team_a_rating_entries": list(team_a_rating_entries),
+            "team_b_rating_entries": list(team_b_rating_entries),
         }
         self._apply_match_operation_thread_payload(
             payload,
@@ -1014,6 +1047,20 @@ class MatchingQueueService:
             create_match_operation_thread=True,
         )
         return payload
+
+    def _build_team_rating_entries(
+        self,
+        *,
+        team_entries: Sequence[MatchQueueEntry],
+        ratings_by_player_id: dict[int, float],
+    ) -> list[TeamRatingEntryPayload]:
+        return [
+            {
+                "discord_user_id": queue_entry.notification_mention_discord_user_id,
+                "rating": ratings_by_player_id[queue_entry.player_id],
+            }
+            for queue_entry in team_entries
+        ]
 
     def _get_managed_ui_channel(
         self,

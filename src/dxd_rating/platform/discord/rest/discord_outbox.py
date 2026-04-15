@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import NoReturn, Protocol, cast
@@ -156,6 +156,8 @@ class MatchOperationThreadContext:
     queue_name: str
     team_a_discord_user_ids: tuple[int, ...]
     team_b_discord_user_ids: tuple[int, ...]
+    team_a_rating_entries: tuple[TeamRatingEntry, ...] | None = None
+    team_b_rating_entries: tuple[TeamRatingEntry, ...] | None = None
 
     @property
     def participant_discord_user_ids(self) -> tuple[int, ...]:
@@ -440,6 +442,12 @@ class DiscordOutboxEventPublisher:
             self._raise_publish_error(
                 "match_created payload team discord user ids must not be empty"
             )
+        rating_entries = self._get_match_created_team_rating_entries(event.payload)
+        team_a_rating_entries: tuple[TeamRatingEntry, ...] | None = None
+        team_b_rating_entries: tuple[TeamRatingEntry, ...] | None = None
+        if rating_entries is not None:
+            team_a_rating_entries = tuple(rating_entries[0])
+            team_b_rating_entries = tuple(rating_entries[1])
 
         return MatchOperationThreadContext(
             match_id=match_id,
@@ -448,6 +456,8 @@ class DiscordOutboxEventPublisher:
             queue_name=queue_name,
             team_a_discord_user_ids=team_a_discord_user_ids,
             team_b_discord_user_ids=team_b_discord_user_ids,
+            team_a_rating_entries=team_a_rating_entries,
+            team_b_rating_entries=team_b_rating_entries,
         )
 
     def _build_match_operation_thread_routing_context(
@@ -583,14 +593,24 @@ class DiscordOutboxEventPublisher:
         return build_match_operation_thread_initial_content(
             match_format=context.match_format,
             queue_name=context.queue_name,
-            team_a_labels=[
-                format_discord_user_mention(discord_user_id)
-                for discord_user_id in context.team_a_discord_user_ids
-            ],
-            team_b_labels=[
-                format_discord_user_mention(discord_user_id)
-                for discord_user_id in context.team_b_discord_user_ids
-            ],
+            team_a_labels=self._build_match_created_team_labels(
+                labels=[
+                    format_discord_user_mention(discord_user_id)
+                    for discord_user_id in context.team_a_discord_user_ids
+                ],
+                expected_discord_user_ids=context.team_a_discord_user_ids,
+                rating_entries=context.team_a_rating_entries,
+                payload_context="match_created payload for match operation thread",
+            ),
+            team_b_labels=self._build_match_created_team_labels(
+                labels=[
+                    format_discord_user_mention(discord_user_id)
+                    for discord_user_id in context.team_b_discord_user_ids
+                ],
+                expected_discord_user_ids=context.team_b_discord_user_ids,
+                rating_entries=context.team_b_rating_entries,
+                payload_context="match_created payload for match operation thread",
+            ),
             with_void_button=self.match_operation_thread_interaction_handler is not None,
         )
 
@@ -733,6 +753,7 @@ class DiscordOutboxEventPublisher:
 
     def _render_match_created_content(self, payload: dict[str, object]) -> str:
         self._require_payload_int(payload, "match_id")
+        rating_entries = self._get_match_created_team_rating_entries(payload)
         team_a_player_display_names = payload.get("team_a_player_display_names")
         team_b_player_display_names = payload.get("team_b_player_display_names")
         if team_a_player_display_names is not None or team_b_player_display_names is not None:
@@ -756,12 +777,35 @@ class DiscordOutboxEventPublisher:
                 self._raise_publish_error(
                     "match_created payload team player display names must not be empty"
                 )
+            team_a_labels = rendered_team_a_player_display_names
+            team_b_labels = rendered_team_b_player_display_names
+            if rating_entries is not None:
+                team_a_discord_user_ids = self._require_payload_int_list(
+                    payload,
+                    "team_a_discord_user_ids",
+                )
+                team_b_discord_user_ids = self._require_payload_int_list(
+                    payload,
+                    "team_b_discord_user_ids",
+                )
+                team_a_labels = self._build_match_created_team_labels(
+                    labels=rendered_team_a_player_display_names,
+                    expected_discord_user_ids=team_a_discord_user_ids,
+                    rating_entries=rating_entries[0],
+                    payload_context="match_created payload",
+                )
+                team_b_labels = self._build_match_created_team_labels(
+                    labels=rendered_team_b_player_display_names,
+                    expected_discord_user_ids=team_b_discord_user_ids,
+                    rating_entries=rating_entries[1],
+                    payload_context="match_created payload",
+                )
 
             return build_match_created_content(
                 match_format=match_format,
                 queue_name=queue_name,
-                team_a_labels=rendered_team_a_player_display_names,
-                team_b_labels=rendered_team_b_player_display_names,
+                team_a_labels=team_a_labels,
+                team_b_labels=team_b_labels,
                 include_spectate_guide=(
                     self.matchmaking_news_match_announcement_interaction_handler is not None
                 ),
@@ -779,16 +823,31 @@ class DiscordOutboxEventPublisher:
             self._raise_publish_error(
                 "match_created payload team discord user ids must not be empty"
             )
+        team_a_labels = [
+            format_discord_user_mention(discord_user_id)
+            for discord_user_id in team_a_discord_user_ids
+        ]
+        team_b_labels = [
+            format_discord_user_mention(discord_user_id)
+            for discord_user_id in team_b_discord_user_ids
+        ]
+        if rating_entries is not None:
+            team_a_labels = self._build_match_created_team_labels(
+                labels=team_a_labels,
+                expected_discord_user_ids=team_a_discord_user_ids,
+                rating_entries=rating_entries[0],
+                payload_context="match_created payload",
+            )
+            team_b_labels = self._build_match_created_team_labels(
+                labels=team_b_labels,
+                expected_discord_user_ids=team_b_discord_user_ids,
+                rating_entries=rating_entries[1],
+                payload_context="match_created payload",
+            )
 
         return build_match_created_content(
-            team_a_labels=[
-                format_discord_user_mention(discord_user_id)
-                for discord_user_id in team_a_discord_user_ids
-            ],
-            team_b_labels=[
-                format_discord_user_mention(discord_user_id)
-                for discord_user_id in team_b_discord_user_ids
-            ],
+            team_a_labels=team_a_labels,
+            team_b_labels=team_b_labels,
         )
 
     async def _render_channel_content(
@@ -1141,6 +1200,65 @@ class DiscordOutboxEventPublisher:
                 )
             )
         return entries
+
+    def _get_match_created_team_rating_entries(
+        self,
+        payload: dict[str, object],
+    ) -> tuple[list[TeamRatingEntry], list[TeamRatingEntry]] | None:
+        team_a_rating_entries = self._get_optional_team_rating_entries(
+            payload,
+            "team_a_rating_entries",
+        )
+        team_b_rating_entries = self._get_optional_team_rating_entries(
+            payload,
+            "team_b_rating_entries",
+        )
+        if team_a_rating_entries is None and team_b_rating_entries is None:
+            return None
+        if not team_a_rating_entries or not team_b_rating_entries:
+            self._raise_publish_error(
+                "match_created payload team rating entries must either both be present "
+                "or both be omitted"
+            )
+        return team_a_rating_entries, team_b_rating_entries
+
+    def _build_match_created_team_labels(
+        self,
+        *,
+        labels: Sequence[str],
+        expected_discord_user_ids: Sequence[int],
+        rating_entries: Sequence[TeamRatingEntry] | None,
+        payload_context: str,
+    ) -> list[str]:
+        if rating_entries is None:
+            return list(labels)
+        if len(labels) != len(expected_discord_user_ids):
+            self._raise_publish_error(
+                f"{payload_context} team labels and discord user ids must have the same length"
+            )
+        if len(rating_entries) != len(expected_discord_user_ids):
+            self._raise_publish_error(
+                f"{payload_context} team rating entries must match team discord user ids"
+            )
+
+        ratings_by_discord_user_id: dict[int, float] = {}
+        for entry in rating_entries:
+            if entry.discord_user_id in ratings_by_discord_user_id:
+                self._raise_publish_error(
+                    f"{payload_context} team rating entries must not contain duplicate users"
+                )
+            ratings_by_discord_user_id[entry.discord_user_id] = entry.rating
+
+        formatted_labels: list[str] = []
+        for label, discord_user_id in zip(labels, expected_discord_user_ids, strict=True):
+            rating = ratings_by_discord_user_id.get(discord_user_id)
+            if rating is None:
+                self._raise_publish_error(
+                    f"{payload_context} team rating entries must match team discord user ids"
+                )
+            formatted_labels.append(f"{label}: {round(rating)}")
+
+        return formatted_labels
 
     def _get_season_top_ranking_entries(
         self,

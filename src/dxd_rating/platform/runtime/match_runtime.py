@@ -29,7 +29,7 @@ from dxd_rating.contexts.matchmaking.application import (
     LeaveQueueResult,
     MatchingQueueNotificationContext,
     MatchingQueueService,
-    MatchmakingStatusSnapshotEntry,
+    MatchmakingStatusSnapshot,
     PresenceReminderResult,
     PresentQueueResult,
     WaitingEntryTimerState,
@@ -79,7 +79,7 @@ class MatchRuntimeService(Protocol):
 
     def get_waiting_entry_notification_channel_id(self, player_id: int) -> int | None: ...
 
-    def get_matchmaking_status_snapshot(self) -> tuple[MatchmakingStatusSnapshotEntry, ...]: ...
+    def get_matchmaking_status_snapshot(self) -> MatchmakingStatusSnapshot: ...
 
     def present(
         self,
@@ -406,7 +406,7 @@ class MatchRuntime:
 
     async def get_matchmaking_status_snapshot(
         self,
-    ) -> tuple[MatchmakingStatusSnapshotEntry, ...]:
+    ) -> MatchmakingStatusSnapshot:
         self._ensure_open()
         self._bind_current_loop_if_needed()
         return await asyncio.to_thread(self.service.get_matchmaking_status_snapshot)

@@ -164,6 +164,12 @@ class MatchmakingStatusSnapshotEntry:
     active_count: int
 
 
+@dataclass(frozen=True, slots=True)
+class MatchmakingStatusSnapshot:
+    entries: tuple[MatchmakingStatusSnapshotEntry, ...]
+    updated_at: datetime
+
+
 class NotificationDestinationPayload(TypedDict, total=False):
     kind: str
     channel_id: int
@@ -407,7 +413,7 @@ class MatchingQueueService:
                 )
             )
 
-    def get_matchmaking_status_snapshot(self) -> tuple[MatchmakingStatusSnapshotEntry, ...]:
+    def get_matchmaking_status_snapshot(self) -> MatchmakingStatusSnapshot:
         with session_scope(self.session_factory) as session:
             current_time = self._get_database_now(session)
             window_start = current_time - timedelta(minutes=30)
@@ -426,7 +432,7 @@ class MatchingQueueService:
                 removed_after=window_start,
             )
 
-        return tuple(
+        entries = tuple(
             MatchmakingStatusSnapshotEntry(
                 match_format=definition.match_format,
                 queue_name=definition.queue_name,
@@ -439,6 +445,7 @@ class MatchingQueueService:
             )
             for definition in self._queue_class_definitions
         )
+        return MatchmakingStatusSnapshot(entries=entries, updated_at=current_time)
 
     def leave(self, player_id: int) -> LeaveQueueResult:
         result: LeaveQueueResult | None = None

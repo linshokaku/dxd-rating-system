@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, cast
@@ -16,6 +17,7 @@ from dxd_rating.contexts.matches.application import MatchFlowService
 from dxd_rating.contexts.matchmaking.application import (
     MatchingQueueNotificationContext,
     MatchingQueueService,
+    MatchmakingStatusSnapshot,
 )
 from dxd_rating.contexts.players.application import register_player
 from dxd_rating.contexts.restrictions.application import (
@@ -65,8 +67,6 @@ from dxd_rating.platform.discord.copy.info import (
     INFO_CHANNEL_MESSAGE,
     INFO_CHANNEL_PLAYER_INFO_BUTTON_LABEL,
     INFO_CHANNEL_PLAYER_INFO_SEASON_BUTTON_LABEL,
-    INFO_THREAD_NOT_FOUND_MESSAGE,
-    INFO_THREAD_REQUIRED_MESSAGE,
     INFO_THREAD_LEADERBOARD_MATCH_FORMAT_PLACEHOLDER,
     INFO_THREAD_LEADERBOARD_NEXT_PAGE_BUTTON_LABEL,
     INFO_THREAD_LEADERBOARD_SEASON_PLACEHOLDER,
@@ -74,9 +74,11 @@ from dxd_rating.platform.discord.copy.info import (
     INFO_THREAD_LEADERBOARD_SEASON_SELECT_SEASON_MESSAGE,
     INFO_THREAD_LEADERBOARD_SELECT_MATCH_FORMAT_MESSAGE,
     INFO_THREAD_LEADERBOARD_SHOW_BUTTON_LABEL,
+    INFO_THREAD_NOT_FOUND_MESSAGE,
     INFO_THREAD_PLAYER_INFO_SEASON_PLACEHOLDER,
     INFO_THREAD_PLAYER_INFO_SEASON_SELECT_SEASON_MESSAGE,
     INFO_THREAD_PLAYER_INFO_SHOW_BUTTON_LABEL,
+    INFO_THREAD_REQUIRED_MESSAGE,
     build_info_thread_initial_message,
 )
 from dxd_rating.platform.discord.copy.match import MATCHMAKING_NEWS_CHANNEL_MESSAGE
@@ -90,7 +92,6 @@ from dxd_rating.platform.discord.copy.matchmaking import (
     MATCHMAKING_PRESENCE_THREAD_PRESENT_BUTTON_LABEL,
     build_matchmaking_guide_message,
     build_matchmaking_panel_message,
-    build_matchmaking_status_message,
 )
 from dxd_rating.platform.discord.copy.registration import (
     PLAYER_REGISTRATION_REQUIRED_MESSAGE,
@@ -116,12 +117,15 @@ from dxd_rating.platform.discord.ui import (
     MatchOperationThreadParentButton,
 )
 from dxd_rating.platform.runtime import MatchRuntime
-from dxd_rating.shared.constants import MATCH_FORMAT_CHOICES, get_match_queue_class_definitions
+from dxd_rating.shared.constants import MATCH_FORMAT_CHOICES
 
 DEFAULT_MATCH_FORMAT = MatchFormat.THREE_VS_THREE
 DEFAULT_QUEUE_NAME = "beginner"
 DEFAULT_MATCHMAKING_GUIDE_URL = (
     "https://github.com/linshokaku/dxd-rating-system/blob/main/docs/README.md"
+)
+MATCHMAKING_STATUS_UPDATED_AT_PATTERN = re.compile(
+    r"^最終更新: \d{4}-\d{2}-\d{2} \d{2}:\d{2} JST$"
 )
 
 
@@ -776,6 +780,20 @@ def assert_matchmaking_panel_message(
         "master",
     ]
     assert join_button.label == MATCHMAKING_CHANNEL_JOIN_BUTTON_LABEL
+
+
+def assert_matchmaking_status_message(
+    message: FakeMessage,
+    snapshot: MatchmakingStatusSnapshot,
+) -> None:
+    lines = message.content.splitlines()
+
+    assert lines[0] == "直近30分の参加状況"
+    assert MATCHMAKING_STATUS_UPDATED_AT_PATTERN.fullmatch(lines[1]) is not None
+    assert lines[2:] == [
+        f"{entry.match_format.value}-{entry.queue_name}: {entry.active_count}"
+        for entry in snapshot.entries
+    ]
 
 
 def create_active_info_thread(
@@ -1913,9 +1931,7 @@ def test_update_matchmaking_status_command_updates_second_message(
         DEFAULT_MATCH_FORMAT,
         DEFAULT_QUEUE_NAME,
     )
-    expected_message = build_matchmaking_status_message(
-        matching_queue_service.get_matchmaking_status_snapshot()
-    )
+    expected_snapshot = matching_queue_service.get_matchmaking_status_snapshot()
     interaction = FakeInteraction(
         user=FakeUser(id=executor_discord_user_id),
         channel_id=command_channel.id,
@@ -1934,10 +1950,7 @@ def test_update_matchmaking_status_command_updates_second_message(
 
     assert managed_ui_channel is not None
     assert_response(interaction, ["参加状況を更新しました。"], ephemeral=True)
-    assert matchmaking_channel.sent_messages[1].content == expected_message
-    assert len(matchmaking_channel.sent_messages[1].content.splitlines()) == (
-        len(get_match_queue_class_definitions()) + 1
-    )
+    assert_matchmaking_status_message(matchmaking_channel.sent_messages[1], expected_snapshot)
     assert_matchmaking_panel_message(
         matchmaking_channel.sent_messages[2],
         MatchFormat.ONE_VS_ONE,
@@ -2004,9 +2017,7 @@ def test_matchmaking_status_button_updates_second_message(
         DEFAULT_MATCH_FORMAT,
         DEFAULT_QUEUE_NAME,
     )
-    expected_message = build_matchmaking_status_message(
-        matching_queue_service.get_matchmaking_status_snapshot()
-    )
+    expected_snapshot = matching_queue_service.get_matchmaking_status_snapshot()
     status_message = matchmaking_channel.sent_messages[1]
     assert status_message.view is not None
     status_button = cast(discord.ui.Button[Any], status_message.view.children[0])
@@ -2022,7 +2033,7 @@ def test_matchmaking_status_button_updates_second_message(
 
     assert_response(interaction, ["参加状況を更新しました。"], ephemeral=True)
     assert_deferred_followup_response(interaction)
-    assert status_message.content == expected_message
+    assert_matchmaking_status_message(status_message, expected_snapshot)
     assert_matchmaking_panel_message(matchmaking_channel.sent_messages[2], MatchFormat.ONE_VS_ONE)
 
 

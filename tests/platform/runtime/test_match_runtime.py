@@ -30,6 +30,7 @@ from dxd_rating.contexts.matchmaking.application import (
     LeaveQueueResult,
     MatchingQueueNotificationContext,
     MatchingQueueService,
+    MatchmakingStatusSnapshot,
     MatchmakingStatusSnapshotEntry,
     PresenceReminderResult,
     PresentQueueResult,
@@ -909,12 +910,15 @@ def test_match_runtime_leave_calls_service_and_cancels_timers(
 
 def test_match_runtime_get_matchmaking_status_snapshot_calls_service() -> None:
     service = Mock()
-    snapshot = (
-        MatchmakingStatusSnapshotEntry(
-            match_format=MatchFormat.THREE_VS_THREE,
-            queue_name="beginner",
-            active_count=2,
+    snapshot = MatchmakingStatusSnapshot(
+        entries=(
+            MatchmakingStatusSnapshotEntry(
+                match_format=MatchFormat.THREE_VS_THREE,
+                queue_name="beginner",
+                active_count=2,
+            ),
         ),
+        updated_at=datetime(2026, 4, 5, 0, 0, tzinfo=timezone.utc),
     )
     service.get_matchmaking_status_snapshot.return_value = snapshot
     runtime = MatchRuntime(service=service)

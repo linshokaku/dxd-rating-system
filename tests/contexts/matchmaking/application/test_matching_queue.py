@@ -788,13 +788,19 @@ def test_get_matchmaking_status_snapshot_counts_join_leave_expired_and_clamps_to
 
     snapshot = service.get_matchmaking_status_snapshot()
 
-    assert [(entry.match_format, entry.queue_name) for entry in snapshot] == [
+    assert [(entry.match_format, entry.queue_name) for entry in snapshot.entries] == [
         (definition.match_format, definition.queue_name)
         for definition in get_match_queue_class_definitions()
     ]
+    assert snapshot.updated_at.tzinfo is not None
+    assert snapshot.updated_at.utcoffset() is not None
     active_count_by_queue_class = {
         definition.queue_class_id: entry.active_count
-        for definition, entry in zip(get_match_queue_class_definitions(), snapshot, strict=True)
+        for definition, entry in zip(
+            get_match_queue_class_definitions(),
+            snapshot.entries,
+            strict=True,
+        )
     }
     assert active_count_by_queue_class[DEFAULT_QUEUE_CLASS_ID] == 2
     assert active_count_by_queue_class[SECOND_QUEUE_CLASS_ID] == 0

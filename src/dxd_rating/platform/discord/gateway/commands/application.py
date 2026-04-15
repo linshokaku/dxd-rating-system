@@ -66,7 +66,7 @@ from dxd_rating.contexts.matchmaking.application import (
     JoinQueueResult,
     LeaveQueueResult,
     MatchingQueueNotificationContext,
-    MatchmakingStatusSnapshotEntry,
+    MatchmakingStatusSnapshot,
     PresentQueueResult,
 )
 from dxd_rating.contexts.players.application import (
@@ -475,7 +475,7 @@ class MatchingQueueCommandService(Protocol):
 
     async def get_matchmaking_status_snapshot(
         self,
-    ) -> tuple[MatchmakingStatusSnapshotEntry, ...]: ...
+    ) -> MatchmakingStatusSnapshot: ...
 
     async def present(
         self,
@@ -3583,7 +3583,7 @@ class BotCommandHandlers:
                 reason="status message is not editable",
             )
 
-        await edit(content=build_matchmaking_status_message(snapshot))
+        await edit(content=build_matchmaking_status_message(snapshot.entries, snapshot.updated_at))
 
     async def _fetch_required_matchmaking_status_message(
         self,

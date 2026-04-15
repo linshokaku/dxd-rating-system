@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from dxd_rating.contexts.matchmaking.application import MatchmakingStatusSnapshotEntry
 from dxd_rating.platform.db.models import MatchFormat
+
+JST = ZoneInfo("Asia/Tokyo")
 
 # マッチング導線の UI 本文
 MATCHMAKING_CHANNEL_STATUS_PLACEHOLDER_MESSAGE = "\n".join(
@@ -88,8 +92,13 @@ def build_matchmaking_guide_message(guide_url: str) -> str:
 
 def build_matchmaking_status_message(
     snapshot: Sequence[MatchmakingStatusSnapshotEntry],
+    updated_at: datetime,
 ) -> str:
-    lines = ["直近30分の参加状況"]
+    localized_updated_at = updated_at.astimezone(JST)
+    lines = [
+        "直近30分の参加状況",
+        f"最終更新: {localized_updated_at:%Y-%m-%d %H:%M JST}",
+    ]
     lines.extend(
         f"{entry.match_format.value}-{entry.queue_name}: {entry.active_count}" for entry in snapshot
     )

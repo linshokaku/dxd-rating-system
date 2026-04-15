@@ -373,6 +373,10 @@ from dxd_rating.platform.discord.copy.registration import (
     REGISTER_SUCCESS_MESSAGE,
 )
 from dxd_rating.platform.discord.copy.system import APPLICATION_COMMAND_INTERNAL_ERROR_MESSAGE
+from dxd_rating.platform.discord.message_embeds import (
+    build_body_only_public_message_edit_kwargs,
+    build_body_only_public_message_send_kwargs,
+)
 from dxd_rating.platform.discord.ui import (
     INFO_THREAD_LEADERBOARD_SEASON_MAX_OPTIONS,
     build_managed_ui_channel_overwrites,
@@ -1650,7 +1654,7 @@ class BotCommandHandlers:
             )
             return
 
-        await self._send_success_message_with_public_followup(
+        await self._send_success_message_with_public_body_only_followup(
             interaction,
             executor_message=ADMIN_MATCH_RESULT_SUCCESS_MESSAGE,
             public_message=self._format_admin_match_result_public_message(
@@ -3583,7 +3587,11 @@ class BotCommandHandlers:
                 reason="status message is not editable",
             )
 
-        await edit(content=build_matchmaking_status_message(snapshot.entries, snapshot.updated_at))
+        await edit(
+            **build_body_only_public_message_edit_kwargs(
+                build_matchmaking_status_message(snapshot.entries, snapshot.updated_at)
+            )
+        )
 
     async def _fetch_required_matchmaking_status_message(
         self,
@@ -4418,9 +4426,11 @@ class BotCommandHandlers:
                 for invitee in self._dedupe_discord_users(invitees):
                     await add_user(invitee)
 
-            await thread.send(
-                initial_message,
-                view=create_matchmaking_presence_thread_view(self),
+            await cast(Any, thread).send(
+                **build_body_only_public_message_send_kwargs(
+                    initial_message,
+                    view=create_matchmaking_presence_thread_view(self),
+                )
             )
             thread_id = getattr(thread, "id", None)
             if isinstance(thread_id, int):
@@ -4471,8 +4481,10 @@ class BotCommandHandlers:
                 await add_user(invitee)
 
         await cast(Any, thread).send(
-            build_info_thread_initial_message(command_name),
-            view=await self._build_info_thread_initial_view(command_name),
+            **build_body_only_public_message_send_kwargs(
+                build_info_thread_initial_message(command_name),
+                view=await self._build_info_thread_initial_view(command_name),
+            )
         )
         self._require_discord_channel_id(thread)
         return thread
@@ -5027,6 +5039,33 @@ class BotCommandHandlers:
         if interaction_context is not None and mark_executor_response:
             interaction_context.executor_response_sent = True
 
+    async def _send_body_only_public_message(
+        self,
+        interaction: discord.Interaction[Any],
+        message: str,
+        *,
+        mark_executor_response: bool = True,
+    ) -> None:
+        send_kwargs = build_body_only_public_message_send_kwargs(message)
+        interaction_context = self._get_interaction_response_context(interaction)
+        if interaction_context is not None and interaction_context.deferred:
+            await interaction.followup.send(ephemeral=False, **send_kwargs)
+            if mark_executor_response:
+                interaction_context.executor_response_sent = True
+            return
+
+        response = interaction.response
+        is_done = getattr(response, "is_done", None)
+        if callable(is_done) and is_done():
+            await interaction.followup.send(ephemeral=False, **send_kwargs)
+            if interaction_context is not None and mark_executor_response:
+                interaction_context.executor_response_sent = True
+            return
+
+        await response.send_message(ephemeral=False, **send_kwargs)
+        if interaction_context is not None and mark_executor_response:
+            interaction_context.executor_response_sent = True
+
     async def _send_info_thread_message(
         self,
         thread: object,
@@ -5041,7 +5080,12 @@ class BotCommandHandlers:
             )
 
         try:
-            await send(message, view=view)
+            await send(
+                **build_body_only_public_message_send_kwargs(
+                    message,
+                    view=view,
+                )
+            )
         except (discord.Forbidden, discord.NotFound) as exc:
             raise UnavailableInfoThreadError(
                 f"info thread channel_id={getattr(thread, 'id', None)} send failed"
@@ -5098,6 +5142,29 @@ class BotCommandHandlers:
         except Exception:
             self.logger.exception(
                 "Failed to send public followup message "
+                "executor_discord_user_id=%s channel_id=%s guild_id=%s",
+                interaction.user.id,
+                interaction.channel_id,
+                interaction.guild_id,
+            )
+
+    async def _send_success_message_with_public_body_only_followup(
+        self,
+        interaction: discord.Interaction[Any],
+        *,
+        executor_message: str,
+        public_message: str,
+    ) -> None:
+        await self._send_executor_operation_message(interaction, executor_message)
+        try:
+            await self._send_body_only_public_message(
+                interaction,
+                public_message,
+                mark_executor_response=False,
+            )
+        except Exception:
+            self.logger.exception(
+                "Failed to send public body-only followup message "
                 "executor_discord_user_id=%s channel_id=%s guild_id=%s",
                 interaction.user.id,
                 interaction.channel_id,

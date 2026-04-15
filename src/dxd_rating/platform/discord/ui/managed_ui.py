@@ -43,6 +43,9 @@ from dxd_rating.platform.discord.copy.system import (
     ADMIN_OPERATIONS_CHANNEL_MESSAGE,
     SYSTEM_ANNOUNCEMENTS_CHANNEL_MESSAGE,
 )
+from dxd_rating.platform.discord.message_embeds import (
+    build_body_only_public_message_send_kwargs,
+)
 from dxd_rating.shared.constants import (
     get_match_format_definitions,
     get_match_queue_class_definitions,
@@ -689,26 +692,34 @@ async def send_initial_managed_ui_message(
     if ui_type is ManagedUiType.REGISTER_PANEL:
         return InitialManagedUiMessages(
             primary_message=await channel.send(
-                content=REGISTER_PANEL_MESSAGE,
-                view=RegisterPanelView(interaction_handler),
+                **build_body_only_public_message_send_kwargs(
+                    REGISTER_PANEL_MESSAGE,
+                    view=RegisterPanelView(interaction_handler),
+                )
             )
         )
     if ui_type is ManagedUiType.MATCHMAKING_CHANNEL:
         await channel.send(
-            content=build_matchmaking_guide_message(matchmaking_guide_url),
-            suppress_embeds=True,
+            **build_body_only_public_message_send_kwargs(
+                build_matchmaking_guide_message(matchmaking_guide_url),
+                suppress_embeds_for_fallback=True,
+            )
         )
         status_message = await channel.send(
-            content=MATCHMAKING_CHANNEL_STATUS_PLACEHOLDER_MESSAGE,
-            view=create_matchmaking_status_view(interaction_handler),
+            **build_body_only_public_message_send_kwargs(
+                MATCHMAKING_CHANNEL_STATUS_PLACEHOLDER_MESSAGE,
+                view=create_matchmaking_status_view(interaction_handler),
+            )
         )
         panel_messages_by_format: dict[MatchFormat, discord.Message] = {}
         for definition in get_match_format_definitions():
             panel_messages_by_format[definition.match_format] = await channel.send(
-                content=build_matchmaking_panel_message(definition.match_format),
-                view=create_matchmaking_panel_view(
-                    interaction_handler,
-                    definition.match_format,
+                **build_body_only_public_message_send_kwargs(
+                    build_matchmaking_panel_message(definition.match_format),
+                    view=create_matchmaking_panel_view(
+                        interaction_handler,
+                        definition.match_format,
+                    ),
                 ),
             )
         return InitialManagedUiMessages(
@@ -721,26 +732,44 @@ async def send_initial_managed_ui_message(
         )
     if ui_type is ManagedUiType.MATCHMAKING_NEWS_CHANNEL:
         return InitialManagedUiMessages(
-            primary_message=await channel.send(content=MATCHMAKING_NEWS_CHANNEL_MESSAGE)
+            primary_message=await channel.send(
+                **build_body_only_public_message_send_kwargs(
+                    MATCHMAKING_NEWS_CHANNEL_MESSAGE,
+                )
+            )
         )
     if ui_type is ManagedUiType.INFO_CHANNEL:
         return InitialManagedUiMessages(
             primary_message=await channel.send(
-                content=INFO_CHANNEL_MESSAGE,
-                view=InfoChannelView(interaction_handler),
+                **build_body_only_public_message_send_kwargs(
+                    INFO_CHANNEL_MESSAGE,
+                    view=InfoChannelView(interaction_handler),
+                )
             )
         )
     if ui_type is ManagedUiType.SYSTEM_ANNOUNCEMENTS_CHANNEL:
         return InitialManagedUiMessages(
-            primary_message=await channel.send(content=SYSTEM_ANNOUNCEMENTS_CHANNEL_MESSAGE)
+            primary_message=await channel.send(
+                **build_body_only_public_message_send_kwargs(
+                    SYSTEM_ANNOUNCEMENTS_CHANNEL_MESSAGE,
+                )
+            )
         )
     if ui_type is ManagedUiType.ADMIN_CONTACT_CHANNEL:
         return InitialManagedUiMessages(
-            primary_message=await channel.send(content=ADMIN_CONTACT_CHANNEL_MESSAGE)
+            primary_message=await channel.send(
+                **build_body_only_public_message_send_kwargs(
+                    ADMIN_CONTACT_CHANNEL_MESSAGE,
+                )
+            )
         )
     if ui_type is ManagedUiType.ADMIN_OPERATIONS_CHANNEL:
         return InitialManagedUiMessages(
-            primary_message=await channel.send(content=ADMIN_OPERATIONS_CHANNEL_MESSAGE)
+            primary_message=await channel.send(
+                **build_body_only_public_message_send_kwargs(
+                    ADMIN_OPERATIONS_CHANNEL_MESSAGE,
+                )
+            )
         )
 
     raise ValueError(f"Unsupported ui_type: {ui_type}")

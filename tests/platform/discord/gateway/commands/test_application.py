@@ -83,6 +83,7 @@ from dxd_rating.platform.discord.copy.info import (
 )
 from dxd_rating.platform.discord.copy.match import MATCHMAKING_NEWS_CHANNEL_MESSAGE
 from dxd_rating.platform.discord.copy.matchmaking import (
+    JOIN_SUCCESS_MESSAGE,
     MATCHMAKING_CHANNEL_JOIN_BUTTON_LABEL,
     MATCHMAKING_CHANNEL_QUEUE_NAME_PLACEHOLDER,
     MATCHMAKING_CHANNEL_SELECT_QUEUE_NAME_MESSAGE,
@@ -127,6 +128,13 @@ DEFAULT_MATCHMAKING_GUIDE_URL = (
 MATCHMAKING_STATUS_UPDATED_AT_PATTERN = re.compile(
     r"^最終更新: \d{4}-\d{2}-\d{2} \d{2}:\d{2} JST$"
 )
+_MISSING = object()
+
+
+def _render_embed_content(embed: discord.Embed | None) -> str:
+    if embed is None or embed.description is None:
+        return ""
+    return embed.description
 
 
 @dataclass(frozen=True)
@@ -164,6 +172,8 @@ class FakeMember:
 @dataclass
 class FakeInteractionResponse:
     messages: list[str] = field(default_factory=list)
+    raw_messages: list[str | None] = field(default_factory=list)
+    embeds: list[discord.Embed | None] = field(default_factory=list)
     ephemeral_flags: list[bool] = field(default_factory=list)
     deferred: bool = False
     defer_ephemeral: bool | None = None
@@ -172,10 +182,19 @@ class FakeInteractionResponse:
     defer_call_count: int = 0
     interaction: FakeInteraction | None = field(default=None, repr=False)
 
-    async def send_message(self, content: str, *, ephemeral: bool = False, **_: Any) -> None:
+    async def send_message(
+        self,
+        content: str | None = None,
+        *,
+        embed: discord.Embed | None = None,
+        ephemeral: bool = False,
+        **_: Any,
+    ) -> None:
         self.deferred = True
         self.send_message_call_count += 1
-        self.messages.append(content)
+        self.messages.append(content if content is not None else _render_embed_content(embed))
+        self.raw_messages.append(content)
+        self.embeds.append(embed)
         self.ephemeral_flags.append(ephemeral)
 
     async def edit_message(
@@ -211,9 +230,20 @@ class FakeInteractionFollowup:
     response: FakeInteractionResponse
     send_call_count: int = 0
 
-    async def send(self, content: str, *, ephemeral: bool = False, **_: Any) -> None:
+    async def send(
+        self,
+        content: str | None = None,
+        *,
+        embed: discord.Embed | None = None,
+        ephemeral: bool = False,
+        **_: Any,
+    ) -> None:
         self.send_call_count += 1
-        self.response.messages.append(content)
+        self.response.messages.append(
+            content if content is not None else _render_embed_content(embed)
+        )
+        self.response.raw_messages.append(content)
+        self.response.embeds.append(embed)
         self.response.ephemeral_flags.append(ephemeral)
 
 
@@ -264,6 +294,8 @@ def make_not_found() -> discord.NotFound:
 class FakeMessage:
     id: int
     content: str
+    raw_content: str | None = None
+    embed: discord.Embed | None = None
     view: discord.ui.View | discord.ui.LayoutView | None = None
     suppress_embeds: bool = False
     fail_edit_with: Exception | None = None
@@ -271,17 +303,26 @@ class FakeMessage:
     async def edit(
         self,
         *,
-        content: str | None = None,
-        view: discord.ui.View | discord.ui.LayoutView | None = None,
+        content: object = _MISSING,
+        embed: object = _MISSING,
+        view: object = _MISSING,
         suppress_embeds: bool | None = None,
         **_: Any,
     ) -> discord.Message:
         if self.fail_edit_with is not None:
             raise self.fail_edit_with
-        if content is not None:
-            self.content = content
-        if view is not None:
-            self.view = view
+        if content is not _MISSING:
+            self.raw_content = cast(str | None, content)
+        if embed is not _MISSING:
+            self.embed = cast(discord.Embed | None, embed)
+        if content is not _MISSING or embed is not _MISSING:
+            self.content = (
+                self.raw_content
+                if self.raw_content is not None
+                else _render_embed_content(self.embed)
+            )
+        if view is not _MISSING:
+            self.view = cast(discord.ui.View | discord.ui.LayoutView | None, view)
         if suppress_embeds is not None:
             self.suppress_embeds = suppress_embeds
         return cast(discord.Message, self)
@@ -307,6 +348,8 @@ class FakeThread:
         self,
         content: str | None = None,
         *,
+        embed: discord.Embed | None = None,
+        allowed_mentions: discord.AllowedMentions | None = None,
         view: discord.ui.View | None = None,
         suppress_embeds: bool = False,
         **_: Any,
@@ -316,7 +359,9 @@ class FakeThread:
 
         message = FakeMessage(
             id=self.parent.guild.next_message_id,
-            content="" if content is None else content,
+            content=content if content is not None else _render_embed_content(embed),
+            raw_content=content,
+            embed=embed,
             view=view,
             suppress_embeds=suppress_embeds,
         )
@@ -351,6 +396,8 @@ class FakeTextChannel:
         self,
         content: str | None = None,
         *,
+        embed: discord.Embed | None = None,
+        allowed_mentions: discord.AllowedMentions | None = None,
         view: discord.ui.View | None = None,
         suppress_embeds: bool = False,
         **_: Any,
@@ -364,7 +411,9 @@ class FakeTextChannel:
 
         message = FakeMessage(
             id=self.guild.next_message_id,
-            content="" if content is None else content,
+            content=content if content is not None else _render_embed_content(embed),
+            raw_content=content,
+            embed=embed,
             view=view,
             suppress_embeds=suppress_embeds,
         )
@@ -529,6 +578,12 @@ def assert_response_sequence(
 ) -> None:
     assert interaction.response.messages == expected_messages
     assert interaction.response.ephemeral_flags == expected_ephemeral_flags
+
+
+def assert_body_only_embed_message(message: FakeMessage, expected_body: str) -> None:
+    assert message.raw_content is None
+    assert message.embed is not None
+    assert message.embed.description == expected_body
 
 
 def assert_deferred_followup_response(
@@ -767,7 +822,15 @@ def assert_matchmaking_panel_message(
     message: FakeMessage,
     match_format: MatchFormat,
 ) -> None:
-    assert message.content == build_matchmaking_panel_message(match_format)
+    expected_body = "\n".join(
+        [
+            f"{match_format.value} の参加キューを選択してください。",
+            "在席確認やマッチングキャンセルは、参加後に作成される在席確認スレッドで行ってください。",
+        ]
+    )
+    assert_body_only_embed_message(message, expected_body)
+    assert "/present" not in message.content
+    assert "/leave" not in message.content
     assert message.view is not None
     assert message.suppress_embeds is False
     queue_name_select = cast(discord.ui.Select[Any], message.view.children[0])
@@ -786,7 +849,10 @@ def assert_matchmaking_status_message(
     message: FakeMessage,
     snapshot: MatchmakingStatusSnapshot,
 ) -> None:
-    lines = message.content.splitlines()
+    assert message.raw_content is None
+    assert message.embed is not None
+    assert message.embed.description is not None
+    lines = message.embed.description.splitlines()
 
     assert lines[0] == "直近30分の参加状況"
     assert MATCHMAKING_STATUS_UPDATED_AT_PATTERN.fullmatch(lines[1]) is not None
@@ -1509,6 +1575,7 @@ def test_matchmaking_panel_join_button_uses_selected_values_for_join(
     assert len(channel.created_threads) == 1
     assert channel.created_threads[0].name == "在席確認-ui-queue-guild"
     assert channel.created_threads[0].added_user_ids == [discord_user_id]
+    assert_body_only_embed_message(channel.created_threads[0].sent_messages[0], JOIN_SUCCESS_MESSAGE)
     assert [message.content for message in channel.created_threads[0].sent_messages] == [
         "キューに参加しました。5分間マッチングします。"
     ]
@@ -2382,6 +2449,27 @@ def test_player_info_command_returns_requesting_player_stats_in_active_info_thre
             }
         ),
     ]
+    assert_body_only_embed_message(
+        created_thread.sent_messages[0],
+        build_info_thread_initial_message(InfoThreadCommandName.PLAYER_INFO),
+    )
+    assert_body_only_embed_message(
+        created_thread.sent_messages[1],
+        format_player_info_message(
+            {
+                MatchFormat.ONE_VS_ONE: (1500.0, 0, 0, 0, 0, None),
+                MatchFormat.TWO_VS_TWO: (1500.0, 0, 0, 0, 0, None),
+                MatchFormat.THREE_VS_THREE: (
+                    1512.5,
+                    8,
+                    5,
+                    2,
+                    1,
+                    datetime(2026, 3, 20, 12, 34, 56, tzinfo=timezone.utc),
+                ),
+            }
+        ),
+    )
     assert created_thread.sent_messages[1].view is None
 
 
@@ -2456,8 +2544,12 @@ def test_info_thread_player_info_button_posts_current_stats_to_active_thread(
     assert_response(interaction, ["プレイヤー情報を表示しました。"], ephemeral=True)
     assert_deferred_followup_response(interaction)
     assert_all_controls_disabled(initial_message.view)
-    assert [message.content for message in created_thread.sent_messages] == [
+    assert_body_only_embed_message(
+        created_thread.sent_messages[0],
         build_info_thread_initial_message(InfoThreadCommandName.PLAYER_INFO),
+    )
+    assert_body_only_embed_message(
+        created_thread.sent_messages[1],
         format_player_info_message(
             {
                 MatchFormat.ONE_VS_ONE: (1500.0, 0, 0, 0, 0, None),
@@ -2472,7 +2564,7 @@ def test_info_thread_player_info_button_posts_current_stats_to_active_thread(
                 ),
             }
         ),
-    ]
+    )
     assert created_thread.sent_messages[1].view is None
 
 
@@ -2760,8 +2852,12 @@ def test_info_thread_player_info_season_button_posts_requested_season_stats_to_a
     assert season_interaction.response.deferred is True
     assert_response(interaction, ["シーズン別プレイヤー情報を表示しました。"], ephemeral=True)
     assert_all_controls_disabled(initial_message.view)
-    assert [message.content for message in created_thread.sent_messages] == [
+    assert_body_only_embed_message(
+        created_thread.sent_messages[0],
         build_info_thread_initial_message(InfoThreadCommandName.PLAYER_INFO_SEASON),
+    )
+    assert_body_only_embed_message(
+        created_thread.sent_messages[1],
         format_player_info_message(
             {
                 MatchFormat.ONE_VS_ONE: (1500.0, 0, 0, 0, 0, None),
@@ -2778,7 +2874,7 @@ def test_info_thread_player_info_season_button_posts_requested_season_stats_to_a
             season_id=season.id,
             season_name=season.name,
         ),
-    ]
+    )
     assert created_thread.sent_messages[1].view is None
 
 
@@ -3478,8 +3574,12 @@ def test_info_thread_leaderboard_button_posts_page_one_to_active_thread(
         ephemeral=True,
     )
     assert_all_controls_disabled(initial_message.view)
-    assert [message.content for message in created_thread.sent_messages] == [
+    assert_body_only_embed_message(
+        created_thread.sent_messages[0],
         build_info_thread_initial_message(InfoThreadCommandName.LEADERBOARD),
+    )
+    assert_body_only_embed_message(
+        created_thread.sent_messages[1],
         format_leaderboard_message(
             season_name=season_pair.active.name,
             match_format=MatchFormat.THREE_VS_THREE,
@@ -3490,7 +3590,7 @@ def test_info_thread_leaderboard_button_posts_page_one_to_active_thread(
                 (3, "Alice", 1600.0, None, -2, None),
             ],
         ),
-    ]
+    )
     assert created_thread.sent_messages[1].view is None
 
 
@@ -3551,14 +3651,17 @@ def test_leaderboard_command_adds_next_page_button_when_next_page_exists(
     )
     assert_info_thread_leaderboard_initial_controls(created_thread.sent_messages[0].view)
     assert_info_thread_leaderboard_next_page_control(created_thread.sent_messages[1].view)
-    assert created_thread.sent_messages[1].content == format_leaderboard_message(
-        season_name=season_pair.active.name,
-        match_format=MatchFormat.THREE_VS_THREE,
-        page=1,
-        entries=[
-            (index + 1, f"Player {index + 1}", float(2000 - index), None, None, None)
-            for index in range(20)
-        ],
+    assert_body_only_embed_message(
+        created_thread.sent_messages[1],
+        format_leaderboard_message(
+            season_name=season_pair.active.name,
+            match_format=MatchFormat.THREE_VS_THREE,
+            page=1,
+            entries=[
+                (index + 1, f"Player {index + 1}", float(2000 - index), None, None, None)
+                for index in range(20)
+            ],
+        ),
     )
 
 
@@ -3632,13 +3735,16 @@ def test_info_thread_leaderboard_next_page_button_posts_requested_page(
 
     asyncio.run(scenario())
 
-    assert created_thread.sent_messages[2].content == format_leaderboard_message(
-        season_name=season_pair.active.name,
-        match_format=MatchFormat.THREE_VS_THREE,
-        page=2,
-        entries=[
-            (21, "Player 21", 1980.0, None, None, None),
-        ],
+    assert_body_only_embed_message(
+        created_thread.sent_messages[2],
+        format_leaderboard_message(
+            season_name=season_pair.active.name,
+            match_format=MatchFormat.THREE_VS_THREE,
+            page=2,
+            entries=[
+                (21, "Player 21", 1980.0, None, None, None),
+            ],
+        ),
     )
     assert created_thread.sent_messages[2].view is None
 
@@ -4329,8 +4435,12 @@ def test_info_thread_leaderboard_season_button_posts_page_one_to_active_thread(
     assert match_format_interaction.response.deferred is True
     assert_response(interaction, ["ランキングを表示しました。"], ephemeral=True)
     assert_all_controls_disabled(initial_message.view)
-    assert [message.content for message in created_thread.sent_messages] == [
+    assert_body_only_embed_message(
+        created_thread.sent_messages[0],
         build_info_thread_initial_message(InfoThreadCommandName.LEADERBOARD_SEASON),
+    )
+    assert_body_only_embed_message(
+        created_thread.sent_messages[1],
         format_leaderboard_season_message(
             season_id=season.id,
             season_name=season.name,
@@ -4342,7 +4452,7 @@ def test_info_thread_leaderboard_season_button_posts_page_one_to_active_thread(
                 (3, "Alice", 1600.0),
             ],
         ),
-    ]
+    )
     assert created_thread.sent_messages[1].view is None
 
 
@@ -4422,19 +4532,22 @@ def test_leaderboard_season_command_adds_next_page_button_when_next_page_exists(
         expected_seasons=expected_started_seasons,
     )
     assert_info_thread_leaderboard_next_page_control(created_thread.sent_messages[1].view)
-    assert created_thread.sent_messages[1].content == format_leaderboard_season_message(
-        season_id=season.id,
-        season_name=season.name,
-        match_format=MatchFormat.THREE_VS_THREE,
-        page=1,
-        entries=[
-            (
-                index + 1,
-                f"Player {index + 1}",
-                float(2000 - index),
-            )
-            for index in range(20)
-        ],
+    assert_body_only_embed_message(
+        created_thread.sent_messages[1],
+        format_leaderboard_season_message(
+            season_id=season.id,
+            season_name=season.name,
+            match_format=MatchFormat.THREE_VS_THREE,
+            page=1,
+            entries=[
+                (
+                    index + 1,
+                    f"Player {index + 1}",
+                    float(2000 - index),
+                )
+                for index in range(20)
+            ],
+        ),
     )
 
 
@@ -4519,12 +4632,15 @@ def test_info_thread_leaderboard_season_next_page_button_posts_requested_page(
 
     asyncio.run(scenario())
 
-    assert created_thread.sent_messages[2].content == format_leaderboard_season_message(
-        season_id=season.id,
-        season_name=season.name,
-        match_format=MatchFormat.THREE_VS_THREE,
-        page=2,
-        entries=[(21, "Player 21", 1980.0)],
+    assert_body_only_embed_message(
+        created_thread.sent_messages[2],
+        format_leaderboard_season_message(
+            season_id=season.id,
+            season_name=season.name,
+            match_format=MatchFormat.THREE_VS_THREE,
+            page=2,
+            entries=[(21, "Player 21", 1980.0)],
+        ),
     )
     assert created_thread.sent_messages[2].view is None
 
@@ -7659,15 +7775,18 @@ def test_dev_leaderboard_posts_current_leaderboard_to_target_info_thread(
         ["指定したユーザーの情報確認用スレッドにランキングを表示しました。"],
         ephemeral=True,
     )
-    assert created_thread.sent_messages[1].content == format_leaderboard_message(
-        season_name=season_pair.active.name,
-        match_format=MatchFormat.THREE_VS_THREE,
-        page=1,
-        entries=[
-            (1, "Bob", 1600.0, None, None, None),
-            (2, "Carol", 1600.0, None, None, None),
-            (3, "Target", 1600.0, None, None, None),
-        ],
+    assert_body_only_embed_message(
+        created_thread.sent_messages[1],
+        format_leaderboard_message(
+            season_name=season_pair.active.name,
+            match_format=MatchFormat.THREE_VS_THREE,
+            page=1,
+            entries=[
+                (1, "Bob", 1600.0, None, None, None),
+                (2, "Carol", 1600.0, None, None, None),
+                (3, "Target", 1600.0, None, None, None),
+            ],
+        ),
     )
     assert created_thread.sent_messages[1].view is None
 
@@ -7768,14 +7887,17 @@ def test_dev_leaderboard_season_posts_requested_season_leaderboard_to_target_inf
         ["指定したユーザーの情報確認用スレッドにシーズン別ランキングを表示しました。"],
         ephemeral=True,
     )
-    assert created_thread.sent_messages[1].content == format_leaderboard_season_message(
-        season_id=season.id,
-        season_name=season.name,
-        match_format=MatchFormat.THREE_VS_THREE,
-        page=1,
-        entries=[
-            (1, "1234567890123456909", 1600.0),
-        ],
+    assert_body_only_embed_message(
+        created_thread.sent_messages[1],
+        format_leaderboard_season_message(
+            season_id=season.id,
+            season_name=season.name,
+            match_format=MatchFormat.THREE_VS_THREE,
+            page=1,
+            entries=[
+                (1, "1234567890123456909", 1600.0),
+            ],
+        ),
     )
     assert created_thread.sent_messages[1].view is None
 
@@ -7873,6 +7995,13 @@ def test_admin_match_result_responds_ephemerally_and_posts_public_followup(
         ],
         [True, False],
     )
+    assert interaction.response.raw_messages == ["試合結果を上書きしました。", None]
+    assert interaction.response.embeds[0] is None
+    assert interaction.response.embeds[1] is not None
+    assert (
+        interaction.response.embeds[1].description
+        == f"match_id: {match_id} の試合結果が管理者操作により「引き分け」に上書きされました。"
+    )
 
 
 def test_admin_rename_season_updates_target_season_name(
@@ -7945,7 +8074,7 @@ def test_admin_setup_custom_ui_channel_creates_register_panel_and_button_registe
     assert managed_ui_channel.created_by_discord_user_id == executor_discord_user_id
     assert persisted_channel.overwrites[guild.default_role].view_channel is True
     assert persisted_channel.overwrites[guild.default_role].send_messages is False
-    assert persisted_message.content == REGISTER_PANEL_MESSAGE
+    assert_body_only_embed_message(persisted_message, REGISTER_PANEL_MESSAGE)
     assert persisted_message.view is not None
     button = cast(discord.ui.Button[Any], persisted_message.view.children[0])
     assert button.label == REGISTER_PANEL_BUTTON_LABEL
@@ -8007,7 +8136,7 @@ def test_admin_setup_custom_ui_channel_creates_info_channel_buttons(
     assert persisted_channel.overwrites[guild.default_role].send_messages is False
     assert persisted_channel.overwrites[registered_role].view_channel is True
     assert persisted_channel.overwrites[registered_role].send_messages is False
-    assert persisted_message.content == INFO_CHANNEL_MESSAGE
+    assert_body_only_embed_message(persisted_message, INFO_CHANNEL_MESSAGE)
     assert persisted_message.view is not None
     info_buttons = [
         cast(discord.ui.Button[Any], child) for child in persisted_message.view.children
@@ -8088,13 +8217,15 @@ def test_admin_setup_custom_ui_channel_creates_matchmaking_channel_with_placehol
     assert persisted_channel.overwrites[registered_role].view_channel is True
     assert persisted_channel.overwrites[registered_role].send_messages is False
     assert len(persisted_channel.sent_messages) == 5
-    assert persisted_channel.sent_messages[0].content == build_matchmaking_guide_message(
-        matchmaking_guide_url
+    assert_body_only_embed_message(
+        persisted_channel.sent_messages[0],
+        build_matchmaking_guide_message(matchmaking_guide_url),
     )
     assert persisted_channel.sent_messages[0].view is None
-    assert persisted_channel.sent_messages[0].suppress_embeds is True
-    assert (
-        persisted_channel.sent_messages[1].content == MATCHMAKING_CHANNEL_STATUS_PLACEHOLDER_MESSAGE
+    assert persisted_channel.sent_messages[0].suppress_embeds is False
+    assert_body_only_embed_message(
+        persisted_channel.sent_messages[1],
+        MATCHMAKING_CHANNEL_STATUS_PLACEHOLDER_MESSAGE,
     )
     assert persisted_channel.sent_messages[1].view is not None
     assert persisted_channel.sent_messages[1].suppress_embeds is False
@@ -8156,7 +8287,7 @@ def test_admin_setup_custom_ui_channel_creates_admin_operations_channel_for_supe
     assert persisted_channel.overwrites[interaction.user].send_messages is True
     assert persisted_channel.overwrites[second_super_admin].view_channel is True
     assert persisted_channel.overwrites[second_super_admin].send_messages is True
-    assert persisted_message.content == ADMIN_OPERATIONS_CHANNEL_MESSAGE
+    assert_body_only_embed_message(persisted_message, ADMIN_OPERATIONS_CHANNEL_MESSAGE)
 
 
 def test_info_channel_button_creates_info_thread_via_existing_command_flow(
@@ -8213,6 +8344,10 @@ def test_info_channel_button_creates_info_thread_via_existing_command_flow(
     assert [message.content for message in created_thread.sent_messages] == [
         build_info_thread_initial_message(InfoThreadCommandName.LEADERBOARD)
     ]
+    assert_body_only_embed_message(
+        created_thread.sent_messages[0],
+        build_info_thread_initial_message(InfoThreadCommandName.LEADERBOARD),
+    )
     assert binding is not None
     assert binding.thread_channel_id == created_thread.id
 
@@ -8450,7 +8585,7 @@ def test_admin_setup_custom_ui_channel_creates_info_channel_without_thread_permi
     session.expire_all()
 
     assert_response(interaction, ["UI 設置チャンネルを作成しました。"], ephemeral=True)
-    assert guild.channels[0].sent_messages[0].content == INFO_CHANNEL_MESSAGE
+    assert_body_only_embed_message(guild.channels[0].sent_messages[0], INFO_CHANNEL_MESSAGE)
     assert guild.channels[0].sent_messages[0].view is not None
     assert session.scalar(select(ManagedUiChannel)) is not None
 
@@ -8578,7 +8713,7 @@ def test_admin_setup_ui_channels_creates_registered_channel_set(
     register_channel = find_channel_by_name(guild, "レート戦はこちらから")
     assert register_channel.overwrites[guild.default_role].view_channel is True
     assert register_channel.overwrites[guild.default_role].send_messages is False
-    assert register_channel.sent_messages[0].content == REGISTER_PANEL_MESSAGE
+    assert_body_only_embed_message(register_channel.sent_messages[0], REGISTER_PANEL_MESSAGE)
 
     matchmaking_channel = find_channel_by_name(guild, "レート戦マッチング")
     assert matchmaking_channel.overwrites[guild.default_role].view_channel is False
@@ -8587,14 +8722,15 @@ def test_admin_setup_ui_channels_creates_registered_channel_set(
     assert matchmaking_channel.overwrites[guild.me].create_private_threads is True
     assert matchmaking_channel.overwrites[guild.me].send_messages_in_threads is True
     assert len(matchmaking_channel.sent_messages) == 5
-    assert matchmaking_channel.sent_messages[0].content == build_matchmaking_guide_message(
-        DEFAULT_MATCHMAKING_GUIDE_URL
+    assert_body_only_embed_message(
+        matchmaking_channel.sent_messages[0],
+        build_matchmaking_guide_message(DEFAULT_MATCHMAKING_GUIDE_URL),
     )
     assert matchmaking_channel.sent_messages[0].view is None
-    assert matchmaking_channel.sent_messages[0].suppress_embeds is True
-    assert (
-        matchmaking_channel.sent_messages[1].content
-        == MATCHMAKING_CHANNEL_STATUS_PLACEHOLDER_MESSAGE
+    assert matchmaking_channel.sent_messages[0].suppress_embeds is False
+    assert_body_only_embed_message(
+        matchmaking_channel.sent_messages[1],
+        MATCHMAKING_CHANNEL_STATUS_PLACEHOLDER_MESSAGE,
     )
     assert matchmaking_channel.sent_messages[1].view is not None
     assert matchmaking_channel.sent_messages[1].suppress_embeds is False
@@ -8640,14 +8776,17 @@ def test_admin_setup_ui_channels_creates_registered_channel_set(
     matchmaking_news_channel = find_channel_by_name(guild, "レート戦マッチ速報")
     assert matchmaking_news_channel.overwrites[guild.default_role].view_channel is False
     assert matchmaking_news_channel.overwrites[registered_role].view_channel is True
-    assert matchmaking_news_channel.sent_messages[0].content == MATCHMAKING_NEWS_CHANNEL_MESSAGE
+    assert_body_only_embed_message(
+        matchmaking_news_channel.sent_messages[0],
+        MATCHMAKING_NEWS_CHANNEL_MESSAGE,
+    )
     assert matchmaking_news_channel.sent_messages[0].view is None
 
     info_channel = find_channel_by_name(guild, "レート戦情報")
     assert info_channel.overwrites[guild.default_role].view_channel is False
     assert info_channel.overwrites[registered_role].view_channel is True
     assert info_channel.overwrites[registered_role].send_messages is False
-    assert info_channel.sent_messages[0].content == INFO_CHANNEL_MESSAGE
+    assert_body_only_embed_message(info_channel.sent_messages[0], INFO_CHANNEL_MESSAGE)
     assert info_channel.sent_messages[0].view is not None
     info_buttons = [
         cast(discord.ui.Button[Any], child) for child in info_channel.sent_messages[0].view.children
@@ -8675,21 +8814,27 @@ def test_admin_setup_ui_channels_creates_registered_channel_set(
     system_announcements_channel = find_channel_by_name(guild, "レート戦アナウンス")
     assert system_announcements_channel.overwrites[guild.default_role].view_channel is False
     assert system_announcements_channel.overwrites[registered_role].view_channel is True
-    assert (
-        system_announcements_channel.sent_messages[0].content
-        == SYSTEM_ANNOUNCEMENTS_CHANNEL_MESSAGE
+    assert_body_only_embed_message(
+        system_announcements_channel.sent_messages[0],
+        SYSTEM_ANNOUNCEMENTS_CHANNEL_MESSAGE,
     )
 
     admin_contact_channel = find_channel_by_name(guild, "運営連絡・フィードバック")
     assert admin_contact_channel.overwrites[guild.default_role].view_channel is True
     assert admin_contact_channel.overwrites[guild.default_role].send_messages is True
-    assert admin_contact_channel.sent_messages[0].content == ADMIN_CONTACT_CHANNEL_MESSAGE
+    assert_body_only_embed_message(
+        admin_contact_channel.sent_messages[0],
+        ADMIN_CONTACT_CHANNEL_MESSAGE,
+    )
 
     admin_operations_channel = find_channel_by_name(guild, "運営専用")
     assert admin_operations_channel.overwrites[guild.default_role].view_channel is False
     assert admin_operations_channel.overwrites[interaction.user].view_channel is True
     assert admin_operations_channel.overwrites[interaction.user].send_messages is True
-    assert admin_operations_channel.sent_messages[0].content == ADMIN_OPERATIONS_CHANNEL_MESSAGE
+    assert_body_only_embed_message(
+        admin_operations_channel.sent_messages[0],
+        ADMIN_OPERATIONS_CHANNEL_MESSAGE,
+    )
 
 
 def test_admin_setup_ui_channels_creates_private_channels_in_development_mode(

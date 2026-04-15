@@ -112,7 +112,7 @@ def build_matchmaking_panel_message(match_format: MatchFormat | str) -> str:
     return "\n".join(
         [
             f"{resolved_match_format.value} の参加キューを選択してください。",
-            "在席更新とキュー退出は /present と /leave を使ってください。",
+            "在席確認やマッチングキャンセルは、参加後に作成される在席確認スレッドで行ってください。",
         ]
     )
 

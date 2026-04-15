@@ -43,6 +43,10 @@ from dxd_rating.platform.discord.copy.system import (
     build_season_completed_message,
     build_season_top_rankings_message,
 )
+from dxd_rating.platform.discord.message_embeds import (
+    PUBLIC_MESSAGE_ALLOWED_MENTIONS,
+    build_body_only_public_message_send_kwargs,
+)
 from dxd_rating.platform.discord.ui import (
     MatchmakingNewsMatchAnnouncementInteractionHandler,
     MatchmakingPresenceThreadInteractionHandler,
@@ -68,8 +72,9 @@ class DiscordSendableChannel(Protocol):
 
     async def send(
         self,
-        content: str,
+        content: str | None = None,
         *,
+        embed: discord.Embed | None = None,
         allowed_mentions: discord.AllowedMentions,
         view: discord.ui.View | None = None,
     ) -> object: ...
@@ -99,8 +104,9 @@ class DiscordSendableUser(Protocol):
 
     async def send(
         self,
-        content: str,
+        content: str | None = None,
         *,
+        embed: discord.Embed | None = None,
         allowed_mentions: discord.AllowedMentions,
     ) -> object: ...
 
@@ -202,12 +208,7 @@ class DiscordOutboxEventPublisher:
         self.matchmaking_presence_interaction_handler = matchmaking_presence_interaction_handler
         self.logger = logger or logging.getLogger(__name__)
         self._loop: asyncio.AbstractEventLoop | None = None
-        self._allowed_mentions = discord.AllowedMentions(
-            users=True,
-            roles=False,
-            everyone=False,
-            replied_user=False,
-        )
+        self._allowed_mentions = PUBLIC_MESSAGE_ALLOWED_MENTIONS
         self._match_operation_threads_by_match_id: dict[int, DiscordPrivateThread] = {}
 
     def bind_loop(self, loop: asyncio.AbstractEventLoop) -> None:
@@ -228,11 +229,22 @@ class DiscordOutboxEventPublisher:
         await self._maybe_create_match_operation_thread(event)
         match_operation_thread = await self._resolve_match_operation_thread_for_event(event)
         if match_operation_thread is not None:
-            await match_operation_thread.send(
-                self._render_content(event.event_type, event.payload),
-                allowed_mentions=self._allowed_mentions,
-                view=self._build_match_operation_thread_event_view(event),
-            )
+            content = self._render_content(event.event_type, event.payload)
+            view = self._build_match_operation_thread_event_view(event)
+            if self._should_send_body_only_embed_for_thread_event(event):
+                await match_operation_thread.send(
+                    **build_body_only_public_message_send_kwargs(
+                        content,
+                        allowed_mentions=self._allowed_mentions,
+                        view=view,
+                    )
+                )
+            else:
+                await match_operation_thread.send(
+                    content,
+                    allowed_mentions=self._allowed_mentions,
+                    view=view,
+                )
             return
 
         destination = await asyncio.to_thread(self._require_destination, event.payload)
@@ -304,11 +316,20 @@ class DiscordOutboxEventPublisher:
         content = await self._render_channel_content(event=event, channel=channel)
         view = self._build_channel_view(event=event, channel=channel)
         try:
-            await channel.send(
-                content,
-                allowed_mentions=self._allowed_mentions,
-                view=view,
-            )
+            if self._should_send_body_only_embed_for_channel_event(event=event, channel=channel):
+                await channel.send(
+                    **build_body_only_public_message_send_kwargs(
+                        content,
+                        allowed_mentions=self._allowed_mentions,
+                        view=view,
+                    )
+                )
+            else:
+                await channel.send(
+                    content,
+                    allowed_mentions=self._allowed_mentions,
+                    view=view,
+                )
         except discord.NotFound as exc:
             raise NonRetryableOutboxPublishError(
                 f"Discord channel was deleted before send: {destination.channel_id}"
@@ -363,9 +384,11 @@ class DiscordOutboxEventPublisher:
                 context.participant_discord_user_ids,
             )
             await thread.send(
-                self._render_match_operation_thread_initial_content(context),
-                allowed_mentions=self._allowed_mentions,
-                view=self._build_match_operation_thread_initial_view(context),
+                **build_body_only_public_message_send_kwargs(
+                    self._render_match_operation_thread_initial_content(context),
+                    allowed_mentions=self._allowed_mentions,
+                    view=self._build_match_operation_thread_initial_view(context),
+                )
             )
             await thread.send(
                 self._render_match_operation_thread_parent_recruitment_content(context),
@@ -940,6 +963,44 @@ class DiscordOutboxEventPublisher:
         return create_matchmaking_presence_thread_view(
             self.matchmaking_presence_interaction_handler
         )
+
+    def _should_send_body_only_embed_for_channel_event(
+        self,
+        *,
+        event: PendingOutboxEvent,
+        channel: DiscordSendableChannel,
+    ) -> bool:
+        if event.event_type == OutboxEventType.MATCH_CREATED:
+            return self._is_matchmaking_news_match_created_payload(event.payload) and not (
+                self._is_thread_like_channel(channel)
+                and "mention_discord_user_id" in event.payload
+                and "match_operation_thread_parent_channel_id" in event.payload
+            )
+
+        return self._should_send_body_only_embed_for_event(event)
+
+    def _should_send_body_only_embed_for_thread_event(self, event: PendingOutboxEvent) -> bool:
+        return self._should_send_body_only_embed_for_event(event)
+
+    def _should_send_body_only_embed_for_event(self, event: PendingOutboxEvent) -> bool:
+        if event.event_type == OutboxEventType.MATCH_REPORT_OPENED:
+            return True
+
+        if event.event_type == OutboxEventType.MATCH_APPROVAL_REQUESTED:
+            return self._require_payload_bool_with_default(event.payload, "phase_started", False)
+
+        if event.event_type == OutboxEventType.MATCH_FINALIZED:
+            return not self._require_payload_bool_with_default(
+                event.payload,
+                "auto_penalty_applied",
+                False,
+            )
+
+        return event.event_type in {
+            OutboxEventType.SEASON_COMPLETED,
+            OutboxEventType.SEASON_TOP_RANKINGS,
+            OutboxEventType.ADMIN_OPERATIONS_NOTIFICATION,
+        }
 
     def _is_matchmaking_news_match_created_payload(self, payload: dict[str, object]) -> bool:
         return (

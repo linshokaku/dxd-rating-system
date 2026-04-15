@@ -61,6 +61,7 @@ from dxd_rating.platform.discord.copy.match import (
     MATCH_OPERATION_THREAD_DRAW_BUTTON_LABEL,
     MATCH_OPERATION_THREAD_LOSE_BUTTON_LABEL,
     MATCH_OPERATION_THREAD_PARENT_BUTTON_LABEL,
+    MATCH_OPERATION_THREAD_VOID_COMMAND_GUIDE_MESSAGE,
     MATCH_OPERATION_THREAD_VOID_BUTTON_LABEL,
     MATCH_OPERATION_THREAD_VOID_GUIDE_MESSAGE,
     MATCH_OPERATION_THREAD_WIN_BUTTON_LABEL,
@@ -110,6 +111,12 @@ DEFAULT_QUEUE_DEFINITION = get_match_queue_class_definition_by_name(
 assert DEFAULT_QUEUE_DEFINITION is not None
 DEFAULT_QUEUE_NAME = DEFAULT_QUEUE_DEFINITION.queue_name
 DEFAULT_QUEUE_CLASS_ID = DEFAULT_QUEUE_DEFINITION.queue_class_id
+
+
+def _render_embed_content(embed: discord.Embed | None) -> str:
+    if embed is None or embed.description is None:
+        return ""
+    return embed.description
 
 
 @pytest.fixture(autouse=True)
@@ -233,18 +240,23 @@ class FakeDiscordChannel:
     guild: FakeDiscordGuild | None = None
     parent: object | None = None
     sent_messages: list[str] = field(default_factory=list)
+    raw_contents: list[str | None] = field(default_factory=list)
+    sent_embeds: list[discord.Embed | None] = field(default_factory=list)
     allowed_mentions_history: list[discord.AllowedMentions] = field(default_factory=list)
     sent_views: list[discord.ui.View | None] = field(default_factory=list)
     created_threads: list["FakeDiscordThread"] = field(default_factory=list)
 
     async def send(
         self,
-        content: str,
+        content: str | None = None,
         *,
+        embed: discord.Embed | None = None,
         allowed_mentions: discord.AllowedMentions,
         view: discord.ui.View | None = None,
     ) -> None:
-        self.sent_messages.append(content)
+        self.sent_messages.append(content if content is not None else _render_embed_content(embed))
+        self.raw_contents.append(content)
+        self.sent_embeds.append(embed)
         self.allowed_mentions_history.append(allowed_mentions)
         self.sent_views.append(view)
 
@@ -271,18 +283,23 @@ class FakeDiscordThread:
     guild: FakeDiscordGuild | None = None
     parent: object | None = None
     sent_messages: list[str] = field(default_factory=list)
+    raw_contents: list[str | None] = field(default_factory=list)
+    sent_embeds: list[discord.Embed | None] = field(default_factory=list)
     allowed_mentions_history: list[discord.AllowedMentions] = field(default_factory=list)
     sent_views: list[discord.ui.View | None] = field(default_factory=list)
     added_user_ids: list[int] = field(default_factory=list)
 
     async def send(
         self,
-        content: str,
+        content: str | None = None,
         *,
+        embed: discord.Embed | None = None,
         allowed_mentions: discord.AllowedMentions,
         view: discord.ui.View | None = None,
     ) -> None:
-        self.sent_messages.append(content)
+        self.sent_messages.append(content if content is not None else _render_embed_content(embed))
+        self.raw_contents.append(content)
+        self.sent_embeds.append(embed)
         self.allowed_mentions_history.append(allowed_mentions)
         self.sent_views.append(view)
 
@@ -297,15 +314,20 @@ class FakeDiscordThread:
 class FakeDiscordUser:
     id: int
     sent_messages: list[str] = field(default_factory=list)
+    raw_contents: list[str | None] = field(default_factory=list)
+    sent_embeds: list[discord.Embed | None] = field(default_factory=list)
     allowed_mentions_history: list[discord.AllowedMentions] = field(default_factory=list)
 
     async def send(
         self,
-        content: str,
+        content: str | None = None,
         *,
+        embed: discord.Embed | None = None,
         allowed_mentions: discord.AllowedMentions,
     ) -> None:
-        self.sent_messages.append(content)
+        self.sent_messages.append(content if content is not None else _render_embed_content(embed))
+        self.raw_contents.append(content)
+        self.sent_embeds.append(embed)
         self.allowed_mentions_history.append(allowed_mentions)
 
 
@@ -420,6 +442,16 @@ class FakeDiscordClient:
         if user is None:
             raise LookupError(f"Unknown user: {user_id}")
         return user
+
+
+def assert_body_only_public_embed(
+    sendable: FakeDiscordChannel | FakeDiscordThread,
+    index: int,
+    expected_body: str,
+) -> None:
+    assert sendable.raw_contents[index] is None
+    assert sendable.sent_embeds[index] is not None
+    assert sendable.sent_embeds[index].description == expected_body
 
 
 def create_player(session: Session, discord_user_id: int) -> int:
@@ -2477,6 +2509,7 @@ def test_discord_outbox_publisher_renders_matchmaking_news_match_announcement() 
     asyncio.run(scenario())
 
     assert channel.sent_messages == [expected_message]
+    assert_body_only_public_embed(channel, 0, expected_message)
     assert channel.sent_views == [None]
 
 
@@ -2544,6 +2577,7 @@ def test_discord_outbox_publisher_adds_matchmaking_news_spectate_button_for_matc
     asyncio.run(scenario())
 
     assert channel.sent_messages == [expected_message]
+    assert_body_only_public_embed(channel, 0, expected_message)
     assert len(channel.sent_views) == 1
     view = channel.sent_views[0]
     assert view is not None
@@ -2671,6 +2705,7 @@ def test_discord_outbox_publisher_creates_match_operation_thread_for_match_creat
     asyncio.run(scenario())
 
     assert announcement_channel.sent_messages == [expected_announcement_message]
+    assert_body_only_public_embed(announcement_channel, 0, expected_announcement_message)
     assert len(matchmaking_channel.created_threads) == 1
 
     created_thread = matchmaking_channel.created_threads[0]
@@ -2685,6 +2720,7 @@ def test_discord_outbox_publisher_creates_match_operation_thread_for_match_creat
         89_001,
     ]
     assert created_thread.sent_messages == expected_thread_messages
+    assert_body_only_public_embed(created_thread, 0, expected_thread_messages[0])
     assert len(created_thread.sent_views) == 3
     initial_view = created_thread.sent_views[0]
     assert initial_view is not None
@@ -2812,6 +2848,8 @@ def test_discord_outbox_publisher_links_presence_thread_to_match_operation_threa
     asyncio.run(scenario())
 
     assert presence_thread.sent_messages == [expected_presence_message]
+    assert presence_thread.raw_contents == [expected_presence_message]
+    assert presence_thread.sent_embeds == [None]
     assert presence_thread.sent_views == [None]
     assert len(matchmaking_channel.created_threads) == 1
     created_thread = matchmaking_channel.created_threads[0]
@@ -2826,6 +2864,7 @@ def test_discord_outbox_publisher_links_presence_thread_to_match_operation_threa
         89_011,
     ]
     assert created_thread.sent_messages == expected_thread_messages
+    assert_body_only_public_embed(created_thread, 0, expected_thread_messages[0])
 
 
 def test_discord_outbox_publisher_reuses_existing_match_operation_thread_for_same_match() -> None:
@@ -3234,9 +3273,11 @@ def test_discord_outbox_publisher_routes_report_opened_to_match_operation_thread
             ]
         )
     ]
+    assert_body_only_public_embed(match_channel, 0, match_channel.sent_messages[0])
     assert len(matchmaking_channel.created_threads) == 1
     created_thread = matchmaking_channel.created_threads[0]
     assert created_thread.sent_messages[3] == expected_message
+    assert_body_only_public_embed(created_thread, 3, expected_message)
     report_view = created_thread.sent_views[3]
     assert report_view is not None
     assert [getattr(child, "label", None) for child in report_view.children] == [
@@ -3326,6 +3367,7 @@ def test_discord_outbox_publisher_reuses_existing_thread_for_report_opened_after
             ]
         )
     ]
+    assert_body_only_public_embed(existing_thread, 0, existing_thread.sent_messages[0])
     report_view = existing_thread.sent_views[0]
     assert report_view is not None
     assert [getattr(child, "label", None) for child in report_view.children] == [
@@ -3400,6 +3442,22 @@ def test_discord_outbox_publisher_routes_match_notifications_to_existing_thread(
             MATCH_APPROVAL_STARTED_NOTIFICATION_MESSAGE,
             "仮決定結果: チーム A の勝ち",
             "承認締切: 2026-03-20T12:34:56+00:00",
+        ]
+    )
+    expected_thread_initial_message = "\n".join(
+        [
+            MATCH_CREATED_NOTIFICATION_MESSAGE,
+            "試合形式: 3v3",
+            "試合階級: expert",
+            "Team A",
+            "    <@84100>",
+            "    <@84101>",
+            "    <@84102>",
+            "Team B",
+            "    <@84103>",
+            "    <@84104>",
+            "    <@84105>",
+            MATCH_OPERATION_THREAD_VOID_COMMAND_GUIDE_MESSAGE,
         ]
     )
     expected_finalized_message = "\n".join(
@@ -3568,6 +3626,7 @@ def test_discord_outbox_publisher_routes_match_notifications_to_existing_thread(
     asyncio.run(scenario())
 
     assert announcement_channel.sent_messages == [expected_announcement_message]
+    assert_body_only_public_embed(announcement_channel, 0, expected_announcement_message)
     assert match_channel.sent_messages == []
     assert len(matchmaking_channel.created_threads) == 1
     assert matchmaking_channel.created_threads[0].sent_messages[3:] == [
@@ -3577,6 +3636,21 @@ def test_discord_outbox_publisher_routes_match_notifications_to_existing_thread(
         expected_auto_penalty_message,
         expected_admin_review_message,
     ]
+    assert_body_only_public_embed(
+        matchmaking_channel.created_threads[0],
+        0,
+        expected_thread_initial_message,
+    )
+    assert_body_only_public_embed(
+        matchmaking_channel.created_threads[0],
+        4,
+        expected_phase_started_message,
+    )
+    assert_body_only_public_embed(
+        matchmaking_channel.created_threads[0],
+        5,
+        expected_finalized_message,
+    )
 
 
 def test_discord_outbox_publisher_renders_match_approval_phase_started_message() -> None:
@@ -3619,6 +3693,7 @@ def test_discord_outbox_publisher_renders_match_approval_phase_started_message()
     asyncio.run(scenario())
 
     assert channel.sent_messages == [expected_message]
+    assert_body_only_public_embed(channel, 0, expected_message)
 
 
 def test_discord_outbox_publisher_renders_match_approval_request_message() -> None:
@@ -3663,6 +3738,8 @@ def test_discord_outbox_publisher_renders_match_approval_request_message() -> No
     asyncio.run(scenario())
 
     assert channel.sent_messages == [expected_message]
+    assert channel.raw_contents == [expected_message]
+    assert channel.sent_embeds == [None]
 
 
 def test_discord_outbox_publisher_renders_match_auto_penalty_message() -> None:
@@ -3770,6 +3847,7 @@ def test_discord_outbox_publisher_renders_match_finalized_message_with_ratings()
     asyncio.run(scenario())
 
     assert channel.sent_messages == [expected_message]
+    assert_body_only_public_embed(channel, 0, expected_message)
 
 
 def test_discord_outbox_publisher_renders_daily_worker_started_admin_notification() -> None:
@@ -3811,6 +3889,7 @@ def test_discord_outbox_publisher_renders_daily_worker_started_admin_notificatio
     asyncio.run(scenario())
 
     assert channel.sent_messages == [expected_message]
+    assert_body_only_public_embed(channel, 0, expected_message)
 
 
 def test_discord_outbox_publisher_renders_season_completed_notification() -> None:
@@ -3854,6 +3933,7 @@ def test_discord_outbox_publisher_renders_season_completed_notification() -> Non
     asyncio.run(scenario())
 
     assert channel.sent_messages == [expected_message]
+    assert_body_only_public_embed(channel, 0, expected_message)
 
 
 def test_discord_outbox_publisher_renders_season_top_rankings_notification() -> None:

@@ -206,6 +206,10 @@ def build_match_parent_assigned_content(
         [
             MATCH_PARENT_ASSIGNED_NOTIFICATION_MESSAGE,
             f"親: {parent_mention}",
+            (
+                f"{parent_mention} はフレンドマッチの部屋を作成し、"
+                "部屋IDをこのプライベートスレッドに共有してください。"
+            ),
             f"勝敗報告開始: {report_open_at}",
             f"勝敗報告締切: {report_deadline_at}",
         ]
@@ -298,4 +302,3 @@ def build_match_admin_review_required_content(
     if mention_prefix:
         return "\n".join([mention_prefix, *body])
     return "\n".join(body)
-

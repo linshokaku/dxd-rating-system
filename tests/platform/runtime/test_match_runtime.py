@@ -3354,6 +3354,7 @@ def test_discord_outbox_publisher_routes_match_notifications_to_existing_thread(
         [
             MATCH_PARENT_ASSIGNED_NOTIFICATION_MESSAGE,
             "親: <@84100>",
+            "<@84100> はフレンドマッチの部屋を作成し、部屋IDをこのプライベートスレッドに共有してください。",
             "勝敗報告開始: 2026-03-20T12:00:00+00:00",
             "勝敗報告締切: 2026-03-20T12:20:00+00:00",
         ]

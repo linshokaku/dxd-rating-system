@@ -65,6 +65,8 @@ from dxd_rating.platform.discord.copy.info import (
     INFO_CHANNEL_MESSAGE,
     INFO_CHANNEL_PLAYER_INFO_BUTTON_LABEL,
     INFO_CHANNEL_PLAYER_INFO_SEASON_BUTTON_LABEL,
+    INFO_THREAD_NOT_FOUND_MESSAGE,
+    INFO_THREAD_REQUIRED_MESSAGE,
     INFO_THREAD_LEADERBOARD_MATCH_FORMAT_PLACEHOLDER,
     INFO_THREAD_LEADERBOARD_NEXT_PAGE_BUTTON_LABEL,
     INFO_THREAD_LEADERBOARD_SEASON_PLACEHOLDER,
@@ -91,6 +93,7 @@ from dxd_rating.platform.discord.copy.matchmaking import (
     build_matchmaking_status_message,
 )
 from dxd_rating.platform.discord.copy.registration import (
+    PLAYER_REGISTRATION_REQUIRED_MESSAGE,
     REGISTER_PANEL_BUTTON_LABEL,
     REGISTER_PANEL_MESSAGE,
 )
@@ -1284,7 +1287,7 @@ def test_join_command_requires_registered_player(session_factory: sessionmaker[S
 
     assert_response(
         interaction,
-        ["プレイヤー登録が必要です。先に /register を実行してください。"],
+        [PLAYER_REGISTRATION_REQUIRED_MESSAGE],
         ephemeral=True,
     )
 
@@ -2072,7 +2075,7 @@ def test_matchmaking_status_button_requires_registered_player(
 
     assert_response(
         interaction,
-        ["プレイヤー登録が必要です。先に /register を実行してください。"],
+        [PLAYER_REGISTRATION_REQUIRED_MESSAGE],
         ephemeral=True,
     )
 
@@ -2154,7 +2157,7 @@ def test_update_matchmaking_status_command_requires_registered_player(
 
     assert_response(
         interaction,
-        ["プレイヤー登録が必要です。先に /register を実行してください。"],
+        [PLAYER_REGISTRATION_REQUIRED_MESSAGE],
         ephemeral=True,
     )
 
@@ -2924,7 +2927,7 @@ def test_player_info_season_command_requires_active_info_thread_binding(
 
     assert_response(
         interaction,
-        ["先に /info_thread を実行してください。"],
+        [INFO_THREAD_REQUIRED_MESSAGE],
         ephemeral=True,
     )
 
@@ -2956,7 +2959,7 @@ def test_player_info_season_command_returns_thread_not_found_when_bound_thread_i
 
     assert_response(
         interaction,
-        ["情報確認用スレッドが見つかりません。先に /info_thread を実行してください。"],
+        [INFO_THREAD_NOT_FOUND_MESSAGE],
         ephemeral=True,
     )
 
@@ -2992,7 +2995,7 @@ def test_player_info_season_command_returns_thread_not_found_when_bound_thread_s
 
     assert_response(
         interaction,
-        ["情報確認用スレッドが見つかりません。先に /info_thread を実行してください。"],
+        [INFO_THREAD_NOT_FOUND_MESSAGE],
         ephemeral=True,
     )
     assert [message.content for message in created_thread.sent_messages] == [
@@ -3145,7 +3148,7 @@ def test_player_info_season_command_requires_registered_player(
 
     assert_response(
         interaction,
-        ["プレイヤー登録が必要です。先に /register を実行してください。"],
+        [PLAYER_REGISTRATION_REQUIRED_MESSAGE],
         ephemeral=True,
     )
 
@@ -3795,7 +3798,7 @@ def test_leaderboard_command_requires_registered_player(
 
     assert_response(
         interaction,
-        ["プレイヤー登録が必要です。先に /register を実行してください。"],
+        [PLAYER_REGISTRATION_REQUIRED_MESSAGE],
         ephemeral=True,
     )
 
@@ -3815,7 +3818,7 @@ def test_leaderboard_command_requires_active_info_thread_binding(
 
     assert_response(
         interaction,
-        ["先に /info_thread を実行してください。"],
+        [INFO_THREAD_REQUIRED_MESSAGE],
         ephemeral=True,
     )
 
@@ -3848,7 +3851,7 @@ def test_leaderboard_command_returns_thread_not_found_when_bound_thread_is_missi
 
     assert_response(
         interaction,
-        ["情報確認用スレッドが見つかりません。先に /info_thread を実行してください。"],
+        [INFO_THREAD_NOT_FOUND_MESSAGE],
         ephemeral=True,
     )
 
@@ -3889,7 +3892,7 @@ def test_leaderboard_command_returns_thread_not_found_when_bound_thread_send_fai
 
     assert_response(
         interaction,
-        ["情報確認用スレッドが見つかりません。先に /info_thread を実行してください。"],
+        [INFO_THREAD_NOT_FOUND_MESSAGE],
         ephemeral=True,
     )
     assert [message.content for message in created_thread.sent_messages] == [
@@ -4835,7 +4838,7 @@ def test_leaderboard_season_command_requires_registered_player(
 
     assert_response(
         interaction,
-        ["プレイヤー登録が必要です。先に /register を実行してください。"],
+        [PLAYER_REGISTRATION_REQUIRED_MESSAGE],
         ephemeral=True,
     )
 
@@ -4858,7 +4861,7 @@ def test_leaderboard_season_command_requires_active_info_thread_binding(
         )
     )
 
-    assert_response(interaction, ["先に /info_thread を実行してください。"], ephemeral=True)
+    assert_response(interaction, [INFO_THREAD_REQUIRED_MESSAGE], ephemeral=True)
 
 
 def test_leaderboard_season_command_returns_thread_not_found_when_bound_thread_is_missing(
@@ -4894,7 +4897,7 @@ def test_leaderboard_season_command_returns_thread_not_found_when_bound_thread_i
 
     assert_response(
         interaction,
-        ["情報確認用スレッドが見つかりません。先に /info_thread を実行してください。"],
+        [INFO_THREAD_NOT_FOUND_MESSAGE],
         ephemeral=True,
     )
 
@@ -4958,7 +4961,7 @@ def test_leaderboard_season_command_returns_thread_not_found_when_bound_thread_s
 
     assert_response(
         interaction,
-        ["情報確認用スレッドが見つかりません。先に /info_thread を実行してください。"],
+        [INFO_THREAD_NOT_FOUND_MESSAGE],
         ephemeral=True,
     )
     assert [message.content for message in created_thread.sent_messages] == [
@@ -5404,7 +5407,7 @@ def test_info_thread_command_requires_registered_player(
 
     assert_response(
         interaction,
-        ["プレイヤー登録が必要です。先に /register を実行してください。"],
+        [PLAYER_REGISTRATION_REQUIRED_MESSAGE],
         ephemeral=True,
     )
 
@@ -5565,7 +5568,7 @@ def test_player_info_command_requires_registered_player(
 
     assert_response(
         interaction,
-        ["プレイヤー登録が必要です。先に /register を実行してください。"],
+        [PLAYER_REGISTRATION_REQUIRED_MESSAGE],
         ephemeral=True,
     )
 
@@ -5583,7 +5586,7 @@ def test_player_info_command_requires_active_info_thread_binding(
 
     assert_response(
         interaction,
-        ["先に /info_thread を実行してください。"],
+        [INFO_THREAD_REQUIRED_MESSAGE],
         ephemeral=True,
     )
 
@@ -5614,7 +5617,7 @@ def test_player_info_command_returns_thread_not_found_when_bound_thread_is_missi
 
     assert_response(
         interaction,
-        ["情報確認用スレッドが見つかりません。先に /info_thread を実行してください。"],
+        [INFO_THREAD_NOT_FOUND_MESSAGE],
         ephemeral=True,
     )
 
@@ -5649,7 +5652,7 @@ def test_player_info_command_returns_thread_not_found_when_bound_thread_send_fai
 
     assert_response(
         interaction,
-        ["情報確認用スレッドが見つかりません。先に /info_thread を実行してください。"],
+        [INFO_THREAD_NOT_FOUND_MESSAGE],
         ephemeral=True,
     )
     assert [message.content for message in created_thread.sent_messages] == [
@@ -6259,7 +6262,7 @@ def test_match_spectate_command_requires_registered_player(
 
     assert_response(
         interaction,
-        ["プレイヤー登録が必要です。先に /register を実行してください。"],
+        [PLAYER_REGISTRATION_REQUIRED_MESSAGE],
         ephemeral=True,
     )
 
@@ -8241,7 +8244,7 @@ def test_info_channel_button_returns_registration_required_for_unregistered_user
 
     assert_response(
         button_interaction,
-        ["プレイヤー登録が必要です。先に /register を実行してください。"],
+        [PLAYER_REGISTRATION_REQUIRED_MESSAGE],
         ephemeral=True,
     )
     assert_deferred_followup_response(button_interaction)

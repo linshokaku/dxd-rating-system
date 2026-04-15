@@ -22,7 +22,7 @@ INFO_CHANNEL_LEADERBOARD_SEASON_BUTTON_LABEL = "シーズン別ランキング"
 INFO_CHANNEL_PLAYER_INFO_BUTTON_LABEL = "現在シーズンのプレイヤー情報"
 INFO_CHANNEL_PLAYER_INFO_SEASON_BUTTON_LABEL = "シーズン別プレイヤー情報"
 INFO_THREAD_RETRY_INFO_THREAD_MESSAGE_SUFFIX = (
-    "再度操作するには /info_thread を実行して新しい情報確認用スレッドを作成してください。"
+    "再度操作するには、情報確認チャンネルのボタンから新しい情報確認用スレッドを作成してください。"
 )
 INFO_THREAD_PLAYER_INFO_SHOW_BUTTON_LABEL = "プレイヤー情報を表示"
 INFO_THREAD_PLAYER_INFO_FALLBACK_ERROR_MESSAGE = (
@@ -83,9 +83,12 @@ LEADERBOARD_SEASON_FAILED_MESSAGE = (
 INVALID_LEADERBOARD_PAGE_MESSAGE = "page は 1 以上で指定してください。"
 LEADERBOARD_PAGE_NOT_FOUND_MESSAGE = "指定したページにはランキングがありません。"
 SEASON_NOT_STARTED_MESSAGE = "指定したシーズンはまだ開始していません。"
-INFO_THREAD_REQUIRED_MESSAGE = "先に /info_thread を実行してください。"
+INFO_THREAD_REQUIRED_MESSAGE = (
+    "先に情報確認チャンネルのボタンから情報確認用スレッドを作成してください。"
+)
 INFO_THREAD_NOT_FOUND_MESSAGE = (
-    "情報確認用スレッドが見つかりません。先に /info_thread を実行してください。"
+    "情報確認用スレッドが見つかりません。"
+    "情報確認チャンネルのボタンから新しい情報確認用スレッドを作成してください。"
 )
 INFO_THREAD_INACTIVE_MESSAGE = (
     "このスレッドは現在の情報確認用スレッドではありません。"

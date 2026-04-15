@@ -19,7 +19,6 @@ REGISTER_SUCCESS_MESSAGE = "登録が完了しました。"
 REGISTER_ALREADY_REGISTERED_MESSAGE = "すでに登録済みです。"
 REGISTER_FAILED_MESSAGE = "登録に失敗しました。管理者に確認してください。"
 PLAYER_REGISTRATION_REQUIRED_MESSAGE = (
-    "プレイヤー登録が必要です。先に /register を実行してください。"
+    "プレイヤー登録が必要です。登録案内チャンネルのボタンから登録してください。"
 )
 REGISTER_PANEL_FALLBACK_ERROR_MESSAGE = "登録に失敗しました。管理者に確認してください。"
-

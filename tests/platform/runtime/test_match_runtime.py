@@ -3049,7 +3049,7 @@ def test_discord_outbox_publisher_routes_approval_request_to_match_operation_thr
         [
             MATCH_APPROVAL_REQUESTED_NOTIFICATION_MESSAGE,
             "仮決定結果: チーム B の勝ち",
-            "承認締切: 2026-03-20T12:44:56+00:00",
+            "承認締切: 2026/03/20 21:44:56 JST",
             "承認できない場合は証拠を提示したうえで admin へ連絡してください。",
         ]
     )
@@ -3256,7 +3256,7 @@ def test_discord_outbox_publisher_routes_report_opened_to_match_operation_thread
             MATCH_REPORT_OPENED_NOTIFICATION_MESSAGE,
             "自分視点で「勝ち」「引き分け」「負け」を選んでください。",
             "無効試合にすべき場合は「無効試合申請」を押してください。",
-            "勝敗報告締切: 2026-03-20T12:20:00+00:00",
+            "勝敗報告締切: 2026/03/20 21:20:00 JST",
         ]
     )
 
@@ -3415,7 +3415,7 @@ def test_discord_outbox_publisher_reuses_existing_thread_for_report_opened_after
                 MATCH_REPORT_OPENED_NOTIFICATION_MESSAGE,
                 "自分視点で「勝ち」「引き分け」「負け」を選んでください。",
                 "無効試合にすべき場合は「無効試合申請」を押してください。",
-                "勝敗報告締切: 2026-03-20T12:45:00+00:00",
+                "勝敗報告締切: 2026/03/20 21:45:00 JST",
             ]
         )
     ]
@@ -3483,14 +3483,17 @@ def test_discord_outbox_publisher_routes_match_notifications_to_existing_thread(
     expected_parent_embed_message = "\n".join(
         [
             "<@84100>が親になりました。",
-            "<@84100> はフレンドパークを作成し、パークIDをこのプライベートスレッドに共有してください。",
+            (
+                "<@84100> はフレンドパークを作成し、"
+                "パークIDをこのプライベートスレッドに共有してください。"
+            ),
         ]
     )
     expected_phase_started_message = "\n".join(
         [
             MATCH_APPROVAL_STARTED_NOTIFICATION_MESSAGE,
             "仮決定結果: チーム A の勝ち",
-            "承認締切: 2026-03-20T12:34:56+00:00",
+            "承認締切: 2026/03/20 21:34:56 JST",
         ]
     )
     expected_thread_initial_message = "\n".join(
@@ -3730,7 +3733,7 @@ def test_discord_outbox_publisher_renders_match_approval_phase_started_message()
         [
             MATCH_APPROVAL_STARTED_NOTIFICATION_MESSAGE,
             "仮決定結果: チーム A の勝ち",
-            "承認締切: 2026-03-20T12:34:56+00:00",
+            "承認締切: 2026/03/20 21:34:56 JST",
         ]
     )
 
@@ -3773,7 +3776,7 @@ def test_discord_outbox_publisher_renders_match_approval_request_message() -> No
         [
             MATCH_APPROVAL_REQUESTED_NOTIFICATION_MESSAGE,
             "仮決定結果: チーム B の勝ち",
-            "承認締切: 2026-03-20T12:44:56+00:00",
+            "承認締切: 2026/03/20 21:44:56 JST",
             "承認できない場合は証拠を提示したうえで admin へ連絡してください。",
         ]
     )
@@ -3984,7 +3987,7 @@ def test_discord_outbox_publisher_renders_daily_worker_started_admin_notificatio
     expected_message = "\n".join(
         [
             "daily worker が起動しました。",
-            "開始時刻: 2026-04-05 09:00 JST",
+            "開始時刻: 2026/04/05 09:00:00 JST",
         ]
     )
 
@@ -4028,7 +4031,7 @@ def test_discord_outbox_publisher_renders_season_completed_notification() -> Non
             "シーズンの全試合が完了しました。",
             "season_id: 12",
             "season_name: 202603delta",
-            "完了時刻: 2026-04-05 09:00 JST",
+            "完了時刻: 2026/04/05 09:00:00 JST",
         ]
     )
 

@@ -243,9 +243,7 @@ class FormatSpecificMatchmakingQueueNameSelect(
         await view.select_queue_name(interaction, self.values[0])
 
 
-class FormatSpecificMatchmakingJoinButton(
-    discord.ui.Button["FormatSpecificMatchmakingPanelView"]
-):
+class FormatSpecificMatchmakingJoinButton(discord.ui.Button["FormatSpecificMatchmakingPanelView"]):
     def __init__(self, match_format: MatchFormat) -> None:
         self.match_format = match_format
         super().__init__(
@@ -726,9 +724,7 @@ async def send_initial_managed_ui_message(
             status_message=status_message,
             matchmaking_one_v_one_message=panel_messages_by_format[MatchFormat.ONE_VS_ONE],
             matchmaking_two_v_two_message=panel_messages_by_format[MatchFormat.TWO_VS_TWO],
-            matchmaking_three_v_three_message=panel_messages_by_format[
-                MatchFormat.THREE_VS_THREE
-            ],
+            matchmaking_three_v_three_message=panel_messages_by_format[MatchFormat.THREE_VS_THREE],
         )
     if ui_type is ManagedUiType.MATCHMAKING_NEWS_CHANNEL:
         return InitialManagedUiMessages(

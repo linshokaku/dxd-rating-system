@@ -105,6 +105,7 @@ from dxd_rating.platform.discord.copy.system import (
     APPLICATION_COMMAND_INTERNAL_ERROR_MESSAGE,
     SYSTEM_ANNOUNCEMENTS_CHANNEL_MESSAGE,
 )
+from dxd_rating.platform.discord.copy.time_format import format_discord_datetime
 from dxd_rating.platform.discord.gateway.commands import BotCommandHandlers, register_app_commands
 from dxd_rating.platform.discord.ui import (
     INFO_CHANNEL_LEADERBOARD_BUTTON_CUSTOM_ID,
@@ -126,7 +127,7 @@ DEFAULT_MATCHMAKING_GUIDE_URL = (
     "https://github.com/linshokaku/dxd-rating-system/blob/main/docs/README.md"
 )
 MATCHMAKING_STATUS_UPDATED_AT_PATTERN = re.compile(
-    r"^最終更新: \d{4}-\d{2}-\d{2} \d{2}:\d{2} JST$"
+    r"^最終更新: \d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2} JST$"
 )
 _MISSING = object()
 
@@ -989,7 +990,11 @@ def format_player_info_message(
                 f"wins: {wins}",
                 f"losses: {losses}",
                 f"draws: {draws}",
-                f"last_played_at: {'-' if last_played_at is None else last_played_at.isoformat()}",
+                (
+                    "last_played_at: -"
+                    if last_played_at is None
+                    else f"last_played_at: {format_discord_datetime(last_played_at)}"
+                ),
             ]
         )
     return "\n".join(lines)
@@ -1590,7 +1595,10 @@ def test_matchmaking_panel_join_button_uses_selected_values_for_join(
     assert len(channel.created_threads) == 1
     assert channel.created_threads[0].name == "在席確認-ui-queue-guild"
     assert channel.created_threads[0].added_user_ids == [discord_user_id]
-    assert_body_only_embed_message(channel.created_threads[0].sent_messages[0], JOIN_SUCCESS_MESSAGE)
+    assert_body_only_embed_message(
+        channel.created_threads[0].sent_messages[0],
+        JOIN_SUCCESS_MESSAGE,
+    )
     assert [message.content for message in channel.created_threads[0].sent_messages] == [
         "キューに参加しました。5分間マッチングします。"
     ]
@@ -8215,12 +8223,10 @@ def test_admin_setup_custom_ui_channel_creates_matchmaking_channel_with_placehol
     assert managed_ui_channel.status_message_id == persisted_channel.sent_messages[1].id
     assert managed_ui_channel.message_id is None
     assert (
-        managed_ui_channel.matchmaking_one_v_one_message_id
-        == persisted_channel.sent_messages[2].id
+        managed_ui_channel.matchmaking_one_v_one_message_id == persisted_channel.sent_messages[2].id
     )
     assert (
-        managed_ui_channel.matchmaking_two_v_two_message_id
-        == persisted_channel.sent_messages[3].id
+        managed_ui_channel.matchmaking_two_v_two_message_id == persisted_channel.sent_messages[3].id
     )
     assert (
         managed_ui_channel.matchmaking_three_v_three_message_id

@@ -6,6 +6,7 @@ from dxd_rating.contexts.leaderboard.application import (
 )
 from dxd_rating.contexts.players.application import PlayerInfo
 from dxd_rating.contexts.ui.application import InfoThreadCommandName
+from dxd_rating.platform.discord.copy.time_format import format_discord_datetime
 
 # 情報確認チャンネルの UI 本文
 INFO_CHANNEL_MESSAGE = "\n".join(
@@ -131,6 +132,7 @@ INFO_THREAD_INITIAL_MESSAGES = {
     ),
 }
 
+
 # 情報確認文言の組み立て関数
 def build_info_thread_initial_message(command_name: InfoThreadCommandName) -> str:
     return INFO_THREAD_INITIAL_MESSAGES[command_name]
@@ -153,7 +155,7 @@ def build_player_info_message(
         last_played_at = (
             "-"
             if format_stats.last_played_at is None
-            else format_stats.last_played_at.isoformat()
+            else format_discord_datetime(format_stats.last_played_at)
         )
         lines.extend(
             [

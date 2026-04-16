@@ -6,7 +6,6 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import NoReturn, Protocol, cast
-from zoneinfo import ZoneInfo
 
 import discord
 
@@ -43,6 +42,7 @@ from dxd_rating.platform.discord.copy.system import (
     build_season_completed_message,
     build_season_top_rankings_message,
 )
+from dxd_rating.platform.discord.copy.time_format import format_discord_datetime
 from dxd_rating.platform.discord.message_embeds import (
     PUBLIC_MESSAGE_ALLOWED_MENTIONS,
     build_body_only_public_message_send_kwargs,
@@ -64,8 +64,6 @@ from dxd_rating.platform.runtime.outbox import (
     PendingOutboxEvent,
 )
 from dxd_rating.shared.constants import format_discord_user_mention, is_dummy_discord_user_id
-
-JST = ZoneInfo("Asia/Tokyo")
 
 
 class DiscordSendableChannel(Protocol):
@@ -363,17 +361,20 @@ class DiscordOutboxEventPublisher:
         event: PendingOutboxEvent,
         channel: DiscordSendableChannel,
     ) -> bool:
-        return event.event_type in {
-            OutboxEventType.PRESENCE_REMINDER,
-            OutboxEventType.QUEUE_EXPIRED,
-        } or self._is_presence_thread_match_created_event(
-            event=event,
-            channel=channel,
-        ) or self._is_match_approval_requested_notification_event(
-            event
-        ) or self._is_match_auto_penalty_notification_event(
-            event
-        ) or self._is_match_admin_review_required_notification_event(event)
+        return (
+            event.event_type
+            in {
+                OutboxEventType.PRESENCE_REMINDER,
+                OutboxEventType.QUEUE_EXPIRED,
+            }
+            or self._is_presence_thread_match_created_event(
+                event=event,
+                channel=channel,
+            )
+            or self._is_match_approval_requested_notification_event(event)
+            or self._is_match_auto_penalty_notification_event(event)
+            or self._is_match_admin_review_required_notification_event(event)
+        )
 
     def _render_channel_notification_content(self, event: PendingOutboxEvent) -> str | None:
         if event.event_type not in {
@@ -821,20 +822,18 @@ class DiscordOutboxEventPublisher:
             )
 
         occurred_at = self._parse_admin_operations_notification_occurred_at(payload)
-        localized_occurred_at = occurred_at.astimezone(JST)
         return build_admin_operations_daily_worker_started_message(
-            f"{localized_occurred_at:%Y-%m-%d %H:%M JST}"
+            format_discord_datetime(occurred_at)
         )
 
     def _render_season_completed_content(self, payload: dict[str, object]) -> str:
         season_id = self._require_payload_int(payload, "season_id")
         season_name = self._require_payload_str(payload, "season_name")
         completed_at = self._parse_season_completed_at(payload)
-        localized_completed_at = completed_at.astimezone(JST)
         return build_season_completed_message(
             season_id,
             season_name,
-            f"{localized_completed_at:%Y-%m-%d %H:%M JST}",
+            format_discord_datetime(completed_at),
         )
 
     def _render_season_top_rankings_content(self, payload: dict[str, object]) -> str:
@@ -843,7 +842,9 @@ class DiscordOutboxEventPublisher:
         match_format = self._require_payload_str(payload, "match_format")
         self._parse_season_completed_at(payload)
         entries = self._get_season_top_ranking_entries(payload, "entries")
-        ranking_lines = [f"{entry.rank} / {entry.display_name} / {entry.rating:.2f}" for entry in entries]
+        ranking_lines = [
+            f"{entry.rank} / {entry.display_name} / {entry.rating:.2f}" for entry in entries
+        ]
         item_range = None if not entries else f"{entries[0].rank}-{entries[-1].rank}"
         return build_season_top_rankings_message(
             season_id=season_id,
@@ -1071,11 +1072,12 @@ class DiscordOutboxEventPublisher:
         self,
         event: PendingOutboxEvent,
     ) -> bool:
-        return event.event_type == OutboxEventType.MATCH_PARENT_ASSIGNED or (
-            self._is_match_approval_requested_notification_event(event)
-        ) or self._is_match_auto_penalty_notification_event(
-            event
-        ) or self._is_match_admin_review_required_notification_event(event)
+        return (
+            event.event_type == OutboxEventType.MATCH_PARENT_ASSIGNED
+            or (self._is_match_approval_requested_notification_event(event))
+            or self._is_match_auto_penalty_notification_event(event)
+            or self._is_match_admin_review_required_notification_event(event)
+        )
 
     def _should_send_body_only_embed_for_event(self, event: PendingOutboxEvent) -> bool:
         if event.event_type == OutboxEventType.MATCH_REPORT_OPENED:
@@ -1149,8 +1151,8 @@ class DiscordOutboxEventPublisher:
 
     def _render_match_report_opened_content(self, payload: dict[str, object]) -> str:
         self._require_payload_int(payload, "match_id")
-        report_deadline_at = self._require_payload_str(payload, "report_deadline_at")
-        return build_match_report_opened_content(report_deadline_at)
+        report_deadline_at = self._parse_utc_payload_datetime(payload, "report_deadline_at")
+        return build_match_report_opened_content(format_discord_datetime(report_deadline_at))
 
     def _build_match_operation_thread_event_view(
         self,
@@ -1186,16 +1188,17 @@ class DiscordOutboxEventPublisher:
         self._require_payload_int(payload, "match_id")
         phase_started = self._require_payload_bool_with_default(payload, "phase_started", False)
         provisional_result = self._require_payload_str(payload, "provisional_result")
-        approval_deadline_at = self._require_payload_str(payload, "approval_deadline_at")
+        approval_deadline_at = self._parse_utc_payload_datetime(payload, "approval_deadline_at")
+        formatted_approval_deadline_at = format_discord_datetime(approval_deadline_at)
         if phase_started:
             return build_match_approval_started_content(
                 self._format_match_result_label(provisional_result),
-                approval_deadline_at,
+                formatted_approval_deadline_at,
             )
 
         return build_match_approval_requested_content(
             self._format_match_result_label(provisional_result),
-            approval_deadline_at,
+            formatted_approval_deadline_at,
         )
 
     def _is_match_approval_requested_notification_event(
@@ -1539,42 +1542,33 @@ class DiscordOutboxEventPublisher:
         self,
         payload: dict[str, object],
     ) -> datetime:
-        occurred_at = self._require_payload_str(payload, "occurred_at")
-        try:
-            parsed = datetime.fromisoformat(occurred_at)
-        except ValueError:
-            self._raise_publish_error(
-                f"Outbox payload 'occurred_at' must be an ISO 8601 datetime: {occurred_at!r}"
-            )
-
-        if parsed.tzinfo is None or parsed.utcoffset() is None:
-            self._raise_publish_error(
-                f"Outbox payload 'occurred_at' must be timezone-aware UTC: {occurred_at!r}"
-            )
-        if parsed.utcoffset() != timedelta(0):
-            self._raise_publish_error(f"Outbox payload 'occurred_at' must be UTC: {occurred_at!r}")
-        return parsed
+        return self._parse_utc_payload_datetime(payload, "occurred_at")
 
     def _parse_season_completed_at(
         self,
         payload: dict[str, object],
     ) -> datetime:
-        completed_at = self._require_payload_str(payload, "completed_at")
+        return self._parse_utc_payload_datetime(payload, "completed_at")
+
+    def _parse_utc_payload_datetime(
+        self,
+        payload: dict[str, object],
+        key: str,
+    ) -> datetime:
+        value = self._require_payload_str(payload, key)
         try:
-            parsed = datetime.fromisoformat(completed_at)
+            parsed = datetime.fromisoformat(value)
         except ValueError:
             self._raise_publish_error(
-                f"Outbox payload 'completed_at' must be an ISO 8601 datetime: {completed_at!r}"
+                f"Outbox payload '{key}' must be an ISO 8601 datetime: {value!r}"
             )
 
         if parsed.tzinfo is None or parsed.utcoffset() is None:
             self._raise_publish_error(
-                f"Outbox payload 'completed_at' must be timezone-aware UTC: {completed_at!r}"
+                f"Outbox payload '{key}' must be timezone-aware UTC: {value!r}"
             )
         if parsed.utcoffset() != timedelta(0):
-            self._raise_publish_error(
-                f"Outbox payload 'completed_at' must be UTC: {completed_at!r}"
-            )
+            self._raise_publish_error(f"Outbox payload '{key}' must be UTC: {value!r}")
         return parsed
 
     def _require_destination(self, payload: dict[str, object]) -> NotificationDestination:

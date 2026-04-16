@@ -90,12 +90,15 @@ PENALTY_TYPE_LABELS = {
     PenaltyType.DISCONNECT: "切断",
 }
 _MATCH_RESULT_VALUE_LABELS = {result.value: label for result, label in MATCH_RESULT_LABELS.items()}
-_PENALTY_TYPE_VALUE_LABELS = {penalty_type.value: label for penalty_type, label in PENALTY_TYPE_LABELS.items()}
+_PENALTY_TYPE_VALUE_LABELS = {
+    penalty_type.value: label for penalty_type, label in PENALTY_TYPE_LABELS.items()
+}
 _ADMIN_REVIEW_REASON_LABELS = {
     "low_report_count": "勝敗報告を行ったプレイヤーが 2 人以下です",
     "single_team_reports": "勝敗報告が片方のチームに偏っています",
     "unresolved_tie": "同票が解消できませんでした",
 }
+
 
 # 試合文言の組み立て関数
 def get_match_result_label(value: MatchResult | str) -> str:
@@ -122,10 +125,7 @@ def build_match_spectate_success_message(
     active_spectator_count: int,
     max_spectators: int,
 ) -> str:
-    return (
-        "観戦応募を受け付けました。"
-        f"現在 {active_spectator_count} / {max_spectators} 人です。"
-    )
+    return f"観戦応募を受け付けました。現在 {active_spectator_count} / {max_spectators} 人です。"
 
 
 def build_match_operation_thread_initial_content(

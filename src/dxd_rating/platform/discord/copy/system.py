@@ -15,6 +15,7 @@ ADMIN_OPERATIONS_DAILY_WORKER_STARTED_MESSAGE = "daily worker が起動しまし
 SEASON_COMPLETED_MESSAGE = "シーズンの全試合が完了しました。"
 SEASON_TOP_RANKINGS_MESSAGE = "シーズン最終順位表"
 
+
 # 運用通知の組み立て関数
 def build_admin_operations_daily_worker_started_message(started_at: str) -> str:
     return "\n".join(

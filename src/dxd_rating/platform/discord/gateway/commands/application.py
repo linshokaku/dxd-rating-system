@@ -3079,9 +3079,7 @@ class BotCommandHandlers:
     async def dev_is_admin(self, interaction: discord.Interaction[Any]) -> None:
         await self._sync_requesting_user_identity(interaction)
         try:
-            message = build_dev_is_admin_message(
-                is_super_admin(interaction.user.id, self.settings)
-            )
+            message = build_dev_is_admin_message(is_super_admin(interaction.user.id, self.settings))
         except Exception:
             self.logger.exception(
                 "Failed to execute /dev_is_admin command discord_user_id=%s",

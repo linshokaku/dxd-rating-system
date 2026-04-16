@@ -580,6 +580,21 @@ def assert_response_sequence(
     assert interaction.response.ephemeral_flags == expected_ephemeral_flags
 
 
+def assert_public_embed_response(
+    interaction: FakeInteraction,
+    index: int,
+    *,
+    expected_content: str,
+    expected_body: str,
+    ephemeral: bool = False,
+) -> None:
+    assert interaction.response.messages[index] == expected_content
+    assert interaction.response.raw_messages[index] == expected_content
+    assert interaction.response.embeds[index] is not None
+    assert interaction.response.embeds[index].description == expected_body
+    assert interaction.response.ephemeral_flags[index] is ephemeral
+
+
 def assert_body_only_embed_message(message: FakeMessage, expected_body: str) -> None:
     assert message.raw_content is None
     assert message.embed is not None
@@ -9288,17 +9303,29 @@ def test_admin_restrict_and_unrestrict_user_commands_manage_restrictions(
         restrict_interaction,
         [
             "指定したユーザーのキュー参加を7日制限しました。",
-            f"<@{target_discord_user_id}> のキュー参加を7日制限しました。",
+            f"<@{target_discord_user_id}>",
         ],
         [True, False],
+    )
+    assert_public_embed_response(
+        restrict_interaction,
+        1,
+        expected_content=f"<@{target_discord_user_id}>",
+        expected_body="キュー参加を7日制限しました。",
     )
     assert_response_sequence(
         unrestrict_interaction,
         [
             "指定したユーザーのキュー参加制限を解除しました。",
-            f"<@{target_discord_user_id}> のキュー参加制限を解除しました。",
+            f"<@{target_discord_user_id}>",
         ],
         [True, False],
+    )
+    assert_public_embed_response(
+        unrestrict_interaction,
+        1,
+        expected_content=f"<@{target_discord_user_id}>",
+        expected_body="キュー参加制限を解除しました。",
     )
     assert restriction is not None
     assert restriction.restriction_type == PlayerAccessRestrictionType.QUEUE_JOIN
@@ -9343,9 +9370,15 @@ def test_admin_restrict_user_accepts_dummy_user_reference(
         interaction,
         [
             "指定したユーザーの観戦を1日制限しました。",
-            f"<dummy_{target_discord_user_id}> の観戦を1日制限しました。",
+            f"<dummy_{target_discord_user_id}>",
         ],
         [True, False],
+    )
+    assert_public_embed_response(
+        interaction,
+        1,
+        expected_content=f"<dummy_{target_discord_user_id}>",
+        expected_body="観戦を1日制限しました。",
     )
     assert restriction is not None
     assert restriction.restriction_type == PlayerAccessRestrictionType.SPECTATE
@@ -9403,9 +9436,15 @@ def test_admin_add_penalty_accepts_dummy_user_reference(
         interaction,
         [
             "ペナルティを加算しました。",
-            f"<dummy_{target_discord_user_id}> の遅刻ペナルティを+1しました。現在の累積: 1",
+            f"<dummy_{target_discord_user_id}>",
         ],
         [True, False],
+    )
+    assert_public_embed_response(
+        interaction,
+        1,
+        expected_content=f"<dummy_{target_discord_user_id}>",
+        expected_body="遅刻ペナルティを+1しました。現在の累積: 1",
     )
     assert penalty is not None
     assert penalty.count == 1
@@ -9785,9 +9824,15 @@ def test_common_runner_sends_executor_and_public_followups_for_admin_penalty(
         interaction,
         [
             "ペナルティを加算しました。",
-            f"<dummy_{target_discord_user_id}> の遅刻ペナルティを+1しました。現在の累積: 1",
+            f"<dummy_{target_discord_user_id}>",
         ],
         [True, False],
+    )
+    assert_public_embed_response(
+        interaction,
+        1,
+        expected_content=f"<dummy_{target_discord_user_id}>",
+        expected_body="遅刻ペナルティを+1しました。現在の累積: 1",
     )
     assert interaction.response.defer_call_count == 1
     assert interaction.response.send_message_call_count == 0

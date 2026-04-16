@@ -125,12 +125,10 @@ def build_admin_restriction_executor_message(
 
 
 def build_admin_restriction_public_message(
-    target_label: str,
     restriction_type: PlayerAccessRestrictionType,
     duration: PlayerAccessRestrictionDuration,
 ) -> str:
     return (
-        f"{target_label} の"
         f"{PLAYER_ACCESS_RESTRICTION_TYPE_LABELS[restriction_type]}を"
         f"{PLAYER_ACCESS_RESTRICTION_DURATION_LABELS[duration]}制限しました。"
     )
@@ -146,24 +144,20 @@ def build_admin_unrestriction_executor_message(
 
 
 def build_admin_unrestriction_public_message(
-    target_label: str,
     restriction_type: PlayerAccessRestrictionType,
 ) -> str:
     return (
-        f"{target_label} の"
         f"{PLAYER_ACCESS_RESTRICTION_TYPE_LABELS[restriction_type]}制限を解除しました。"
     )
 
 
 def build_admin_penalty_public_message(
-    target_label: str,
     penalty_label: str,
     delta: int,
     count: int,
 ) -> str:
     adjustment = "+1" if delta > 0 else "-1"
     return (
-        f"{target_label} の"
         f"{penalty_label}ペナルティを{adjustment}しました。"
         f"現在の累積: {count}"
     )
@@ -185,4 +179,3 @@ def build_managed_ui_permission_message(
     if forbidden_detail is not None:
         parts.append(forbidden_detail)
     return " ".join(parts)
-

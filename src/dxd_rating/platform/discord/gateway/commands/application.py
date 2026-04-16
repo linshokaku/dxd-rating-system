@@ -376,6 +376,7 @@ from dxd_rating.platform.discord.copy.system import APPLICATION_COMMAND_INTERNAL
 from dxd_rating.platform.discord.message_embeds import (
     build_body_only_public_message_edit_kwargs,
     build_body_only_public_message_send_kwargs,
+    build_public_message_send_kwargs,
 )
 from dxd_rating.platform.discord.ui import (
     INFO_THREAD_LEADERBOARD_SEASON_MAX_OPTIONS,
@@ -2445,9 +2446,11 @@ class BotCommandHandlers:
         await self._send_success_message_with_public_followup(
             interaction,
             executor_message=executor_message,
-            public_message=self._format_admin_restriction_public_message(
+            public_notification_content=self._format_admin_target_display(
                 target_discord_user_id=target_discord_user_id,
                 target_user=target_user,
+            ),
+            public_message=self._format_admin_restriction_public_message(
                 restriction_type=resolved_restriction_type,
                 duration=resolved_duration,
             ),
@@ -2517,9 +2520,11 @@ class BotCommandHandlers:
         await self._send_success_message_with_public_followup(
             interaction,
             executor_message=executor_message,
-            public_message=self._format_admin_unrestriction_public_message(
+            public_notification_content=self._format_admin_target_display(
                 target_discord_user_id=target_discord_user_id,
                 target_user=target_user,
+            ),
+            public_message=self._format_admin_unrestriction_public_message(
                 restriction_type=resolved_restriction_type,
             ),
         )
@@ -3399,9 +3404,11 @@ class BotCommandHandlers:
         await self._send_success_message_with_public_followup(
             interaction,
             executor_message=success_message,
-            public_message=self._format_admin_penalty_public_message(
+            public_notification_content=self._format_admin_target_display(
                 target_discord_user_id=target_discord_user_id,
                 target_user=target_user,
+            ),
+            public_message=self._format_admin_penalty_public_message(
                 penalty_type=penalty_type,
                 delta=delta,
                 count=result.count,
@@ -3760,17 +3767,10 @@ class BotCommandHandlers:
     def _format_admin_restriction_public_message(
         self,
         *,
-        target_discord_user_id: int,
-        target_user: DiscordUserLike | None,
         restriction_type: PlayerAccessRestrictionType,
         duration: PlayerAccessRestrictionDuration,
     ) -> str:
-        target_label = self._format_admin_target_display(
-            target_discord_user_id=target_discord_user_id,
-            target_user=target_user,
-        )
         return build_admin_restriction_public_message(
-            target_label,
             restriction_type,
             duration,
         )
@@ -3778,34 +3778,20 @@ class BotCommandHandlers:
     def _format_admin_unrestriction_public_message(
         self,
         *,
-        target_discord_user_id: int,
-        target_user: DiscordUserLike | None,
         restriction_type: PlayerAccessRestrictionType,
     ) -> str:
-        target_label = self._format_admin_target_display(
-            target_discord_user_id=target_discord_user_id,
-            target_user=target_user,
-        )
         return build_admin_unrestriction_public_message(
-            target_label,
             restriction_type,
         )
 
     def _format_admin_penalty_public_message(
         self,
         *,
-        target_discord_user_id: int,
-        target_user: DiscordUserLike | None,
         penalty_type: PenaltyType,
         delta: int,
         count: int,
     ) -> str:
-        target_label = self._format_admin_target_display(
-            target_discord_user_id=target_discord_user_id,
-            target_user=target_user,
-        )
         return build_admin_penalty_public_message(
-            target_label,
             get_penalty_type_label(penalty_type),
             delta,
             count,
@@ -5129,14 +5115,15 @@ class BotCommandHandlers:
         interaction: discord.Interaction[Any],
         *,
         executor_message: str,
+        public_notification_content: str | None = None,
         public_message: str,
     ) -> None:
         await self._send_executor_operation_message(interaction, executor_message)
         try:
-            await self._send_message(
+            await self._send_public_message(
                 interaction,
+                public_notification_content,
                 public_message,
-                ephemeral=False,
                 mark_executor_response=False,
             )
         except Exception:
@@ -5147,6 +5134,34 @@ class BotCommandHandlers:
                 interaction.channel_id,
                 interaction.guild_id,
             )
+
+    async def _send_public_message(
+        self,
+        interaction: discord.Interaction[Any],
+        notification_content: str | None,
+        message: str,
+        *,
+        mark_executor_response: bool = True,
+    ) -> None:
+        send_kwargs = build_public_message_send_kwargs(notification_content, message)
+        interaction_context = self._get_interaction_response_context(interaction)
+        if interaction_context is not None and interaction_context.deferred:
+            await interaction.followup.send(ephemeral=False, **send_kwargs)
+            if mark_executor_response:
+                interaction_context.executor_response_sent = True
+            return
+
+        response = interaction.response
+        is_done = getattr(response, "is_done", None)
+        if callable(is_done) and is_done():
+            await interaction.followup.send(ephemeral=False, **send_kwargs)
+            if interaction_context is not None and mark_executor_response:
+                interaction_context.executor_response_sent = True
+            return
+
+        await response.send_message(ephemeral=False, **send_kwargs)
+        if interaction_context is not None and mark_executor_response:
+            interaction_context.executor_response_sent = True
 
     async def _send_success_message_with_public_body_only_followup(
         self,

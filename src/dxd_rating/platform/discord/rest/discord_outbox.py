@@ -46,6 +46,7 @@ from dxd_rating.platform.discord.copy.system import (
 from dxd_rating.platform.discord.message_embeds import (
     PUBLIC_MESSAGE_ALLOWED_MENTIONS,
     build_body_only_public_message_send_kwargs,
+    build_public_message_send_kwargs,
 )
 from dxd_rating.platform.discord.ui import (
     MatchmakingNewsMatchAnnouncementInteractionHandler,
@@ -231,7 +232,16 @@ class DiscordOutboxEventPublisher:
         if match_operation_thread is not None:
             content = self._render_content(event.event_type, event.payload)
             view = self._build_match_operation_thread_event_view(event)
-            if self._should_send_body_only_embed_for_thread_event(event):
+            if self._should_send_public_embed_with_notification_content_for_thread_event(event):
+                await match_operation_thread.send(
+                    **build_public_message_send_kwargs(
+                        self._render_thread_notification_content(event),
+                        content,
+                        allowed_mentions=self._allowed_mentions,
+                        view=view,
+                    )
+                )
+            elif self._should_send_body_only_embed_for_thread_event(event):
                 await match_operation_thread.send(
                     **build_body_only_public_message_send_kwargs(
                         content,
@@ -316,7 +326,19 @@ class DiscordOutboxEventPublisher:
         content = await self._render_channel_content(event=event, channel=channel)
         view = self._build_channel_view(event=event, channel=channel)
         try:
-            if self._should_send_body_only_embed_for_channel_event(event=event, channel=channel):
+            if self._should_send_public_embed_with_notification_content_for_channel_event(
+                event=event,
+                channel=channel,
+            ):
+                await channel.send(
+                    **build_public_message_send_kwargs(
+                        self._render_channel_notification_content(event),
+                        self._render_channel_embed_body(event, content),
+                        allowed_mentions=self._allowed_mentions,
+                        view=view,
+                    )
+                )
+            elif self._should_send_body_only_embed_for_channel_event(event=event, channel=channel):
                 await channel.send(
                     **build_body_only_public_message_send_kwargs(
                         content,
@@ -334,6 +356,59 @@ class DiscordOutboxEventPublisher:
             raise NonRetryableOutboxPublishError(
                 f"Discord channel was deleted before send: {destination.channel_id}"
             ) from exc
+
+    def _should_send_public_embed_with_notification_content_for_channel_event(
+        self,
+        *,
+        event: PendingOutboxEvent,
+        channel: DiscordSendableChannel,
+    ) -> bool:
+        return event.event_type in {
+            OutboxEventType.PRESENCE_REMINDER,
+            OutboxEventType.QUEUE_EXPIRED,
+        } or self._is_presence_thread_match_created_event(
+            event=event,
+            channel=channel,
+        ) or self._is_match_approval_requested_notification_event(
+            event
+        ) or self._is_match_auto_penalty_notification_event(
+            event
+        ) or self._is_match_admin_review_required_notification_event(event)
+
+    def _render_channel_notification_content(self, event: PendingOutboxEvent) -> str | None:
+        if event.event_type not in {
+            OutboxEventType.PRESENCE_REMINDER,
+            OutboxEventType.QUEUE_EXPIRED,
+            OutboxEventType.MATCH_CREATED,
+            OutboxEventType.MATCH_APPROVAL_REQUESTED,
+            OutboxEventType.MATCH_FINALIZED,
+            OutboxEventType.MATCH_ADMIN_REVIEW_REQUIRED,
+        }:
+            return None
+
+        if self._is_match_approval_requested_notification_event(event):
+            return self._render_match_approval_requested_notification_content(event.payload)
+        if self._is_match_auto_penalty_notification_event(event):
+            return self._render_match_auto_penalty_notification_content(event.payload)
+        if self._is_match_admin_review_required_notification_event(event):
+            return self._render_match_admin_review_required_notification_content(event.payload)
+
+        mention_discord_user_id = self._require_payload_int(
+            event.payload,
+            "mention_discord_user_id",
+        )
+        return format_discord_user_mention(mention_discord_user_id)
+
+    def _render_channel_embed_body(
+        self,
+        event: PendingOutboxEvent,
+        content: str,
+    ) -> str:
+        if event.event_type == OutboxEventType.PRESENCE_REMINDER:
+            return PRESENCE_REMINDER_NOTIFICATION_MESSAGE
+        if event.event_type == OutboxEventType.QUEUE_EXPIRED:
+            return QUEUE_EXPIRED_NOTIFICATION_MESSAGE
+        return content
 
     async def _send_direct_message_notification(
         self,
@@ -391,13 +466,17 @@ class DiscordOutboxEventPublisher:
                 )
             )
             await thread.send(
-                self._render_match_operation_thread_parent_recruitment_content(context),
-                allowed_mentions=self._allowed_mentions,
-                view=self._build_match_operation_thread_parent_recruitment_view(context),
+                **build_body_only_public_message_send_kwargs(
+                    self._render_match_operation_thread_parent_recruitment_content(context),
+                    allowed_mentions=self._allowed_mentions,
+                    view=self._build_match_operation_thread_parent_recruitment_view(context),
+                )
             )
             await thread.send(
-                self._render_match_operation_thread_self_introduction_content(context),
-                allowed_mentions=self._allowed_mentions,
+                **build_body_only_public_message_send_kwargs(
+                    self._render_match_operation_thread_self_introduction_content(context),
+                    allowed_mentions=self._allowed_mentions,
+                )
             )
         except Exception:
             self.logger.exception(
@@ -879,26 +958,32 @@ class DiscordOutboxEventPublisher:
         event: PendingOutboxEvent,
         channel: DiscordSendableChannel,
     ) -> str:
-        if (
+        if self._is_presence_thread_match_created_event(event=event, channel=channel):
+            return await self._render_presence_thread_match_created_content(event.payload)
+
+        return self._render_content(event.event_type, event.payload)
+
+    def _is_presence_thread_match_created_event(
+        self,
+        *,
+        event: PendingOutboxEvent,
+        channel: DiscordSendableChannel,
+    ) -> bool:
+        return (
             event.event_type == OutboxEventType.MATCH_CREATED
             and self._is_thread_like_channel(channel)
             and "mention_discord_user_id" in event.payload
             and "match_operation_thread_parent_channel_id" in event.payload
-        ):
-            return await self._render_presence_thread_match_created_content(event.payload)
-
-        return self._render_content(event.event_type, event.payload)
+        )
 
     async def _render_presence_thread_match_created_content(
         self,
         payload: dict[str, object],
     ) -> str:
-        mention_discord_user_id = self._require_payload_int(payload, "mention_discord_user_id")
         match_operation_thread = await self._resolve_match_operation_thread_from_payload(payload)
         return "\n".join(
             [
-                f"{format_discord_user_mention(mention_discord_user_id)} "
-                f"{MATCH_CREATED_NOTIFICATION_MESSAGE}",
+                MATCH_CREATED_NOTIFICATION_MESSAGE,
                 build_match_operation_thread_routing_message(f"<#{match_operation_thread.id}>"),
             ]
         )
@@ -982,6 +1067,16 @@ class DiscordOutboxEventPublisher:
     def _should_send_body_only_embed_for_thread_event(self, event: PendingOutboxEvent) -> bool:
         return self._should_send_body_only_embed_for_event(event)
 
+    def _should_send_public_embed_with_notification_content_for_thread_event(
+        self,
+        event: PendingOutboxEvent,
+    ) -> bool:
+        return event.event_type == OutboxEventType.MATCH_PARENT_ASSIGNED or (
+            self._is_match_approval_requested_notification_event(event)
+        ) or self._is_match_auto_penalty_notification_event(
+            event
+        ) or self._is_match_admin_review_required_notification_event(event)
+
     def _should_send_body_only_embed_for_event(self, event: PendingOutboxEvent) -> bool:
         if event.event_type == OutboxEventType.MATCH_REPORT_OPENED:
             return True
@@ -1031,13 +1126,26 @@ class DiscordOutboxEventPublisher:
     def _render_match_parent_assigned_content(self, payload: dict[str, object]) -> str:
         self._require_payload_int(payload, "match_id")
         parent_discord_user_id = self._require_payload_int(payload, "parent_discord_user_id")
-        report_open_at = self._require_payload_str(payload, "report_open_at")
-        report_deadline_at = self._require_payload_str(payload, "report_deadline_at")
         return build_match_parent_assigned_content(
             format_discord_user_mention(parent_discord_user_id),
-            report_open_at,
-            report_deadline_at,
         )
+
+    def _render_thread_notification_content(self, event: PendingOutboxEvent) -> str | None:
+        if event.event_type == OutboxEventType.MATCH_PARENT_ASSIGNED:
+            parent_discord_user_id = self._require_payload_int(
+                event.payload,
+                "parent_discord_user_id",
+            )
+            return format_discord_user_mention(parent_discord_user_id)
+
+        if self._is_match_approval_requested_notification_event(event):
+            return self._render_match_approval_requested_notification_content(event.payload)
+        if self._is_match_auto_penalty_notification_event(event):
+            return self._render_match_auto_penalty_notification_content(event.payload)
+        if self._is_match_admin_review_required_notification_event(event):
+            return self._render_match_admin_review_required_notification_content(event.payload)
+
+        return None
 
     def _render_match_report_opened_content(self, payload: dict[str, object]) -> str:
         self._require_payload_int(payload, "match_id")
@@ -1085,6 +1193,37 @@ class DiscordOutboxEventPublisher:
                 approval_deadline_at,
             )
 
+        return build_match_approval_requested_content(
+            self._format_match_result_label(provisional_result),
+            approval_deadline_at,
+        )
+
+    def _is_match_approval_requested_notification_event(
+        self,
+        event: PendingOutboxEvent,
+    ) -> bool:
+        return event.event_type == OutboxEventType.MATCH_APPROVAL_REQUESTED and (
+            not self._require_payload_bool_with_default(event.payload, "phase_started", False)
+        )
+
+    def _is_match_auto_penalty_notification_event(
+        self,
+        event: PendingOutboxEvent,
+    ) -> bool:
+        return event.event_type == OutboxEventType.MATCH_FINALIZED and (
+            self._require_payload_bool_with_default(event.payload, "auto_penalty_applied", False)
+        )
+
+    def _is_match_admin_review_required_notification_event(
+        self,
+        event: PendingOutboxEvent,
+    ) -> bool:
+        return event.event_type == OutboxEventType.MATCH_ADMIN_REVIEW_REQUIRED
+
+    def _render_match_approval_requested_notification_content(
+        self,
+        payload: dict[str, object],
+    ) -> str:
         approval_target_discord_user_ids = payload.get("approval_target_discord_user_ids")
         if approval_target_discord_user_ids is not None:
             approval_target_mentions = [
@@ -1098,15 +1237,17 @@ class DiscordOutboxEventPublisher:
                 self._raise_publish_error(
                     "match_approval_requested payload approval targets must not be empty"
                 )
-            mention_text = " ".join(approval_target_mentions)
-        else:
-            mention_discord_user_id = self._require_payload_int(payload, "mention_discord_user_id")
-            mention_text = format_discord_user_mention(mention_discord_user_id)
-        return build_match_approval_requested_content(
-            mention_text,
-            self._format_match_result_label(provisional_result),
-            approval_deadline_at,
-        )
+            return " ".join(approval_target_mentions)
+
+        mention_discord_user_id = self._require_payload_int(payload, "mention_discord_user_id")
+        return format_discord_user_mention(mention_discord_user_id)
+
+    def _render_match_auto_penalty_notification_content(
+        self,
+        payload: dict[str, object],
+    ) -> str:
+        mention_discord_user_id = self._require_payload_int(payload, "mention_discord_user_id")
+        return format_discord_user_mention(mention_discord_user_id)
 
     def _render_match_finalized_content(self, payload: dict[str, object]) -> str:
         self._require_payload_int(payload, "match_id")
@@ -1117,12 +1258,9 @@ class DiscordOutboxEventPublisher:
         )
         final_result = self._require_payload_str(payload, "final_result")
         if auto_penalty_applied:
-            mention_discord_user_id = self._require_payload_int(payload, "mention_discord_user_id")
             penalty_type = self._require_payload_str(payload, "penalty_type")
             penalty_count = self._require_payload_int(payload, "penalty_count")
-            mention_text = format_discord_user_mention(mention_discord_user_id)
             return build_match_finalized_auto_penalty_content(
-                mention_text,
                 self._format_match_result_label(final_result),
                 self._format_penalty_type_label(penalty_type),
                 penalty_count,
@@ -1140,14 +1278,20 @@ class DiscordOutboxEventPublisher:
         final_result = self._require_payload_str(payload, "final_result")
         reasons = self._require_payload_str_list(payload, "admin_review_reasons")
         admin_discord_user_ids = self._require_payload_int_list(payload, "admin_discord_user_ids")
-        mention_prefix = " ".join(
-            format_discord_user_mention(discord_user_id)
-            for discord_user_id in admin_discord_user_ids
-        )
+        del admin_discord_user_ids
         return build_match_admin_review_required_content(
-            mention_prefix,
             self._format_match_result_label(final_result),
             [self._format_admin_review_reason_label(reason) for reason in reasons],
+        )
+
+    def _render_match_admin_review_required_notification_content(
+        self,
+        payload: dict[str, object],
+    ) -> str:
+        admin_discord_user_ids = self._require_payload_int_list(payload, "admin_discord_user_ids")
+        return " ".join(
+            format_discord_user_mention(discord_user_id)
+            for discord_user_id in admin_discord_user_ids
         )
 
     def _log_channel_guild_mismatch(

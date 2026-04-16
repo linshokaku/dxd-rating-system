@@ -61,11 +61,10 @@ from dxd_rating.platform.discord.copy.match import (
     MATCH_OPERATION_THREAD_DRAW_BUTTON_LABEL,
     MATCH_OPERATION_THREAD_LOSE_BUTTON_LABEL,
     MATCH_OPERATION_THREAD_PARENT_BUTTON_LABEL,
-    MATCH_OPERATION_THREAD_VOID_COMMAND_GUIDE_MESSAGE,
     MATCH_OPERATION_THREAD_VOID_BUTTON_LABEL,
+    MATCH_OPERATION_THREAD_VOID_COMMAND_GUIDE_MESSAGE,
     MATCH_OPERATION_THREAD_VOID_GUIDE_MESSAGE,
     MATCH_OPERATION_THREAD_WIN_BUTTON_LABEL,
-    MATCH_PARENT_ASSIGNED_NOTIFICATION_MESSAGE,
     MATCH_REPORT_OPENED_NOTIFICATION_MESSAGE,
     MATCHMAKING_NEWS_MATCH_ANNOUNCEMENT_SPECTATE_BUTTON_LABEL,
 )
@@ -450,6 +449,18 @@ def assert_body_only_public_embed(
     expected_body: str,
 ) -> None:
     assert sendable.raw_contents[index] is None
+    assert sendable.sent_embeds[index] is not None
+    assert sendable.sent_embeds[index].description == expected_body
+
+
+def assert_public_embed_with_notification_content(
+    sendable: FakeDiscordChannel | FakeDiscordThread,
+    index: int,
+    *,
+    expected_content: str,
+    expected_body: str,
+) -> None:
+    assert sendable.raw_contents[index] == expected_content
     assert sendable.sent_embeds[index] is not None
     assert sendable.sent_embeds[index].description == expected_body
 
@@ -2186,9 +2197,13 @@ def test_discord_outbox_publisher_sends_presence_reminder_to_channel_destination
         )
     )
 
-    assert channel.sent_messages == [
-        f"<@{discord_user_id}> {PRESENCE_REMINDER_NOTIFICATION_MESSAGE}"
-    ]
+    assert channel.sent_messages == [f"<@{discord_user_id}>"]
+    assert_public_embed_with_notification_content(
+        channel,
+        0,
+        expected_content=f"<@{discord_user_id}>",
+        expected_body=PRESENCE_REMINDER_NOTIFICATION_MESSAGE,
+    )
     allowed_mentions = channel.allowed_mentions_history[0]
     assert isinstance(allowed_mentions, discord.AllowedMentions)
     assert allowed_mentions.users is True
@@ -2237,7 +2252,13 @@ def test_discord_outbox_publisher_fetches_uncached_channel_for_queue_expired() -
     )
 
     assert client.fetched_channel_ids == [channel.id]
-    assert channel.sent_messages == [f"<@{discord_user_id}> {QUEUE_EXPIRED_NOTIFICATION_MESSAGE}"]
+    assert channel.sent_messages == [f"<@{discord_user_id}>"]
+    assert_public_embed_with_notification_content(
+        channel,
+        0,
+        expected_content=f"<@{discord_user_id}>",
+        expected_body=QUEUE_EXPIRED_NOTIFICATION_MESSAGE,
+    )
     allowed_mentions = channel.allowed_mentions_history[0]
     assert isinstance(allowed_mentions, discord.AllowedMentions)
     assert allowed_mentions.users is True
@@ -2350,9 +2371,13 @@ def test_discord_outbox_publisher_prefixes_channel_reminder_with_target_user_men
         )
     )
 
-    assert channel.sent_messages == [
-        f"<@{discord_user_id}> {PRESENCE_REMINDER_NOTIFICATION_MESSAGE}"
-    ]
+    assert channel.sent_messages == [f"<@{discord_user_id}>"]
+    assert_public_embed_with_notification_content(
+        channel,
+        0,
+        expected_content=f"<@{discord_user_id}>",
+        expected_body=PRESENCE_REMINDER_NOTIFICATION_MESSAGE,
+    )
 
 
 def test_discord_outbox_publisher_sends_split_match_created_events() -> None:
@@ -2721,6 +2746,8 @@ def test_discord_outbox_publisher_creates_match_operation_thread_for_match_creat
     ]
     assert created_thread.sent_messages == expected_thread_messages
     assert_body_only_public_embed(created_thread, 0, expected_thread_messages[0])
+    assert_body_only_public_embed(created_thread, 1, expected_thread_messages[1])
+    assert_body_only_public_embed(created_thread, 2, expected_thread_messages[2])
     assert len(created_thread.sent_views) == 3
     initial_view = created_thread.sent_views[0]
     assert initial_view is not None
@@ -2773,9 +2800,9 @@ def test_discord_outbox_publisher_links_presence_thread_to_match_operation_threa
         match_operation_thread_interaction_handler=FakeMatchOperationThreadInteractionHandler(),
     )
 
-    expected_presence_message = "\n".join(
+    expected_presence_body = "\n".join(
         [
-            "<@81110> マッチ成立です。",
+            "マッチ成立です。",
             "試合運営は <#9001131001> で行ってください。",
         ]
     )
@@ -2847,9 +2874,13 @@ def test_discord_outbox_publisher_links_presence_thread_to_match_operation_threa
 
     asyncio.run(scenario())
 
-    assert presence_thread.sent_messages == [expected_presence_message]
-    assert presence_thread.raw_contents == [expected_presence_message]
-    assert presence_thread.sent_embeds == [None]
+    assert presence_thread.sent_messages == ["<@81110>"]
+    assert_public_embed_with_notification_content(
+        presence_thread,
+        0,
+        expected_content="<@81110>",
+        expected_body=expected_presence_body,
+    )
     assert presence_thread.sent_views == [None]
     assert len(matchmaking_channel.created_threads) == 1
     created_thread = matchmaking_channel.created_threads[0]
@@ -2954,6 +2985,21 @@ def test_discord_outbox_publisher_reuses_existing_match_operation_thread_for_sam
             ]
         ),
     ]
+    assert_body_only_public_embed(
+        matchmaking_channel.created_threads[0],
+        0,
+        matchmaking_channel.created_threads[0].sent_messages[0],
+    )
+    assert_body_only_public_embed(
+        matchmaking_channel.created_threads[0],
+        1,
+        matchmaking_channel.created_threads[0].sent_messages[1],
+    )
+    assert_body_only_public_embed(
+        matchmaking_channel.created_threads[0],
+        2,
+        matchmaking_channel.created_threads[0].sent_messages[2],
+    )
     initial_view = matchmaking_channel.created_threads[0].sent_views[0]
     assert initial_view is not None
     assert [getattr(child, "label", None) for child in initial_view.children] == [
@@ -2999,9 +3045,9 @@ def test_discord_outbox_publisher_routes_approval_request_to_match_operation_thr
         admin_discord_user_ids=frozenset({89_003}),
     )
 
-    expected_message = "\n".join(
+    expected_body = "\n".join(
         [
-            f"<@83001> <@83002> {MATCH_APPROVAL_REQUESTED_NOTIFICATION_MESSAGE}",
+            MATCH_APPROVAL_REQUESTED_NOTIFICATION_MESSAGE,
             "仮決定結果: チーム B の勝ち",
             "承認締切: 2026-03-20T12:44:56+00:00",
             "承認できない場合は証拠を提示したうえで admin へ連絡してください。",
@@ -3039,7 +3085,13 @@ def test_discord_outbox_publisher_routes_approval_request_to_match_operation_thr
     assert len(matchmaking_channel.created_threads) == 1
     created_thread = matchmaking_channel.created_threads[0]
     assert created_thread.added_user_ids == [83_001, 83_002, 89_003]
-    assert created_thread.sent_messages == [expected_message]
+    assert created_thread.sent_messages == ["<@83001> <@83002>"]
+    assert_public_embed_with_notification_content(
+        created_thread,
+        0,
+        expected_content="<@83001> <@83002>",
+        expected_body=expected_body,
+    )
     assert created_thread.sent_views == [None]
 
 
@@ -3428,13 +3480,10 @@ def test_discord_outbox_publisher_routes_match_notifications_to_existing_thread(
             "    Player F",
         ]
     )
-    expected_parent_message = "\n".join(
+    expected_parent_embed_message = "\n".join(
         [
-            MATCH_PARENT_ASSIGNED_NOTIFICATION_MESSAGE,
-            "親: <@84100>",
-            "<@84100> はフレンドマッチの部屋を作成し、部屋IDをこのプライベートスレッドに共有してください。",
-            "勝敗報告開始: 2026-03-20T12:00:00+00:00",
-            "勝敗報告締切: 2026-03-20T12:20:00+00:00",
+            "<@84100>が親になりました。",
+            "<@84100> はフレンドパークを作成し、パークIDをこのプライベートスレッドに共有してください。",
         ]
     )
     expected_phase_started_message = "\n".join(
@@ -3466,17 +3515,16 @@ def test_discord_outbox_publisher_routes_match_notifications_to_existing_thread(
             "結果: チーム A の勝ち",
         ]
     )
-    expected_auto_penalty_message = "\n".join(
+    expected_auto_penalty_body = "\n".join(
         [
-            f"<@84105> {MATCH_AUTO_PENALTY_APPLIED_NOTIFICATION_MESSAGE}",
+            MATCH_AUTO_PENALTY_APPLIED_NOTIFICATION_MESSAGE,
             "結果: チーム A の勝ち",
             "ペナルティ: 未報告",
             "現在の累積: 2",
         ]
     )
-    expected_admin_review_message = "\n".join(
+    expected_admin_review_body = "\n".join(
         [
-            "<@89004>",
             MATCH_ADMIN_REVIEW_REQUIRED_NOTIFICATION_MESSAGE,
             "結果: チーム A の勝ち",
             "理由: 同票が解消できませんでした",
@@ -3629,17 +3677,22 @@ def test_discord_outbox_publisher_routes_match_notifications_to_existing_thread(
     assert_body_only_public_embed(announcement_channel, 0, expected_announcement_message)
     assert match_channel.sent_messages == []
     assert len(matchmaking_channel.created_threads) == 1
-    assert matchmaking_channel.created_threads[0].sent_messages[3:] == [
-        expected_parent_message,
+    assert matchmaking_channel.created_threads[0].sent_messages[4:] == [
         expected_phase_started_message,
         expected_finalized_message,
-        expected_auto_penalty_message,
-        expected_admin_review_message,
+        "<@84105>",
+        "<@89004>",
     ]
     assert_body_only_public_embed(
         matchmaking_channel.created_threads[0],
         0,
         expected_thread_initial_message,
+    )
+    assert_public_embed_with_notification_content(
+        matchmaking_channel.created_threads[0],
+        3,
+        expected_content="<@84100>",
+        expected_body=expected_parent_embed_message,
     )
     assert_body_only_public_embed(
         matchmaking_channel.created_threads[0],
@@ -3650,6 +3703,18 @@ def test_discord_outbox_publisher_routes_match_notifications_to_existing_thread(
         matchmaking_channel.created_threads[0],
         5,
         expected_finalized_message,
+    )
+    assert_public_embed_with_notification_content(
+        matchmaking_channel.created_threads[0],
+        6,
+        expected_content="<@84105>",
+        expected_body=expected_auto_penalty_body,
+    )
+    assert_public_embed_with_notification_content(
+        matchmaking_channel.created_threads[0],
+        7,
+        expected_content="<@89004>",
+        expected_body=expected_admin_review_body,
     )
 
 
@@ -3704,9 +3769,9 @@ def test_discord_outbox_publisher_renders_match_approval_request_message() -> No
     client = FakeDiscordClient(channels={channel.id: channel})
     publisher = DiscordOutboxEventPublisher(client=client)
 
-    expected_message = "\n".join(
+    expected_body = "\n".join(
         [
-            f"<@80021> {MATCH_APPROVAL_REQUESTED_NOTIFICATION_MESSAGE}",
+            MATCH_APPROVAL_REQUESTED_NOTIFICATION_MESSAGE,
             "仮決定結果: チーム B の勝ち",
             "承認締切: 2026-03-20T12:44:56+00:00",
             "承認できない場合は証拠を提示したうえで admin へ連絡してください。",
@@ -3737,9 +3802,13 @@ def test_discord_outbox_publisher_renders_match_approval_request_message() -> No
 
     asyncio.run(scenario())
 
-    assert channel.sent_messages == [expected_message]
-    assert channel.raw_contents == [expected_message]
-    assert channel.sent_embeds == [None]
+    assert channel.sent_messages == ["<@80021>"]
+    assert_public_embed_with_notification_content(
+        channel,
+        0,
+        expected_content="<@80021>",
+        expected_body=expected_body,
+    )
 
 
 def test_discord_outbox_publisher_renders_match_auto_penalty_message() -> None:
@@ -3750,9 +3819,9 @@ def test_discord_outbox_publisher_renders_match_auto_penalty_message() -> None:
     client = FakeDiscordClient(channels={channel.id: channel})
     publisher = DiscordOutboxEventPublisher(client=client)
 
-    expected_message = "\n".join(
+    expected_body = "\n".join(
         [
-            f"<@80022> {MATCH_AUTO_PENALTY_APPLIED_NOTIFICATION_MESSAGE}",
+            MATCH_AUTO_PENALTY_APPLIED_NOTIFICATION_MESSAGE,
             "結果: チーム A の勝ち",
             "ペナルティ: 誤報告",
             "現在の累積: 2",
@@ -3786,7 +3855,61 @@ def test_discord_outbox_publisher_renders_match_auto_penalty_message() -> None:
 
     asyncio.run(scenario())
 
-    assert channel.sent_messages == [expected_message]
+    assert channel.sent_messages == ["<@80022>"]
+    assert_public_embed_with_notification_content(
+        channel,
+        0,
+        expected_content="<@80022>",
+        expected_body=expected_body,
+    )
+
+
+def test_discord_outbox_publisher_renders_match_admin_review_required_message() -> None:
+    channel = FakeDiscordChannel(
+        id=900_022_1,
+        guild=FakeDiscordGuild(id=910_022_1),
+    )
+    client = FakeDiscordClient(channels={channel.id: channel})
+    publisher = DiscordOutboxEventPublisher(client=client)
+
+    expected_body = "\n".join(
+        [
+            MATCH_ADMIN_REVIEW_REQUIRED_NOTIFICATION_MESSAGE,
+            "結果: チーム B の勝ち",
+            "理由: 同票が解消できませんでした",
+        ]
+    )
+
+    async def scenario() -> None:
+        await publish_with_bound_loop(
+            publisher,
+            PendingOutboxEvent(
+                id=7_1,
+                event_type=OutboxEventType.MATCH_ADMIN_REVIEW_REQUIRED,
+                dedupe_key="match_admin_review_required:15:9000221",
+                payload={
+                    "match_id": 15,
+                    "final_result": "team_b_win",
+                    "admin_review_reasons": ["unresolved_tie"],
+                    "admin_discord_user_ids": [80_023],
+                    "destination": {
+                        "channel_id": channel.id,
+                        "guild_id": channel.guild.id,
+                    },
+                },
+                created_at=datetime.now(timezone.utc),
+            ),
+        )
+
+    asyncio.run(scenario())
+
+    assert channel.sent_messages == ["<@80023>"]
+    assert_public_embed_with_notification_content(
+        channel,
+        0,
+        expected_content="<@80023>",
+        expected_body=expected_body,
+    )
 
 
 def test_discord_outbox_publisher_renders_match_finalized_message_with_ratings() -> None:

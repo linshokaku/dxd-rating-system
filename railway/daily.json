@@ -1,0 +1,23 @@
+{
+  "$schema": "https://railway.com/railway.schema.json",
+  "build": {
+    "builder": "RAILPACK",
+    "watchPatterns": [
+      "src/**",
+      "alembic/**",
+      "railway/**",
+      "pyproject.toml",
+      "uv.lock",
+      ".python-version",
+      "alembic.ini",
+      "README.md"
+    ]
+  },
+  "deploy": {
+    "startCommand": "uv run python -m dxd_rating.apps.worker.daily",
+    "cronSchedule": "10 15 * * *",
+    "healthcheckPath": null,
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 3
+  }
+}

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import TypedDict
 
 import discord
 
@@ -20,6 +20,20 @@ class PublicMessagePayload:
     embed: discord.Embed
 
 
+class PublicMessageSendKwargs(TypedDict, total=False):
+    content: str
+    embed: discord.Embed
+    allowed_mentions: discord.AllowedMentions
+    view: discord.ui.View
+    suppress_embeds: bool
+
+
+class PublicMessageEditKwargs(TypedDict, total=False):
+    content: str | None
+    embed: discord.Embed | None
+    suppress_embeds: bool
+
+
 def build_public_message_payload(
     notification_content: str | None,
     embed_body: str,
@@ -36,7 +50,7 @@ def build_body_only_public_message_send_kwargs(
     allowed_mentions: discord.AllowedMentions | None = PUBLIC_MESSAGE_ALLOWED_MENTIONS,
     view: discord.ui.View | None = None,
     suppress_embeds_for_fallback: bool | None = None,
-) -> dict[str, object]:
+) -> PublicMessageSendKwargs:
     return build_public_message_send_kwargs(
         notification_content=None,
         embed_body=embed_body,
@@ -53,20 +67,17 @@ def build_public_message_send_kwargs(
     allowed_mentions: discord.AllowedMentions | None = PUBLIC_MESSAGE_ALLOWED_MENTIONS,
     view: discord.ui.View | None = None,
     suppress_embeds_for_fallback: bool | None = None,
-) -> dict[str, object]:
-    kwargs: dict[str, object]
+) -> PublicMessageSendKwargs:
+    kwargs: PublicMessageSendKwargs = {}
     if _should_fallback_to_plain_text(embed_body):
-        kwargs = {
-            "content": build_public_message_fallback_text(notification_content, embed_body),
-        }
+        kwargs["content"] = build_public_message_fallback_text(notification_content, embed_body)
         if suppress_embeds_for_fallback is not None:
             kwargs["suppress_embeds"] = suppress_embeds_for_fallback
     else:
         payload = build_public_message_payload(notification_content, embed_body)
-        kwargs = {
-            "content": payload.content,
-            "embed": payload.embed,
-        }
+        if payload.content is not None:
+            kwargs["content"] = payload.content
+        kwargs["embed"] = payload.embed
 
     if allowed_mentions is not None:
         kwargs["allowed_mentions"] = allowed_mentions
@@ -79,7 +90,7 @@ def build_body_only_public_message_edit_kwargs(
     embed_body: str,
     *,
     suppress_embeds_for_fallback: bool | None = None,
-) -> dict[str, Any]:
+) -> PublicMessageEditKwargs:
     return build_public_message_edit_kwargs(
         notification_content=None,
         embed_body=embed_body,
@@ -92,9 +103,9 @@ def build_public_message_edit_kwargs(
     embed_body: str,
     *,
     suppress_embeds_for_fallback: bool | None = None,
-) -> dict[str, Any]:
+) -> PublicMessageEditKwargs:
     if _should_fallback_to_plain_text(embed_body):
-        kwargs: dict[str, Any] = {
+        kwargs: PublicMessageEditKwargs = {
             "content": build_public_message_fallback_text(notification_content, embed_body),
             "embed": None,
         }

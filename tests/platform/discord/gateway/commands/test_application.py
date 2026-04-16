@@ -899,6 +899,11 @@ def assert_matchmaking_panel_message(
     join_button = cast(discord.ui.Button[Any], message.view.children[1])
 
     assert queue_name_select.placeholder == MATCHMAKING_CHANNEL_QUEUE_NAME_PLACEHOLDER
+    assert [option.label for option in queue_name_select.options] == [
+        "beginner (1600未満)",
+        "regular (全レート)",
+        "master (1600以上)",
+    ]
     assert [option.value for option in queue_name_select.options] == [
         "beginner",
         "regular",

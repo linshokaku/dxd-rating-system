@@ -47,6 +47,7 @@ from dxd_rating.platform.discord.message_embeds import (
     build_body_only_public_message_send_kwargs,
 )
 from dxd_rating.shared.constants import (
+    MatchQueueClassDefinition,
     get_match_format_definitions,
     get_match_queue_class_definitions,
     normalize_match_queue_name,
@@ -197,8 +198,10 @@ def build_matchmaking_join_button_custom_id(match_format: MatchFormat) -> str:
     )
 
 
-def _get_matchmaking_queue_names_for_format(match_format: MatchFormat) -> tuple[str, ...]:
-    queue_names: list[str] = []
+def _get_matchmaking_queue_definitions_for_format(
+    match_format: MatchFormat,
+) -> tuple[MatchQueueClassDefinition, ...]:
+    queue_definitions: list[MatchQueueClassDefinition] = []
     seen_queue_names: set[str] = set()
     for definition in get_match_queue_class_definitions():
         if definition.match_format is not match_format:
@@ -208,16 +211,44 @@ def _get_matchmaking_queue_names_for_format(match_format: MatchFormat) -> tuple[
         if normalized_queue_name in seen_queue_names:
             continue
 
-        queue_names.append(definition.queue_name)
+        queue_definitions.append(definition)
         seen_queue_names.add(normalized_queue_name)
 
-    return tuple(queue_names)
+    return tuple(queue_definitions)
+
+
+def _format_matchmaking_queue_rating_value(rating: float) -> str:
+    numeric_rating = float(rating)
+    if numeric_rating.is_integer():
+        return str(int(numeric_rating))
+    return f"{numeric_rating:g}"
+
+
+def _format_matchmaking_queue_rating_range(definition: MatchQueueClassDefinition) -> str:
+    if definition.minimum_rating is None and definition.maximum_rating is None:
+        return "全レート"
+    if definition.minimum_rating is None and definition.maximum_rating is not None:
+        return f"{_format_matchmaking_queue_rating_value(definition.maximum_rating)}未満"
+    if definition.minimum_rating is not None and definition.maximum_rating is None:
+        return f"{_format_matchmaking_queue_rating_value(definition.minimum_rating)}以上"
+    if definition.minimum_rating is not None and definition.maximum_rating is not None:
+        minimum_rating = _format_matchmaking_queue_rating_value(definition.minimum_rating)
+        maximum_rating = _format_matchmaking_queue_rating_value(definition.maximum_rating)
+        return f"{minimum_rating}以上 {maximum_rating}未満"
+    raise RuntimeError("Unexpected queue rating range")
+
+
+def _build_matchmaking_queue_option_label(definition: MatchQueueClassDefinition) -> str:
+    return f"{definition.queue_name} ({_format_matchmaking_queue_rating_range(definition)})"
 
 
 def _build_matchmaking_queue_options(match_format: MatchFormat) -> list[discord.SelectOption]:
     return [
-        discord.SelectOption(label=queue_name, value=queue_name)
-        for queue_name in _get_matchmaking_queue_names_for_format(match_format)
+        discord.SelectOption(
+            label=_build_matchmaking_queue_option_label(definition),
+            value=definition.queue_name,
+        )
+        for definition in _get_matchmaking_queue_definitions_for_format(match_format)
     ]
 
 

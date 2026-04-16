@@ -74,11 +74,19 @@ class MatchParentAlreadyAssignedError(MatchFlowError):
     pass
 
 
+class MatchParentRecruitmentClosedError(MatchParentAlreadyAssignedError):
+    pass
+
+
 class MatchReportNotOpenError(MatchFlowError):
     pass
 
 
 class MatchReportingClosedError(MatchFlowError):
+    pass
+
+
+class MatchReportApprovalInProgressError(MatchReportingClosedError):
     pass
 
 
@@ -107,6 +115,10 @@ class MatchSpectatorCapacityError(MatchFlowError):
 
 
 class MatchSpectatingRestrictedError(MatchFlowError):
+    pass
+
+
+class MatchParticipantCannotSpectateError(MatchParticipantError):
     pass
 
 
@@ -139,6 +151,18 @@ class SeasonAlreadyExistsError(SeasonError):
 
 
 class InvalidSeasonNameError(SeasonError):
+    pass
+
+
+class InvalidSeasonNameRequiredError(InvalidSeasonNameError):
+    pass
+
+
+class SeasonNameTooLongError(InvalidSeasonNameError):
+    pass
+
+
+class SeasonNameLeadingDigitError(InvalidSeasonNameError):
     pass
 
 

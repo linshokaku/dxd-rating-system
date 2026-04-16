@@ -2,36 +2,53 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import NoReturn, Protocol, cast
-from zoneinfo import ZoneInfo
 
 import discord
 
-from dxd_rating.contexts.matches.application import (
-    MATCH_ADMIN_REVIEW_REQUIRED_NOTIFICATION_MESSAGE,
-    MATCH_APPROVAL_REQUESTED_NOTIFICATION_MESSAGE,
-    MATCH_APPROVAL_STARTED_NOTIFICATION_MESSAGE,
-    MATCH_AUTO_PENALTY_APPLIED_NOTIFICATION_MESSAGE,
-    MATCH_FINALIZED_NOTIFICATION_MESSAGE,
-    MATCH_PARENT_ASSIGNED_NOTIFICATION_MESSAGE,
-    MATCH_REPORT_OPENED_NOTIFICATION_MESSAGE,
-)
-from dxd_rating.contexts.matchmaking.application import (
-    MATCH_CREATED_NOTIFICATION_MESSAGE,
-    PRESENCE_REMINDER_NOTIFICATION_MESSAGE,
-    QUEUE_EXPIRED_NOTIFICATION_MESSAGE,
-)
 from dxd_rating.contexts.ui.application import (
     ADMIN_OPERATIONS_NOTIFICATION_KIND_DAILY_WORKER_STARTED,
     ADMIN_OPERATIONS_NOTIFICATION_WORKER_NAME_DAILY_WORKER,
 )
 from dxd_rating.platform.db.models import OutboxEventType
+from dxd_rating.platform.discord.copy.match import (
+    MATCH_CREATED_NOTIFICATION_MESSAGE,
+    build_match_admin_review_required_content,
+    build_match_approval_requested_content,
+    build_match_approval_started_content,
+    build_match_created_content,
+    build_match_finalized_auto_penalty_content,
+    build_match_finalized_content,
+    build_match_operation_thread_initial_content,
+    build_match_operation_thread_name,
+    build_match_operation_thread_parent_recruitment_content,
+    build_match_operation_thread_routing_message,
+    build_match_operation_thread_self_introduction_content,
+    build_match_parent_assigned_content,
+    build_match_report_opened_content,
+    get_admin_review_reason_label,
+    get_match_result_label,
+    get_penalty_type_label,
+)
+from dxd_rating.platform.discord.copy.matchmaking import (
+    PRESENCE_REMINDER_NOTIFICATION_MESSAGE,
+    QUEUE_EXPIRED_NOTIFICATION_MESSAGE,
+)
+from dxd_rating.platform.discord.copy.system import (
+    build_admin_operations_daily_worker_started_message,
+    build_season_completed_message,
+    build_season_top_rankings_message,
+)
+from dxd_rating.platform.discord.copy.time_format import format_discord_datetime
+from dxd_rating.platform.discord.message_embeds import (
+    PUBLIC_MESSAGE_ALLOWED_MENTIONS,
+    build_body_only_public_message_send_kwargs,
+    build_public_message_send_kwargs,
+)
 from dxd_rating.platform.discord.ui import (
-    MATCH_OPERATION_THREAD_VOID_GUIDE_MESSAGE,
-    MATCHMAKING_NEWS_MATCH_ANNOUNCEMENT_SPECTATE_GUIDE_MESSAGE,
     MatchmakingNewsMatchAnnouncementInteractionHandler,
     MatchmakingPresenceThreadInteractionHandler,
     MatchOperationThreadInteractionHandler,
@@ -48,19 +65,15 @@ from dxd_rating.platform.runtime.outbox import (
 )
 from dxd_rating.shared.constants import format_discord_user_mention, is_dummy_discord_user_id
 
-ADMIN_OPERATIONS_DAILY_WORKER_STARTED_MESSAGE = "daily worker が起動しました。"
-SEASON_COMPLETED_MESSAGE = "シーズンの全試合が完了しました。"
-SEASON_TOP_RANKINGS_MESSAGE = "シーズン最終順位表"
-JST = ZoneInfo("Asia/Tokyo")
-
 
 class DiscordSendableChannel(Protocol):
     id: int
 
     async def send(
         self,
-        content: str,
+        content: str | None = None,
         *,
+        embed: discord.Embed | None = None,
         allowed_mentions: discord.AllowedMentions,
         view: discord.ui.View | None = None,
     ) -> object: ...
@@ -90,8 +103,9 @@ class DiscordSendableUser(Protocol):
 
     async def send(
         self,
-        content: str,
+        content: str | None = None,
         *,
+        embed: discord.Embed | None = None,
         allowed_mentions: discord.AllowedMentions,
     ) -> object: ...
 
@@ -147,6 +161,8 @@ class MatchOperationThreadContext:
     queue_name: str
     team_a_discord_user_ids: tuple[int, ...]
     team_b_discord_user_ids: tuple[int, ...]
+    team_a_rating_entries: tuple[TeamRatingEntry, ...] | None = None
+    team_b_rating_entries: tuple[TeamRatingEntry, ...] | None = None
 
     @property
     def participant_discord_user_ids(self) -> tuple[int, ...]:
@@ -191,12 +207,7 @@ class DiscordOutboxEventPublisher:
         self.matchmaking_presence_interaction_handler = matchmaking_presence_interaction_handler
         self.logger = logger or logging.getLogger(__name__)
         self._loop: asyncio.AbstractEventLoop | None = None
-        self._allowed_mentions = discord.AllowedMentions(
-            users=True,
-            roles=False,
-            everyone=False,
-            replied_user=False,
-        )
+        self._allowed_mentions = PUBLIC_MESSAGE_ALLOWED_MENTIONS
         self._match_operation_threads_by_match_id: dict[int, DiscordPrivateThread] = {}
 
     def bind_loop(self, loop: asyncio.AbstractEventLoop) -> None:
@@ -217,11 +228,31 @@ class DiscordOutboxEventPublisher:
         await self._maybe_create_match_operation_thread(event)
         match_operation_thread = await self._resolve_match_operation_thread_for_event(event)
         if match_operation_thread is not None:
-            await match_operation_thread.send(
-                self._render_content(event.event_type, event.payload),
-                allowed_mentions=self._allowed_mentions,
-                view=self._build_match_operation_thread_event_view(event),
-            )
+            content = self._render_content(event.event_type, event.payload)
+            view = self._build_match_operation_thread_event_view(event)
+            if self._should_send_public_embed_with_notification_content_for_thread_event(event):
+                await match_operation_thread.send(
+                    **build_public_message_send_kwargs(
+                        self._render_thread_notification_content(event),
+                        content,
+                        allowed_mentions=self._allowed_mentions,
+                        view=view,
+                    )
+                )
+            elif self._should_send_body_only_embed_for_thread_event(event):
+                await match_operation_thread.send(
+                    **build_body_only_public_message_send_kwargs(
+                        content,
+                        allowed_mentions=self._allowed_mentions,
+                        view=view,
+                    )
+                )
+            else:
+                await match_operation_thread.send(
+                    content,
+                    allowed_mentions=self._allowed_mentions,
+                    view=view,
+                )
             return
 
         destination = await asyncio.to_thread(self._require_destination, event.payload)
@@ -293,15 +324,92 @@ class DiscordOutboxEventPublisher:
         content = await self._render_channel_content(event=event, channel=channel)
         view = self._build_channel_view(event=event, channel=channel)
         try:
-            await channel.send(
-                content,
-                allowed_mentions=self._allowed_mentions,
-                view=view,
-            )
+            if self._should_send_public_embed_with_notification_content_for_channel_event(
+                event=event,
+                channel=channel,
+            ):
+                await channel.send(
+                    **build_public_message_send_kwargs(
+                        self._render_channel_notification_content(event),
+                        self._render_channel_embed_body(event, content),
+                        allowed_mentions=self._allowed_mentions,
+                        view=view,
+                    )
+                )
+            elif self._should_send_body_only_embed_for_channel_event(event=event, channel=channel):
+                await channel.send(
+                    **build_body_only_public_message_send_kwargs(
+                        content,
+                        allowed_mentions=self._allowed_mentions,
+                        view=view,
+                    )
+                )
+            else:
+                await channel.send(
+                    content,
+                    allowed_mentions=self._allowed_mentions,
+                    view=view,
+                )
         except discord.NotFound as exc:
             raise NonRetryableOutboxPublishError(
                 f"Discord channel was deleted before send: {destination.channel_id}"
             ) from exc
+
+    def _should_send_public_embed_with_notification_content_for_channel_event(
+        self,
+        *,
+        event: PendingOutboxEvent,
+        channel: DiscordSendableChannel,
+    ) -> bool:
+        return (
+            event.event_type
+            in {
+                OutboxEventType.PRESENCE_REMINDER,
+                OutboxEventType.QUEUE_EXPIRED,
+            }
+            or self._is_presence_thread_match_created_event(
+                event=event,
+                channel=channel,
+            )
+            or self._is_match_approval_requested_notification_event(event)
+            or self._is_match_auto_penalty_notification_event(event)
+            or self._is_match_admin_review_required_notification_event(event)
+        )
+
+    def _render_channel_notification_content(self, event: PendingOutboxEvent) -> str | None:
+        if event.event_type not in {
+            OutboxEventType.PRESENCE_REMINDER,
+            OutboxEventType.QUEUE_EXPIRED,
+            OutboxEventType.MATCH_CREATED,
+            OutboxEventType.MATCH_APPROVAL_REQUESTED,
+            OutboxEventType.MATCH_FINALIZED,
+            OutboxEventType.MATCH_ADMIN_REVIEW_REQUIRED,
+        }:
+            return None
+
+        if self._is_match_approval_requested_notification_event(event):
+            return self._render_match_approval_requested_notification_content(event.payload)
+        if self._is_match_auto_penalty_notification_event(event):
+            return self._render_match_auto_penalty_notification_content(event.payload)
+        if self._is_match_admin_review_required_notification_event(event):
+            return self._render_match_admin_review_required_notification_content(event.payload)
+
+        mention_discord_user_id = self._require_payload_int(
+            event.payload,
+            "mention_discord_user_id",
+        )
+        return format_discord_user_mention(mention_discord_user_id)
+
+    def _render_channel_embed_body(
+        self,
+        event: PendingOutboxEvent,
+        content: str,
+    ) -> str:
+        if event.event_type == OutboxEventType.PRESENCE_REMINDER:
+            return PRESENCE_REMINDER_NOTIFICATION_MESSAGE
+        if event.event_type == OutboxEventType.QUEUE_EXPIRED:
+            return QUEUE_EXPIRED_NOTIFICATION_MESSAGE
+        return content
 
     async def _send_direct_message_notification(
         self,
@@ -352,18 +460,24 @@ class DiscordOutboxEventPublisher:
                 context.participant_discord_user_ids,
             )
             await thread.send(
-                self._render_match_operation_thread_initial_content(context),
-                allowed_mentions=self._allowed_mentions,
-                view=self._build_match_operation_thread_initial_view(context),
+                **build_body_only_public_message_send_kwargs(
+                    self._render_match_operation_thread_initial_content(context),
+                    allowed_mentions=self._allowed_mentions,
+                    view=self._build_match_operation_thread_initial_view(context),
+                )
             )
             await thread.send(
-                self._render_match_operation_thread_parent_recruitment_content(context),
-                allowed_mentions=self._allowed_mentions,
-                view=self._build_match_operation_thread_parent_recruitment_view(context),
+                **build_body_only_public_message_send_kwargs(
+                    self._render_match_operation_thread_parent_recruitment_content(context),
+                    allowed_mentions=self._allowed_mentions,
+                    view=self._build_match_operation_thread_parent_recruitment_view(context),
+                )
             )
             await thread.send(
-                self._render_match_operation_thread_self_introduction_content(context),
-                allowed_mentions=self._allowed_mentions,
+                **build_body_only_public_message_send_kwargs(
+                    self._render_match_operation_thread_self_introduction_content(context),
+                    allowed_mentions=self._allowed_mentions,
+                )
             )
         except Exception:
             self.logger.exception(
@@ -431,6 +545,12 @@ class DiscordOutboxEventPublisher:
             self._raise_publish_error(
                 "match_created payload team discord user ids must not be empty"
             )
+        rating_entries = self._get_match_created_team_rating_entries(event.payload)
+        team_a_rating_entries: tuple[TeamRatingEntry, ...] | None = None
+        team_b_rating_entries: tuple[TeamRatingEntry, ...] | None = None
+        if rating_entries is not None:
+            team_a_rating_entries = tuple(rating_entries[0])
+            team_b_rating_entries = tuple(rating_entries[1])
 
         return MatchOperationThreadContext(
             match_id=match_id,
@@ -439,6 +559,8 @@ class DiscordOutboxEventPublisher:
             queue_name=queue_name,
             team_a_discord_user_ids=team_a_discord_user_ids,
             team_b_discord_user_ids=team_b_discord_user_ids,
+            team_a_rating_entries=team_a_rating_entries,
+            team_b_rating_entries=team_b_rating_entries,
         )
 
     def _build_match_operation_thread_routing_context(
@@ -571,26 +693,29 @@ class DiscordOutboxEventPublisher:
         self,
         context: MatchOperationThreadContext,
     ) -> str:
-        lines = [
-            MATCH_CREATED_NOTIFICATION_MESSAGE,
-            f"試合形式: {context.match_format}",
-            f"試合階級: {context.queue_name}",
-            "Team A",
-            *[
-                f"    {format_discord_user_mention(discord_user_id)}"
-                for discord_user_id in context.team_a_discord_user_ids
-            ],
-            "Team B",
-            *[
-                f"    {format_discord_user_mention(discord_user_id)}"
-                for discord_user_id in context.team_b_discord_user_ids
-            ],
-        ]
-        if self.match_operation_thread_interaction_handler is not None:
-            lines.append(MATCH_OPERATION_THREAD_VOID_GUIDE_MESSAGE)
-        else:
-            lines.append("無効試合とする必要がある場合は /match_void を使ってください。")
-        return "\n".join(lines)
+        return build_match_operation_thread_initial_content(
+            match_format=context.match_format,
+            queue_name=context.queue_name,
+            team_a_labels=self._build_match_created_team_labels(
+                labels=[
+                    format_discord_user_mention(discord_user_id)
+                    for discord_user_id in context.team_a_discord_user_ids
+                ],
+                expected_discord_user_ids=context.team_a_discord_user_ids,
+                rating_entries=context.team_a_rating_entries,
+                payload_context="match_created payload for match operation thread",
+            ),
+            team_b_labels=self._build_match_created_team_labels(
+                labels=[
+                    format_discord_user_mention(discord_user_id)
+                    for discord_user_id in context.team_b_discord_user_ids
+                ],
+                expected_discord_user_ids=context.team_b_discord_user_ids,
+                rating_entries=context.team_b_rating_entries,
+                payload_context="match_created payload for match operation thread",
+            ),
+            with_void_button=self.match_operation_thread_interaction_handler is not None,
+        )
 
     def _build_match_operation_thread_initial_view(
         self,
@@ -618,26 +743,18 @@ class DiscordOutboxEventPublisher:
         self,
         context: MatchOperationThreadContext,
     ) -> str:
-        return "\n".join(
-            [
-                "まず初めに、部屋立てと試合の進行を行う親を募集します。",
-                "親募集期間は5分です。",
-                "5分以内に立候補がない場合は Bot が参加メンバーからランダムに決定します。",
-            ]
-        )
+        del context
+        return build_match_operation_thread_parent_recruitment_content()
 
     def _render_match_operation_thread_self_introduction_content(
         self,
         context: MatchOperationThreadContext,
     ) -> str:
-        return "\n".join(
-            [
-                "試合参加者はゲーム内のプレイヤー名を報告してください。",
-            ]
-        )
+        del context
+        return build_match_operation_thread_self_introduction_content()
 
     def _build_match_operation_thread_name(self, match_id: int) -> str:
-        return f"試合-{match_id}"
+        return build_match_operation_thread_name(match_id)
 
     def _render_content(
         self,
@@ -705,26 +822,18 @@ class DiscordOutboxEventPublisher:
             )
 
         occurred_at = self._parse_admin_operations_notification_occurred_at(payload)
-        localized_occurred_at = occurred_at.astimezone(JST)
-        return "\n".join(
-            [
-                ADMIN_OPERATIONS_DAILY_WORKER_STARTED_MESSAGE,
-                f"開始時刻: {localized_occurred_at:%Y-%m-%d %H:%M JST}",
-            ]
+        return build_admin_operations_daily_worker_started_message(
+            format_discord_datetime(occurred_at)
         )
 
     def _render_season_completed_content(self, payload: dict[str, object]) -> str:
         season_id = self._require_payload_int(payload, "season_id")
         season_name = self._require_payload_str(payload, "season_name")
         completed_at = self._parse_season_completed_at(payload)
-        localized_completed_at = completed_at.astimezone(JST)
-        return "\n".join(
-            [
-                SEASON_COMPLETED_MESSAGE,
-                f"season_id: {season_id}",
-                f"season_name: {season_name}",
-                f"完了時刻: {localized_completed_at:%Y-%m-%d %H:%M JST}",
-            ]
+        return build_season_completed_message(
+            season_id,
+            season_name,
+            format_discord_datetime(completed_at),
         )
 
     def _render_season_top_rankings_content(self, payload: dict[str, object]) -> str:
@@ -733,34 +842,21 @@ class DiscordOutboxEventPublisher:
         match_format = self._require_payload_str(payload, "match_format")
         self._parse_season_completed_at(payload)
         entries = self._get_season_top_ranking_entries(payload, "entries")
-        lines = [
-            SEASON_TOP_RANKINGS_MESSAGE,
-            f"season_id: {season_id}",
-            f"season_name: {season_name}",
-            f"match_format: {match_format}",
-        ]
-        if not entries:
-            lines.extend(
-                [
-                    "",
-                    "対象者なし",
-                ]
-            )
-            return "\n".join(lines)
-
-        lines.extend(
-            [
-                f"items: {entries[0].rank}-{entries[-1].rank}",
-                "",
-            ]
-        )
-        lines.extend(
+        ranking_lines = [
             f"{entry.rank} / {entry.display_name} / {entry.rating:.2f}" for entry in entries
+        ]
+        item_range = None if not entries else f"{entries[0].rank}-{entries[-1].rank}"
+        return build_season_top_rankings_message(
+            season_id=season_id,
+            season_name=season_name,
+            match_format=match_format,
+            item_range=item_range,
+            ranking_lines=ranking_lines,
         )
-        return "\n".join(lines)
 
     def _render_match_created_content(self, payload: dict[str, object]) -> str:
         self._require_payload_int(payload, "match_id")
+        rating_entries = self._get_match_created_team_rating_entries(payload)
         team_a_player_display_names = payload.get("team_a_player_display_names")
         team_b_player_display_names = payload.get("team_b_player_display_names")
         if team_a_player_display_names is not None or team_b_player_display_names is not None:
@@ -784,25 +880,39 @@ class DiscordOutboxEventPublisher:
                 self._raise_publish_error(
                     "match_created payload team player display names must not be empty"
                 )
+            team_a_labels = rendered_team_a_player_display_names
+            team_b_labels = rendered_team_b_player_display_names
+            if rating_entries is not None:
+                team_a_discord_user_ids = self._require_payload_int_list(
+                    payload,
+                    "team_a_discord_user_ids",
+                )
+                team_b_discord_user_ids = self._require_payload_int_list(
+                    payload,
+                    "team_b_discord_user_ids",
+                )
+                team_a_labels = self._build_match_created_team_labels(
+                    labels=rendered_team_a_player_display_names,
+                    expected_discord_user_ids=team_a_discord_user_ids,
+                    rating_entries=rating_entries[0],
+                    payload_context="match_created payload",
+                )
+                team_b_labels = self._build_match_created_team_labels(
+                    labels=rendered_team_b_player_display_names,
+                    expected_discord_user_ids=team_b_discord_user_ids,
+                    rating_entries=rating_entries[1],
+                    payload_context="match_created payload",
+                )
 
-            indented_team_a_display_labels = [
-                f"    {label}" for label in rendered_team_a_player_display_names
-            ]
-            indented_team_b_display_labels = [
-                f"    {label}" for label in rendered_team_b_player_display_names
-            ]
-            lines = [
-                MATCH_CREATED_NOTIFICATION_MESSAGE,
-                f"試合形式: {match_format}",
-                f"試合階級: {queue_name}",
-                "Team A",
-                *indented_team_a_display_labels,
-                "Team B",
-                *indented_team_b_display_labels,
-            ]
-            if self.matchmaking_news_match_announcement_interaction_handler is not None:
-                lines.append(MATCHMAKING_NEWS_MATCH_ANNOUNCEMENT_SPECTATE_GUIDE_MESSAGE)
-            return "\n".join(lines)
+            return build_match_created_content(
+                match_format=match_format,
+                queue_name=queue_name,
+                team_a_labels=team_a_labels,
+                team_b_labels=team_b_labels,
+                include_spectate_guide=(
+                    self.matchmaking_news_match_announcement_interaction_handler is not None
+                ),
+            )
 
         team_a_discord_user_ids = self._require_payload_int_list(
             payload,
@@ -816,25 +926,31 @@ class DiscordOutboxEventPublisher:
             self._raise_publish_error(
                 "match_created payload team discord user ids must not be empty"
             )
-
-        team_a_display_labels = [
+        team_a_labels = [
             format_discord_user_mention(discord_user_id)
             for discord_user_id in team_a_discord_user_ids
         ]
-        team_b_display_labels = [
+        team_b_labels = [
             format_discord_user_mention(discord_user_id)
             for discord_user_id in team_b_discord_user_ids
         ]
-        indented_team_a_display_labels = [f"    {label}" for label in team_a_display_labels]
-        indented_team_b_display_labels = [f"    {label}" for label in team_b_display_labels]
-        return "\n".join(
-            [
-                MATCH_CREATED_NOTIFICATION_MESSAGE,
-                "Team A",
-                *indented_team_a_display_labels,
-                "Team B",
-                *indented_team_b_display_labels,
-            ]
+        if rating_entries is not None:
+            team_a_labels = self._build_match_created_team_labels(
+                labels=team_a_labels,
+                expected_discord_user_ids=team_a_discord_user_ids,
+                rating_entries=rating_entries[0],
+                payload_context="match_created payload",
+            )
+            team_b_labels = self._build_match_created_team_labels(
+                labels=team_b_labels,
+                expected_discord_user_ids=team_b_discord_user_ids,
+                rating_entries=rating_entries[1],
+                payload_context="match_created payload",
+            )
+
+        return build_match_created_content(
+            team_a_labels=team_a_labels,
+            team_b_labels=team_b_labels,
         )
 
     async def _render_channel_content(
@@ -843,27 +959,33 @@ class DiscordOutboxEventPublisher:
         event: PendingOutboxEvent,
         channel: DiscordSendableChannel,
     ) -> str:
-        if (
+        if self._is_presence_thread_match_created_event(event=event, channel=channel):
+            return await self._render_presence_thread_match_created_content(event.payload)
+
+        return self._render_content(event.event_type, event.payload)
+
+    def _is_presence_thread_match_created_event(
+        self,
+        *,
+        event: PendingOutboxEvent,
+        channel: DiscordSendableChannel,
+    ) -> bool:
+        return (
             event.event_type == OutboxEventType.MATCH_CREATED
             and self._is_thread_like_channel(channel)
             and "mention_discord_user_id" in event.payload
             and "match_operation_thread_parent_channel_id" in event.payload
-        ):
-            return await self._render_presence_thread_match_created_content(event.payload)
-
-        return self._render_content(event.event_type, event.payload)
+        )
 
     async def _render_presence_thread_match_created_content(
         self,
         payload: dict[str, object],
     ) -> str:
-        mention_discord_user_id = self._require_payload_int(payload, "mention_discord_user_id")
         match_operation_thread = await self._resolve_match_operation_thread_from_payload(payload)
         return "\n".join(
             [
-                f"{format_discord_user_mention(mention_discord_user_id)} "
-                f"{MATCH_CREATED_NOTIFICATION_MESSAGE}",
-                f"試合運営は <#{match_operation_thread.id}> で行ってください。",
+                MATCH_CREATED_NOTIFICATION_MESSAGE,
+                build_match_operation_thread_routing_message(f"<#{match_operation_thread.id}>"),
             ]
         )
 
@@ -928,6 +1050,55 @@ class DiscordOutboxEventPublisher:
             self.matchmaking_presence_interaction_handler
         )
 
+    def _should_send_body_only_embed_for_channel_event(
+        self,
+        *,
+        event: PendingOutboxEvent,
+        channel: DiscordSendableChannel,
+    ) -> bool:
+        if event.event_type == OutboxEventType.MATCH_CREATED:
+            return self._is_matchmaking_news_match_created_payload(event.payload) and not (
+                self._is_thread_like_channel(channel)
+                and "mention_discord_user_id" in event.payload
+                and "match_operation_thread_parent_channel_id" in event.payload
+            )
+
+        return self._should_send_body_only_embed_for_event(event)
+
+    def _should_send_body_only_embed_for_thread_event(self, event: PendingOutboxEvent) -> bool:
+        return self._should_send_body_only_embed_for_event(event)
+
+    def _should_send_public_embed_with_notification_content_for_thread_event(
+        self,
+        event: PendingOutboxEvent,
+    ) -> bool:
+        return (
+            event.event_type == OutboxEventType.MATCH_PARENT_ASSIGNED
+            or (self._is_match_approval_requested_notification_event(event))
+            or self._is_match_auto_penalty_notification_event(event)
+            or self._is_match_admin_review_required_notification_event(event)
+        )
+
+    def _should_send_body_only_embed_for_event(self, event: PendingOutboxEvent) -> bool:
+        if event.event_type == OutboxEventType.MATCH_REPORT_OPENED:
+            return True
+
+        if event.event_type == OutboxEventType.MATCH_APPROVAL_REQUESTED:
+            return self._require_payload_bool_with_default(event.payload, "phase_started", False)
+
+        if event.event_type == OutboxEventType.MATCH_FINALIZED:
+            return not self._require_payload_bool_with_default(
+                event.payload,
+                "auto_penalty_applied",
+                False,
+            )
+
+        return event.event_type in {
+            OutboxEventType.SEASON_COMPLETED,
+            OutboxEventType.SEASON_TOP_RANKINGS,
+            OutboxEventType.ADMIN_OPERATIONS_NOTIFICATION,
+        }
+
     def _is_matchmaking_news_match_created_payload(self, payload: dict[str, object]) -> bool:
         return (
             "team_a_player_display_names" in payload
@@ -957,28 +1128,31 @@ class DiscordOutboxEventPublisher:
     def _render_match_parent_assigned_content(self, payload: dict[str, object]) -> str:
         self._require_payload_int(payload, "match_id")
         parent_discord_user_id = self._require_payload_int(payload, "parent_discord_user_id")
-        report_open_at = self._require_payload_str(payload, "report_open_at")
-        report_deadline_at = self._require_payload_str(payload, "report_deadline_at")
-        return "\n".join(
-            [
-                MATCH_PARENT_ASSIGNED_NOTIFICATION_MESSAGE,
-                f"親: {format_discord_user_mention(parent_discord_user_id)}",
-                f"勝敗報告開始: {report_open_at}",
-                f"勝敗報告締切: {report_deadline_at}",
-            ]
+        return build_match_parent_assigned_content(
+            format_discord_user_mention(parent_discord_user_id),
         )
+
+    def _render_thread_notification_content(self, event: PendingOutboxEvent) -> str | None:
+        if event.event_type == OutboxEventType.MATCH_PARENT_ASSIGNED:
+            parent_discord_user_id = self._require_payload_int(
+                event.payload,
+                "parent_discord_user_id",
+            )
+            return format_discord_user_mention(parent_discord_user_id)
+
+        if self._is_match_approval_requested_notification_event(event):
+            return self._render_match_approval_requested_notification_content(event.payload)
+        if self._is_match_auto_penalty_notification_event(event):
+            return self._render_match_auto_penalty_notification_content(event.payload)
+        if self._is_match_admin_review_required_notification_event(event):
+            return self._render_match_admin_review_required_notification_content(event.payload)
+
+        return None
 
     def _render_match_report_opened_content(self, payload: dict[str, object]) -> str:
         self._require_payload_int(payload, "match_id")
-        report_deadline_at = self._require_payload_str(payload, "report_deadline_at")
-        return "\n".join(
-            [
-                MATCH_REPORT_OPENED_NOTIFICATION_MESSAGE,
-                "自分視点で「勝ち」「引き分け」「負け」を選んでください。",
-                "無効試合にすべき場合は「無効試合申請」を押してください。",
-                f"勝敗報告締切: {report_deadline_at}",
-            ]
-        )
+        report_deadline_at = self._parse_utc_payload_datetime(payload, "report_deadline_at")
+        return build_match_report_opened_content(format_discord_datetime(report_deadline_at))
 
     def _build_match_operation_thread_event_view(
         self,
@@ -1014,16 +1188,45 @@ class DiscordOutboxEventPublisher:
         self._require_payload_int(payload, "match_id")
         phase_started = self._require_payload_bool_with_default(payload, "phase_started", False)
         provisional_result = self._require_payload_str(payload, "provisional_result")
-        approval_deadline_at = self._require_payload_str(payload, "approval_deadline_at")
+        approval_deadline_at = self._parse_utc_payload_datetime(payload, "approval_deadline_at")
+        formatted_approval_deadline_at = format_discord_datetime(approval_deadline_at)
         if phase_started:
-            return "\n".join(
-                [
-                    MATCH_APPROVAL_STARTED_NOTIFICATION_MESSAGE,
-                    f"仮決定結果: {self._format_match_result_label(provisional_result)}",
-                    f"承認締切: {approval_deadline_at}",
-                ]
+            return build_match_approval_started_content(
+                self._format_match_result_label(provisional_result),
+                formatted_approval_deadline_at,
             )
 
+        return build_match_approval_requested_content(
+            self._format_match_result_label(provisional_result),
+            formatted_approval_deadline_at,
+        )
+
+    def _is_match_approval_requested_notification_event(
+        self,
+        event: PendingOutboxEvent,
+    ) -> bool:
+        return event.event_type == OutboxEventType.MATCH_APPROVAL_REQUESTED and (
+            not self._require_payload_bool_with_default(event.payload, "phase_started", False)
+        )
+
+    def _is_match_auto_penalty_notification_event(
+        self,
+        event: PendingOutboxEvent,
+    ) -> bool:
+        return event.event_type == OutboxEventType.MATCH_FINALIZED and (
+            self._require_payload_bool_with_default(event.payload, "auto_penalty_applied", False)
+        )
+
+    def _is_match_admin_review_required_notification_event(
+        self,
+        event: PendingOutboxEvent,
+    ) -> bool:
+        return event.event_type == OutboxEventType.MATCH_ADMIN_REVIEW_REQUIRED
+
+    def _render_match_approval_requested_notification_content(
+        self,
+        payload: dict[str, object],
+    ) -> str:
         approval_target_discord_user_ids = payload.get("approval_target_discord_user_ids")
         if approval_target_discord_user_ids is not None:
             approval_target_mentions = [
@@ -1037,19 +1240,17 @@ class DiscordOutboxEventPublisher:
                 self._raise_publish_error(
                     "match_approval_requested payload approval targets must not be empty"
                 )
-            mention_text = " ".join(approval_target_mentions)
-        else:
-            mention_discord_user_id = self._require_payload_int(payload, "mention_discord_user_id")
-            mention_text = format_discord_user_mention(mention_discord_user_id)
-        headline = f"{mention_text} {MATCH_APPROVAL_REQUESTED_NOTIFICATION_MESSAGE}"
-        return "\n".join(
-            [
-                headline,
-                f"仮決定結果: {self._format_match_result_label(provisional_result)}",
-                f"承認締切: {approval_deadline_at}",
-                "承認できない場合は証拠を提示したうえで admin へ連絡してください。",
-            ]
-        )
+            return " ".join(approval_target_mentions)
+
+        mention_discord_user_id = self._require_payload_int(payload, "mention_discord_user_id")
+        return format_discord_user_mention(mention_discord_user_id)
+
+    def _render_match_auto_penalty_notification_content(
+        self,
+        payload: dict[str, object],
+    ) -> str:
+        mention_discord_user_id = self._require_payload_int(payload, "mention_discord_user_id")
+        return format_discord_user_mention(mention_discord_user_id)
 
     def _render_match_finalized_content(self, payload: dict[str, object]) -> str:
         self._require_payload_int(payload, "match_id")
@@ -1060,53 +1261,41 @@ class DiscordOutboxEventPublisher:
         )
         final_result = self._require_payload_str(payload, "final_result")
         if auto_penalty_applied:
-            mention_discord_user_id = self._require_payload_int(payload, "mention_discord_user_id")
             penalty_type = self._require_payload_str(payload, "penalty_type")
             penalty_count = self._require_payload_int(payload, "penalty_count")
-            mention_text = format_discord_user_mention(mention_discord_user_id)
-            return "\n".join(
-                [
-                    f"{mention_text} {MATCH_AUTO_PENALTY_APPLIED_NOTIFICATION_MESSAGE}",
-                    f"結果: {self._format_match_result_label(final_result)}",
-                    f"ペナルティ: {self._format_penalty_type_label(penalty_type)}",
-                    f"現在の累積: {penalty_count}",
-                ]
+            return build_match_finalized_auto_penalty_content(
+                self._format_match_result_label(final_result),
+                self._format_penalty_type_label(penalty_type),
+                penalty_count,
             )
 
         finalized_by_admin = self._require_payload_bool(payload, "finalized_by_admin")
-        lines = [
-            MATCH_FINALIZED_NOTIFICATION_MESSAGE,
-            f"結果: {self._format_match_result_label(final_result)}",
-        ]
-        if finalized_by_admin:
-            lines.append("admin により結果が確定または更新されました。")
-        else:
-            rating_lines = self._render_team_rating_lines(payload)
-            if rating_lines:
-                lines.extend(["更新後レート", *rating_lines])
-        return "\n".join(lines)
+        return build_match_finalized_content(
+            self._format_match_result_label(final_result),
+            finalized_by_admin=finalized_by_admin,
+            rating_lines=self._render_team_rating_lines(payload),
+        )
 
     def _render_match_admin_review_required_content(self, payload: dict[str, object]) -> str:
         self._require_payload_int(payload, "match_id")
         final_result = self._require_payload_str(payload, "final_result")
         reasons = self._require_payload_str_list(payload, "admin_review_reasons")
         admin_discord_user_ids = self._require_payload_int_list(payload, "admin_discord_user_ids")
-        mention_prefix = " ".join(
+        del admin_discord_user_ids
+        return build_match_admin_review_required_content(
+            self._format_match_result_label(final_result),
+            [self._format_admin_review_reason_label(reason) for reason in reasons],
+        )
+
+    def _render_match_admin_review_required_notification_content(
+        self,
+        payload: dict[str, object],
+    ) -> str:
+        admin_discord_user_ids = self._require_payload_int_list(payload, "admin_discord_user_ids")
+        return " ".join(
             format_discord_user_mention(discord_user_id)
             for discord_user_id in admin_discord_user_ids
         )
-        body = [
-            MATCH_ADMIN_REVIEW_REQUIRED_NOTIFICATION_MESSAGE,
-            f"結果: {self._format_match_result_label(final_result)}",
-        ]
-        if reasons:
-            body.append(
-                "理由: "
-                + ", ".join(self._format_admin_review_reason_label(reason) for reason in reasons)
-            )
-        if mention_prefix:
-            return "\n".join([mention_prefix, *body])
-        return "\n".join(body)
 
     def _log_channel_guild_mismatch(
         self,
@@ -1220,6 +1409,65 @@ class DiscordOutboxEventPublisher:
             )
         return entries
 
+    def _get_match_created_team_rating_entries(
+        self,
+        payload: dict[str, object],
+    ) -> tuple[list[TeamRatingEntry], list[TeamRatingEntry]] | None:
+        team_a_rating_entries = self._get_optional_team_rating_entries(
+            payload,
+            "team_a_rating_entries",
+        )
+        team_b_rating_entries = self._get_optional_team_rating_entries(
+            payload,
+            "team_b_rating_entries",
+        )
+        if team_a_rating_entries is None and team_b_rating_entries is None:
+            return None
+        if not team_a_rating_entries or not team_b_rating_entries:
+            self._raise_publish_error(
+                "match_created payload team rating entries must either both be present "
+                "or both be omitted"
+            )
+        return team_a_rating_entries, team_b_rating_entries
+
+    def _build_match_created_team_labels(
+        self,
+        *,
+        labels: Sequence[str],
+        expected_discord_user_ids: Sequence[int],
+        rating_entries: Sequence[TeamRatingEntry] | None,
+        payload_context: str,
+    ) -> list[str]:
+        if rating_entries is None:
+            return list(labels)
+        if len(labels) != len(expected_discord_user_ids):
+            self._raise_publish_error(
+                f"{payload_context} team labels and discord user ids must have the same length"
+            )
+        if len(rating_entries) != len(expected_discord_user_ids):
+            self._raise_publish_error(
+                f"{payload_context} team rating entries must match team discord user ids"
+            )
+
+        ratings_by_discord_user_id: dict[int, float] = {}
+        for entry in rating_entries:
+            if entry.discord_user_id in ratings_by_discord_user_id:
+                self._raise_publish_error(
+                    f"{payload_context} team rating entries must not contain duplicate users"
+                )
+            ratings_by_discord_user_id[entry.discord_user_id] = entry.rating
+
+        formatted_labels: list[str] = []
+        for label, discord_user_id in zip(labels, expected_discord_user_ids, strict=True):
+            rating = ratings_by_discord_user_id.get(discord_user_id)
+            if rating is None:
+                self._raise_publish_error(
+                    f"{payload_context} team rating entries must match team discord user ids"
+                )
+            formatted_labels.append(f"{label}: {round(rating)}")
+
+        return formatted_labels
+
     def _get_season_top_ranking_entries(
         self,
         payload: dict[str, object],
@@ -1294,42 +1542,33 @@ class DiscordOutboxEventPublisher:
         self,
         payload: dict[str, object],
     ) -> datetime:
-        occurred_at = self._require_payload_str(payload, "occurred_at")
-        try:
-            parsed = datetime.fromisoformat(occurred_at)
-        except ValueError:
-            self._raise_publish_error(
-                f"Outbox payload 'occurred_at' must be an ISO 8601 datetime: {occurred_at!r}"
-            )
-
-        if parsed.tzinfo is None or parsed.utcoffset() is None:
-            self._raise_publish_error(
-                f"Outbox payload 'occurred_at' must be timezone-aware UTC: {occurred_at!r}"
-            )
-        if parsed.utcoffset() != timedelta(0):
-            self._raise_publish_error(f"Outbox payload 'occurred_at' must be UTC: {occurred_at!r}")
-        return parsed
+        return self._parse_utc_payload_datetime(payload, "occurred_at")
 
     def _parse_season_completed_at(
         self,
         payload: dict[str, object],
     ) -> datetime:
-        completed_at = self._require_payload_str(payload, "completed_at")
+        return self._parse_utc_payload_datetime(payload, "completed_at")
+
+    def _parse_utc_payload_datetime(
+        self,
+        payload: dict[str, object],
+        key: str,
+    ) -> datetime:
+        value = self._require_payload_str(payload, key)
         try:
-            parsed = datetime.fromisoformat(completed_at)
+            parsed = datetime.fromisoformat(value)
         except ValueError:
             self._raise_publish_error(
-                f"Outbox payload 'completed_at' must be an ISO 8601 datetime: {completed_at!r}"
+                f"Outbox payload '{key}' must be an ISO 8601 datetime: {value!r}"
             )
 
         if parsed.tzinfo is None or parsed.utcoffset() is None:
             self._raise_publish_error(
-                f"Outbox payload 'completed_at' must be timezone-aware UTC: {completed_at!r}"
+                f"Outbox payload '{key}' must be timezone-aware UTC: {value!r}"
             )
         if parsed.utcoffset() != timedelta(0):
-            self._raise_publish_error(
-                f"Outbox payload 'completed_at' must be UTC: {completed_at!r}"
-            )
+            self._raise_publish_error(f"Outbox payload '{key}' must be UTC: {value!r}")
         return parsed
 
     def _require_destination(self, payload: dict[str, object]) -> NotificationDestination:
@@ -1371,32 +1610,13 @@ class DiscordOutboxEventPublisher:
         )
 
     def _format_match_result_label(self, value: str) -> str:
-        labels = {
-            "team_a_win": "チーム A の勝ち",
-            "team_b_win": "チーム B の勝ち",
-            "draw": "引き分け",
-            "void": "無効試合",
-        }
-        return labels.get(value, value)
+        return get_match_result_label(value)
 
     def _format_admin_review_reason_label(self, value: str) -> str:
-        labels = {
-            "low_report_count": "勝敗報告を行ったプレイヤーが 2 人以下です",
-            "single_team_reports": "勝敗報告が片方のチームに偏っています",
-            "unresolved_tie": "同票が解消できませんでした",
-        }
-        return labels.get(value, value)
+        return get_admin_review_reason_label(value)
 
     def _format_penalty_type_label(self, value: str) -> str:
-        labels = {
-            "incorrect_report": "誤報告",
-            "no_report": "未報告",
-            "room_setup_delay": "部屋立て遅延",
-            "match_mistake": "試合進行ミス",
-            "late": "遅刻",
-            "disconnect": "切断",
-        }
-        return labels.get(value, value)
+        return get_penalty_type_label(value)
 
     def _require_loop(self) -> asyncio.AbstractEventLoop:
         if self._loop is None:

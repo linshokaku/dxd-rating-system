@@ -31,6 +31,7 @@ from dxd_rating.contexts.restrictions.application import (
 )
 from dxd_rating.contexts.seasons.application import ensure_active_and_upcoming_seasons
 from dxd_rating.platform.db.models import (
+    ActiveMatchState,
     CarryoverStatus,
     ManagedUiChannel,
     ManagedUiType,
@@ -48,7 +49,10 @@ from dxd_rating.platform.db.models import (
     PlayerFormatStats,
 )
 from dxd_rating.shared.constants import (
+    DEVELOPMENT_MATCH_TIMING_WINDOWS,
+    PRODUCTION_MATCH_TIMING_WINDOWS,
     MatchQueueClassDefinition,
+    MatchTimingWindows,
     get_match_queue_class_definition_by_id,
     get_match_queue_class_definition_by_name,
     get_match_queue_class_definitions,
@@ -75,11 +79,13 @@ def create_matching_queue_service(
     *,
     queue_class_definitions: Sequence[MatchQueueClassDefinition] | None = None,
     random_generator: object | None = None,
+    match_timing_windows: MatchTimingWindows = PRODUCTION_MATCH_TIMING_WINDOWS,
 ) -> MatchingQueueService:
     return MatchingQueueService(
         session_factory=session_factory,
         queue_class_definitions=queue_class_definitions,
         random_generator=random_generator,
+        match_timing_windows=match_timing_windows,
     )
 
 
@@ -359,7 +365,7 @@ def test_join_queue_raises_when_player_has_active_queue_join_restriction(
     )
     service = create_matching_queue_service(session_factory)
 
-    with pytest.raises(QueueJoinRestrictedError, match="現在キュー参加を制限されています。"):
+    with pytest.raises(QueueJoinRestrictedError):
         service.join_queue(player.id, DEFAULT_MATCH_FORMAT, DEFAULT_QUEUE_NAME)
 
 
@@ -782,13 +788,19 @@ def test_get_matchmaking_status_snapshot_counts_join_leave_expired_and_clamps_to
 
     snapshot = service.get_matchmaking_status_snapshot()
 
-    assert [(entry.match_format, entry.queue_name) for entry in snapshot] == [
+    assert [(entry.match_format, entry.queue_name) for entry in snapshot.entries] == [
         (definition.match_format, definition.queue_name)
         for definition in get_match_queue_class_definitions()
     ]
+    assert snapshot.updated_at.tzinfo is not None
+    assert snapshot.updated_at.utcoffset() is not None
     active_count_by_queue_class = {
         definition.queue_class_id: entry.active_count
-        for definition, entry in zip(get_match_queue_class_definitions(), snapshot, strict=True)
+        for definition, entry in zip(
+            get_match_queue_class_definitions(),
+            snapshot.entries,
+            strict=True,
+        )
     }
     assert active_count_by_queue_class[DEFAULT_QUEUE_CLASS_ID] == 2
     assert active_count_by_queue_class[SECOND_QUEUE_CLASS_ID] == 0
@@ -1140,19 +1152,47 @@ def test_try_create_matches_creates_single_match_and_marks_entries_matched(
 
     session.expire_all()
     match = session.scalar(select(Match))
+    active_state = session.scalar(select(ActiveMatchState))
     participants = session.scalars(select(MatchParticipant).order_by(MatchParticipant.id)).all()
     entries = session.scalars(select(MatchQueueEntry).order_by(MatchQueueEntry.id)).all()
     outbox_events = get_outbox_events(session)
 
     assert len(created_matches) == 1
     assert match is not None
+    assert active_state is not None
     assert created_matches[0].match_id == match.id
     assert created_matches[0].queue_entry_ids == tuple(entry.id for entry in queue_entries)
     assert len(participants) == 6
     assert all(entry.status == MatchQueueEntryStatus.MATCHED for entry in entries)
+    assert active_state.parent_deadline_at == (
+        active_state.created_at + PRODUCTION_MATCH_TIMING_WINDOWS.parent_selection_window
+    )
     assert outbox_events == []
     assert all(event.event_type == OutboxEventType.MATCH_CREATED for event in outbox_events)
     assert all("destination" in event.payload for event in outbox_events)
+
+
+def test_try_create_matches_uses_development_parent_selection_window(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    players = create_players(session, 6, start_discord_user_id=30_111)
+    create_waiting_entries(session, players)
+    service = create_matching_queue_service(
+        session_factory,
+        match_timing_windows=DEVELOPMENT_MATCH_TIMING_WINDOWS,
+    )
+
+    created_matches = service.try_create_matches()
+
+    session.expire_all()
+    active_state = session.scalar(select(ActiveMatchState))
+
+    assert len(created_matches) == 1
+    assert active_state is not None
+    assert active_state.parent_deadline_at == (
+        active_state.created_at + DEVELOPMENT_MATCH_TIMING_WINDOWS.parent_selection_window
+    )
 
 
 def test_try_create_matches_routes_match_created_to_matchmaking_news_channel_when_configured(
@@ -1213,6 +1253,22 @@ def test_try_create_matches_routes_match_created_to_matchmaking_news_channel_whe
         for participant in participants
         if participant.team == MatchParticipantTeam.TEAM_B
     ]
+    expected_team_a_rating_entries = [
+        {
+            "discord_user_id": players_by_id[participant.player_id].discord_user_id,
+            "rating": get_player_format_stats(session, participant.player_id).rating,
+        }
+        for participant in participants
+        if participant.team == MatchParticipantTeam.TEAM_A
+    ]
+    expected_team_b_rating_entries = [
+        {
+            "discord_user_id": players_by_id[participant.player_id].discord_user_id,
+            "rating": get_player_format_stats(session, participant.player_id).rating,
+        }
+        for participant in participants
+        if participant.team == MatchParticipantTeam.TEAM_B
+    ]
     announcement_events = [
         event
         for event in outbox_events
@@ -1241,6 +1297,8 @@ def test_try_create_matches_routes_match_created_to_matchmaking_news_channel_whe
         },
         "team_a_discord_user_ids": expected_team_a_discord_user_ids,
         "team_b_discord_user_ids": expected_team_b_discord_user_ids,
+        "team_a_rating_entries": expected_team_a_rating_entries,
+        "team_b_rating_entries": expected_team_b_rating_entries,
         "team_a_player_display_names": expected_team_a_display_names,
         "team_b_player_display_names": expected_team_b_display_names,
         "match_operation_thread_parent_channel_id": matchmaking_channel.channel_id,
@@ -1299,6 +1357,22 @@ def test_try_create_matches_routes_match_created_to_presence_threads_when_availa
         for participant in participants
         if participant.team == MatchParticipantTeam.TEAM_B
     ]
+    expected_team_a_rating_entries = [
+        {
+            "discord_user_id": players_by_id[participant.player_id].discord_user_id,
+            "rating": get_player_format_stats(session, participant.player_id).rating,
+        }
+        for participant in participants
+        if participant.team == MatchParticipantTeam.TEAM_A
+    ]
+    expected_team_b_rating_entries = [
+        {
+            "discord_user_id": players_by_id[participant.player_id].discord_user_id,
+            "rating": get_player_format_stats(session, participant.player_id).rating,
+        }
+        for participant in participants
+        if participant.team == MatchParticipantTeam.TEAM_B
+    ]
     announcement_events = [
         event
         for event in outbox_events
@@ -1340,6 +1414,8 @@ def test_try_create_matches_routes_match_created_to_presence_threads_when_availa
         )
         assert event.payload["team_a_discord_user_ids"] == expected_team_a_discord_user_ids
         assert event.payload["team_b_discord_user_ids"] == expected_team_b_discord_user_ids
+        assert event.payload["team_a_rating_entries"] == expected_team_a_rating_entries
+        assert event.payload["team_b_rating_entries"] == expected_team_b_rating_entries
         assert (
             event.payload["match_operation_thread_parent_channel_id"]
             == matchmaking_channel.channel_id

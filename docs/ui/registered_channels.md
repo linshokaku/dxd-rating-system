@@ -124,9 +124,10 @@
 - 一般ユーザーはこのチャンネルへ通常メッセージを送らない。
 - 一般ユーザーは public thread を作成しない。
 - 一般ユーザーは private thread を作成しない。
-- `/info_thread` が成功した場合、Bot はこのチャンネル配下に情報確認用の private thread を作成する。
-- 情報確認 thread は、実行ユーザー本人、admin、Bot が閲覧できる。
-- `/player_info`、`/player_info_season`、`/leaderboard`、`/leaderboard_season` の結果は、このチャンネル配下の情報確認 thread に集約する。
+- `/info_thread` または `/dev_info_thread` が成功した場合、Bot はこのチャンネル配下に情報確認用の private thread を作成する。
+- 情報確認 thread は、紐づけ対象ユーザーが実ユーザーなら対象ユーザー本人、admin、Bot が閲覧できる。
+- 情報確認 thread は、紐づけ対象ユーザーがダミーユーザーなら admin と Bot が閲覧できる。
+- `/player_info`、`/player_info_season`、`/leaderboard`、`/leaderboard_season`、`/dev_player_info`、`/dev_player_info_season`、`/dev_leaderboard`、`/dev_leaderboard_season` の結果は、このチャンネル配下の情報確認 thread に集約する。
 - public 側の常設ボタンは thread 作成導線として扱い、private thread 側の button / pulldown UI は情報取得導線として扱う。
 - 公開 button UI の詳細仕様は [info_channel.md](info_channel.md) を参照する。
 - 情報確認 thread の詳細仕様は [info_thread.md](info_thread.md) を参照する。

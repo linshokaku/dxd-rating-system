@@ -228,7 +228,7 @@ def test_get_current_leaderboard_page_marks_has_next_page_when_more_entries_exis
 
 
 def test_get_current_leaderboard_page_rejects_invalid_page(session: Session) -> None:
-    with pytest.raises(InvalidLeaderboardPageError, match="page は 1 以上で指定してください。"):
+    with pytest.raises(InvalidLeaderboardPageError):
         get_current_leaderboard_page(
             session,
             match_format=MatchFormat.THREE_VS_THREE,
@@ -238,7 +238,7 @@ def test_get_current_leaderboard_page_rejects_invalid_page(session: Session) -> 
 
 
 def test_get_current_leaderboard_page_rejects_invalid_match_format(session: Session) -> None:
-    with pytest.raises(InvalidMatchFormatError, match="指定したフォーマットは存在しません。"):
+    with pytest.raises(InvalidMatchFormatError):
         get_current_leaderboard_page(
             session,
             match_format="invalid",
@@ -269,10 +269,7 @@ def test_get_current_leaderboard_page_raises_when_page_has_no_entries(
     )
     session.flush()
 
-    with pytest.raises(
-        LeaderboardPageNotFoundError,
-        match="指定したページにはランキングがありません。",
-    ):
+    with pytest.raises(LeaderboardPageNotFoundError):
         get_current_leaderboard_page(
             session,
             match_format=MatchFormat.THREE_VS_THREE,
@@ -607,7 +604,7 @@ def test_get_season_leaderboard_page_rejects_upcoming_season(session: Session) -
     session.add(season)
     session.flush()
 
-    with pytest.raises(SeasonStateError, match="指定したシーズンはまだ開始していません。"):
+    with pytest.raises(SeasonStateError):
         get_season_leaderboard_page(
             session,
             season_id=season.id,
@@ -618,7 +615,7 @@ def test_get_season_leaderboard_page_rejects_upcoming_season(session: Session) -
 
 
 def test_get_season_leaderboard_page_rejects_missing_season(session: Session) -> None:
-    with pytest.raises(SeasonNotFoundError, match="指定したシーズンが見つかりません。"):
+    with pytest.raises(SeasonNotFoundError):
         get_season_leaderboard_page(
             session,
             season_id=999_999,
@@ -639,7 +636,7 @@ def test_get_season_leaderboard_page_rejects_invalid_page(session: Session) -> N
     session.add(season)
     session.flush()
 
-    with pytest.raises(InvalidLeaderboardPageError, match="page は 1 以上で指定してください。"):
+    with pytest.raises(InvalidLeaderboardPageError):
         get_season_leaderboard_page(
             session,
             season_id=season.id,
@@ -660,7 +657,7 @@ def test_get_season_leaderboard_page_rejects_invalid_match_format(session: Sessi
     session.add(season)
     session.flush()
 
-    with pytest.raises(InvalidMatchFormatError, match="指定したフォーマットは存在しません。"):
+    with pytest.raises(InvalidMatchFormatError):
         get_season_leaderboard_page(
             session,
             season_id=season.id,
@@ -684,10 +681,7 @@ def test_get_season_leaderboard_page_raises_when_page_has_no_entries(
     session.add(season)
     session.flush()
 
-    with pytest.raises(
-        LeaderboardPageNotFoundError,
-        match="指定したページにはランキングがありません。",
-    ):
+    with pytest.raises(LeaderboardPageNotFoundError):
         get_season_leaderboard_page(
             session,
             season_id=season.id,

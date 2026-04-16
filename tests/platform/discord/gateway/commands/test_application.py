@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, cast
@@ -15,6 +17,7 @@ from dxd_rating.contexts.matches.application import MatchFlowService
 from dxd_rating.contexts.matchmaking.application import (
     MatchingQueueNotificationContext,
     MatchingQueueService,
+    MatchmakingStatusSnapshot,
 )
 from dxd_rating.contexts.players.application import register_player
 from dxd_rating.contexts.restrictions.application import (
@@ -33,6 +36,7 @@ from dxd_rating.contexts.ui.application import (
 from dxd_rating.platform.config.bot import BotSettings
 from dxd_rating.platform.db.models import (
     ActiveMatchState,
+    FinalizedMatchResult,
     LeaderboardSnapshot,
     ManagedUiChannel,
     ManagedUiType,
@@ -43,6 +47,7 @@ from dxd_rating.platform.db.models import (
     MatchQueueEntryStatus,
     MatchReport,
     MatchReportInputResult,
+    MatchResult,
     MatchSpectator,
     MatchState,
     OutboxEvent,
@@ -56,72 +61,81 @@ from dxd_rating.platform.db.models import (
     PlayerPenalty,
     Season,
 )
-from dxd_rating.platform.discord.gateway.commands import BotCommandHandlers, register_app_commands
-from dxd_rating.platform.discord.ui import (
-    ADMIN_CONTACT_CHANNEL_MESSAGE,
-    ADMIN_OPERATIONS_CHANNEL_MESSAGE,
-    INFO_CHANNEL_LEADERBOARD_BUTTON_CUSTOM_ID,
+from dxd_rating.platform.discord.copy.info import (
     INFO_CHANNEL_LEADERBOARD_BUTTON_LABEL,
-    INFO_CHANNEL_LEADERBOARD_SEASON_BUTTON_CUSTOM_ID,
     INFO_CHANNEL_LEADERBOARD_SEASON_BUTTON_LABEL,
     INFO_CHANNEL_MESSAGE,
-    INFO_CHANNEL_PLAYER_INFO_BUTTON_CUSTOM_ID,
     INFO_CHANNEL_PLAYER_INFO_BUTTON_LABEL,
-    INFO_CHANNEL_PLAYER_INFO_SEASON_BUTTON_CUSTOM_ID,
     INFO_CHANNEL_PLAYER_INFO_SEASON_BUTTON_LABEL,
     INFO_THREAD_LEADERBOARD_MATCH_FORMAT_PLACEHOLDER,
     INFO_THREAD_LEADERBOARD_NEXT_PAGE_BUTTON_LABEL,
-    INFO_THREAD_LEADERBOARD_SEASON_MAX_OPTIONS,
     INFO_THREAD_LEADERBOARD_SEASON_PLACEHOLDER,
     INFO_THREAD_LEADERBOARD_SEASON_SELECT_BOTH_MESSAGE,
     INFO_THREAD_LEADERBOARD_SEASON_SELECT_SEASON_MESSAGE,
     INFO_THREAD_LEADERBOARD_SELECT_MATCH_FORMAT_MESSAGE,
     INFO_THREAD_LEADERBOARD_SHOW_BUTTON_LABEL,
+    INFO_THREAD_NOT_FOUND_MESSAGE,
     INFO_THREAD_PLAYER_INFO_SEASON_PLACEHOLDER,
     INFO_THREAD_PLAYER_INFO_SEASON_SELECT_SEASON_MESSAGE,
     INFO_THREAD_PLAYER_INFO_SHOW_BUTTON_LABEL,
+    INFO_THREAD_REQUIRED_MESSAGE,
+    build_info_thread_initial_message,
+)
+from dxd_rating.platform.discord.copy.match import MATCHMAKING_NEWS_CHANNEL_MESSAGE
+from dxd_rating.platform.discord.copy.matchmaking import (
+    JOIN_SUCCESS_MESSAGE,
     MATCHMAKING_CHANNEL_JOIN_BUTTON_LABEL,
-    MATCHMAKING_CHANNEL_MATCH_FORMAT_PLACEHOLDER,
-    MATCHMAKING_CHANNEL_MESSAGE,
     MATCHMAKING_CHANNEL_QUEUE_NAME_PLACEHOLDER,
-    MATCHMAKING_CHANNEL_SELECT_MATCH_FORMAT_MESSAGE,
     MATCHMAKING_CHANNEL_SELECT_QUEUE_NAME_MESSAGE,
     MATCHMAKING_CHANNEL_STATUS_PLACEHOLDER_MESSAGE,
-    MATCHMAKING_CHANNEL_UPDATE_STATUS_BUTTON_CUSTOM_ID,
     MATCHMAKING_CHANNEL_UPDATE_STATUS_BUTTON_LABEL,
-    MATCHMAKING_NEWS_CHANNEL_MESSAGE,
     MATCHMAKING_PRESENCE_THREAD_LEAVE_BUTTON_LABEL,
     MATCHMAKING_PRESENCE_THREAD_PRESENT_BUTTON_LABEL,
+    build_matchmaking_guide_message,
+    build_matchmaking_panel_message,
+)
+from dxd_rating.platform.discord.copy.registration import (
+    PLAYER_REGISTRATION_REQUIRED_MESSAGE,
     REGISTER_PANEL_BUTTON_LABEL,
     REGISTER_PANEL_MESSAGE,
+)
+from dxd_rating.platform.discord.copy.system import (
+    ADMIN_CONTACT_CHANNEL_MESSAGE,
+    ADMIN_OPERATIONS_CHANNEL_MESSAGE,
+    APPLICATION_COMMAND_INTERNAL_ERROR_MESSAGE,
     SYSTEM_ANNOUNCEMENTS_CHANNEL_MESSAGE,
-    MatchmakingPanelView,
-    build_info_thread_initial_message,
-    build_matchmaking_status_message,
+)
+from dxd_rating.platform.discord.copy.time_format import format_discord_datetime
+from dxd_rating.platform.discord.gateway.commands import BotCommandHandlers, register_app_commands
+from dxd_rating.platform.discord.ui import (
+    INFO_CHANNEL_LEADERBOARD_BUTTON_CUSTOM_ID,
+    INFO_CHANNEL_LEADERBOARD_SEASON_BUTTON_CUSTOM_ID,
+    INFO_CHANNEL_PLAYER_INFO_BUTTON_CUSTOM_ID,
+    INFO_CHANNEL_PLAYER_INFO_SEASON_BUTTON_CUSTOM_ID,
+    INFO_THREAD_LEADERBOARD_SEASON_MAX_OPTIONS,
+    MATCHMAKING_CHANNEL_UPDATE_STATUS_BUTTON_CUSTOM_ID,
+    FormatSpecificMatchmakingPanelView,
+    MatchmakingNewsMatchAnnouncementSpectateButton,
+    MatchOperationThreadParentButton,
 )
 from dxd_rating.platform.runtime import MatchRuntime
-from dxd_rating.shared.constants import MATCH_FORMAT_CHOICES, get_match_queue_class_definitions
+from dxd_rating.shared.constants import MATCH_FORMAT_CHOICES
 
 DEFAULT_MATCH_FORMAT = MatchFormat.THREE_VS_THREE
 DEFAULT_QUEUE_NAME = "beginner"
 DEFAULT_MATCHMAKING_GUIDE_URL = (
     "https://github.com/linshokaku/dxd-rating-system/blob/main/docs/README.md"
 )
+MATCHMAKING_STATUS_UPDATED_AT_PATTERN = re.compile(
+    r"^最終更新: \d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2} JST$"
+)
+_MISSING = object()
 
 
-def build_expected_matchmaking_guide_message(guide_url: str) -> str:
-    return "\n".join(
-        [
-            "レート戦の遊び方",
-            "下のメッセージで試合形式と階級を選んで、参加ボタンを押すとマッチングを始められます。",
-            "マッチしたら、まず試合を進める人の「親」を1人決めてください。",
-            "試合は3セットで行い、勝ったセットが多いチームの勝ちです。",
-            "勝ったセット数が同じなら引き分けです。",
-            "どちらかが2回続けて勝ったら、その時点で試合終了です。",
-            "試合が終わったら、参加した **全員** が勝敗報告をしてください。",
-            f"くわしい遊び方は [こちらから]({guide_url}) 確認できます。",
-        ]
-    )
+def _render_embed_content(embed: discord.Embed | None) -> str:
+    if embed is None or embed.description is None:
+        return ""
+    return embed.description
 
 
 @dataclass(frozen=True)
@@ -159,15 +173,29 @@ class FakeMember:
 @dataclass
 class FakeInteractionResponse:
     messages: list[str] = field(default_factory=list)
+    raw_messages: list[str | None] = field(default_factory=list)
+    embeds: list[discord.Embed | None] = field(default_factory=list)
     ephemeral_flags: list[bool] = field(default_factory=list)
     deferred: bool = False
     defer_ephemeral: bool | None = None
     defer_thinking: bool | None = None
+    send_message_call_count: int = 0
+    defer_call_count: int = 0
     interaction: FakeInteraction | None = field(default=None, repr=False)
 
-    async def send_message(self, content: str, *, ephemeral: bool = False, **_: Any) -> None:
+    async def send_message(
+        self,
+        content: str | None = None,
+        *,
+        embed: discord.Embed | None = None,
+        ephemeral: bool = False,
+        **_: Any,
+    ) -> None:
         self.deferred = True
-        self.messages.append(content)
+        self.send_message_call_count += 1
+        self.messages.append(content if content is not None else _render_embed_content(embed))
+        self.raw_messages.append(content)
+        self.embeds.append(embed)
         self.ephemeral_flags.append(ephemeral)
 
     async def edit_message(
@@ -190,6 +218,7 @@ class FakeInteractionResponse:
         **_: Any,
     ) -> None:
         self.deferred = True
+        self.defer_call_count += 1
         self.defer_ephemeral = ephemeral
         self.defer_thinking = thinking
 
@@ -200,9 +229,22 @@ class FakeInteractionResponse:
 @dataclass
 class FakeInteractionFollowup:
     response: FakeInteractionResponse
+    send_call_count: int = 0
 
-    async def send(self, content: str, *, ephemeral: bool = False, **_: Any) -> None:
-        self.response.messages.append(content)
+    async def send(
+        self,
+        content: str | None = None,
+        *,
+        embed: discord.Embed | None = None,
+        ephemeral: bool = False,
+        **_: Any,
+    ) -> None:
+        self.send_call_count += 1
+        self.response.messages.append(
+            content if content is not None else _render_embed_content(embed)
+        )
+        self.response.raw_messages.append(content)
+        self.response.embeds.append(embed)
         self.response.ephemeral_flags.append(ephemeral)
 
 
@@ -253,6 +295,8 @@ def make_not_found() -> discord.NotFound:
 class FakeMessage:
     id: int
     content: str
+    raw_content: str | None = None
+    embed: discord.Embed | None = None
     view: discord.ui.View | discord.ui.LayoutView | None = None
     suppress_embeds: bool = False
     fail_edit_with: Exception | None = None
@@ -260,17 +304,26 @@ class FakeMessage:
     async def edit(
         self,
         *,
-        content: str | None = None,
-        view: discord.ui.View | discord.ui.LayoutView | None = None,
+        content: object = _MISSING,
+        embed: object = _MISSING,
+        view: object = _MISSING,
         suppress_embeds: bool | None = None,
         **_: Any,
     ) -> discord.Message:
         if self.fail_edit_with is not None:
             raise self.fail_edit_with
-        if content is not None:
-            self.content = content
-        if view is not None:
-            self.view = view
+        if content is not _MISSING:
+            self.raw_content = cast(str | None, content)
+        if embed is not _MISSING:
+            self.embed = cast(discord.Embed | None, embed)
+        if content is not _MISSING or embed is not _MISSING:
+            self.content = (
+                self.raw_content
+                if self.raw_content is not None
+                else _render_embed_content(self.embed)
+            )
+        if view is not _MISSING:
+            self.view = cast(discord.ui.View | discord.ui.LayoutView | None, view)
         if suppress_embeds is not None:
             self.suppress_embeds = suppress_embeds
         return cast(discord.Message, self)
@@ -296,6 +349,8 @@ class FakeThread:
         self,
         content: str | None = None,
         *,
+        embed: discord.Embed | None = None,
+        allowed_mentions: discord.AllowedMentions | None = None,
         view: discord.ui.View | None = None,
         suppress_embeds: bool = False,
         **_: Any,
@@ -305,7 +360,9 @@ class FakeThread:
 
         message = FakeMessage(
             id=self.parent.guild.next_message_id,
-            content="" if content is None else content,
+            content=content if content is not None else _render_embed_content(embed),
+            raw_content=content,
+            embed=embed,
             view=view,
             suppress_embeds=suppress_embeds,
         )
@@ -321,10 +378,20 @@ class FakeThread:
 
 
 @dataclass
+class FakeCategoryChannel:
+    id: int
+    name: str
+    guild: FakeGuild
+    channels: list[FakeTextChannel] = field(default_factory=list)
+    type: discord.ChannelType = field(default=discord.ChannelType.category, init=False)
+
+
+@dataclass
 class FakeTextChannel:
     id: int
     name: str
     guild: FakeGuild
+    category: FakeCategoryChannel | None = None
     overwrites: dict[object, discord.PermissionOverwrite] = field(default_factory=dict)
     sent_messages: list[FakeMessage] = field(default_factory=list)
     created_threads: list[FakeThread] = field(default_factory=list)
@@ -335,11 +402,14 @@ class FakeTextChannel:
     fail_delete_with: Exception | None = None
     deleted: bool = False
     send_call_count: int = 0
+    type: discord.ChannelType = field(default=discord.ChannelType.text, init=False)
 
     async def send(
         self,
         content: str | None = None,
         *,
+        embed: discord.Embed | None = None,
+        allowed_mentions: discord.AllowedMentions | None = None,
         view: discord.ui.View | None = None,
         suppress_embeds: bool = False,
         **_: Any,
@@ -353,7 +423,9 @@ class FakeTextChannel:
 
         message = FakeMessage(
             id=self.guild.next_message_id,
-            content="" if content is None else content,
+            content=content if content is not None else _render_embed_content(embed),
+            raw_content=content,
+            embed=embed,
             view=view,
             suppress_embeds=suppress_embeds,
         )
@@ -392,6 +464,12 @@ class FakeTextChannel:
             raise self.fail_delete_with
 
         self.deleted = True
+        if self.category is not None:
+            self.category.channels = [
+                existing_channel
+                for existing_channel in self.category.channels
+                if existing_channel.id != self.id
+            ]
         self.guild.channels = [
             existing_channel
             for existing_channel in self.guild.channels
@@ -410,6 +488,7 @@ class FakeUnsupportedGuildChannel:
 class FakeGuild:
     id: int
     channels: list[Any] = field(default_factory=list)
+    categories: list[FakeCategoryChannel] = field(default_factory=list)
     members: dict[int, object] = field(default_factory=dict)
     default_role: FakeRole = field(default_factory=lambda: FakeRole(id=0))
     roles: list[FakeRole] = field(default_factory=list)
@@ -418,6 +497,7 @@ class FakeGuild:
     next_message_id: int = 30_001
     next_role_id: int = 40_001
     create_channel_error: Exception | None = None
+    create_category_error: Exception | None = None
     create_role_error: Exception | None = None
     next_channel_fail_send_with: Exception | None = None
     next_channel_fail_send_call_errors: dict[int, Exception] = field(default_factory=dict)
@@ -433,6 +513,7 @@ class FakeGuild:
         self,
         name: str,
         *,
+        category: FakeCategoryChannel | None = None,
         overwrites: dict[object, discord.PermissionOverwrite] | None = None,
         **_: Any,
     ) -> discord.TextChannel:
@@ -443,6 +524,7 @@ class FakeGuild:
             id=self.next_channel_id,
             name=name,
             guild=self,
+            category=category,
             overwrites={} if overwrites is None else dict(overwrites),
             fail_send_with=self.next_channel_fail_send_with,
             fail_send_call_errors=dict(self.next_channel_fail_send_call_errors),
@@ -453,7 +535,22 @@ class FakeGuild:
         self.next_channel_fail_send_call_errors = {}
         self.next_channel_fail_delete_with = None
         self.channels.append(channel)
+        if category is not None:
+            category.channels.append(channel)
         return cast(discord.TextChannel, channel)
+
+    async def create_category(self, name: str, **_: Any) -> discord.CategoryChannel:
+        if self.create_category_error is not None:
+            raise self.create_category_error
+
+        category = FakeCategoryChannel(
+            id=self.next_channel_id,
+            name=name,
+            guild=self,
+        )
+        self.next_channel_id += 1
+        self.categories.append(category)
+        return cast(discord.CategoryChannel, category)
 
     async def create_role(self, name: str, **_: Any) -> discord.Role:
         if self.create_role_error is not None:
@@ -465,6 +562,9 @@ class FakeGuild:
         return cast(discord.Role, role)
 
     def get_channel(self, channel_id: int) -> Any | None:
+        for category in self.categories:
+            if category.id == channel_id:
+                return category
         for channel in self.channels:
             if channel.id == channel_id:
                 return channel
@@ -509,6 +609,48 @@ def assert_response(
 ) -> None:
     assert interaction.response.messages == expected_messages
     assert interaction.response.ephemeral_flags == [ephemeral] * len(expected_messages)
+
+
+def assert_response_sequence(
+    interaction: FakeInteraction,
+    expected_messages: list[str],
+    expected_ephemeral_flags: list[bool],
+) -> None:
+    assert interaction.response.messages == expected_messages
+    assert interaction.response.ephemeral_flags == expected_ephemeral_flags
+
+
+def assert_public_embed_response(
+    interaction: FakeInteraction,
+    index: int,
+    *,
+    expected_content: str,
+    expected_body: str,
+    ephemeral: bool = False,
+) -> None:
+    assert interaction.response.messages[index] == expected_content
+    assert interaction.response.raw_messages[index] == expected_content
+    assert interaction.response.embeds[index] is not None
+    assert interaction.response.embeds[index].description == expected_body
+    assert interaction.response.ephemeral_flags[index] is ephemeral
+
+
+def assert_body_only_embed_message(message: FakeMessage, expected_body: str) -> None:
+    assert message.raw_content is None
+    assert message.embed is not None
+    assert message.embed.description == expected_body
+
+
+def assert_deferred_followup_response(
+    interaction: FakeInteraction,
+    *,
+    followup_send_call_count: int = 1,
+) -> None:
+    assert interaction.response.defer_call_count == 1
+    assert interaction.response.defer_ephemeral is True
+    assert interaction.response.defer_thinking is True
+    assert interaction.response.send_message_call_count == 0
+    assert interaction.followup.send_call_count == followup_send_call_count
 
 
 def assert_presence_thread_controls(view: discord.ui.View | None) -> None:
@@ -686,9 +828,16 @@ def find_role_by_name(guild: FakeGuild, role_name: str) -> FakeRole | None:
     return None
 
 
+def find_category_by_name(guild: FakeGuild, category_name: str) -> FakeCategoryChannel:
+    for category in guild.categories:
+        if category.name == category_name:
+            return category
+    raise AssertionError(f"Category not found: {category_name}")
+
+
 def find_channel_by_name(guild: FakeGuild, channel_name: str) -> FakeTextChannel:
     for channel in guild.channels:
-        if channel.name == channel_name:
+        if isinstance(channel, FakeTextChannel) and channel.name == channel_name:
             return channel
     raise AssertionError(f"Channel not found: {channel_name}")
 
@@ -698,14 +847,20 @@ def setup_matchmaking_managed_ui_channel(
     channel_id: int,
     *,
     created_by_discord_user_id: int = 10,
-    message_id: int = 70_001,
+    message_id: int | None = None,
     status_message_id: int | None = 70_000,
+    matchmaking_one_v_one_message_id: int | None = 70_001,
+    matchmaking_two_v_two_message_id: int | None = 70_002,
+    matchmaking_three_v_three_message_id: int | None = 70_003,
 ) -> None:
     handlers.managed_ui_service.create_managed_ui_channel(
         ui_type=ManagedUiType.MATCHMAKING_CHANNEL,
         channel_id=channel_id,
         message_id=message_id,
         status_message_id=status_message_id,
+        matchmaking_one_v_one_message_id=matchmaking_one_v_one_message_id,
+        matchmaking_two_v_two_message_id=matchmaking_two_v_two_message_id,
+        matchmaking_three_v_three_message_id=matchmaking_three_v_three_message_id,
         created_by_discord_user_id=created_by_discord_user_id,
     )
 
@@ -723,6 +878,55 @@ def setup_info_managed_ui_channel(
         message_id=message_id,
         created_by_discord_user_id=created_by_discord_user_id,
     )
+
+
+def assert_matchmaking_panel_message(
+    message: FakeMessage,
+    match_format: MatchFormat,
+) -> None:
+    expected_body = "\n".join(
+        [
+            f"{match_format.value} の参加キューを選択してください。",
+            "在席確認やマッチングキャンセルは、参加後に作成される在席確認スレッドで行ってください。",
+        ]
+    )
+    assert_body_only_embed_message(message, expected_body)
+    assert "/present" not in message.content
+    assert "/leave" not in message.content
+    assert message.view is not None
+    assert message.suppress_embeds is False
+    queue_name_select = cast(discord.ui.Select[Any], message.view.children[0])
+    join_button = cast(discord.ui.Button[Any], message.view.children[1])
+
+    assert queue_name_select.placeholder == MATCHMAKING_CHANNEL_QUEUE_NAME_PLACEHOLDER
+    assert [option.label for option in queue_name_select.options] == [
+        "beginner (1600未満)",
+        "regular (全レート)",
+        "master (1600以上)",
+    ]
+    assert [option.value for option in queue_name_select.options] == [
+        "beginner",
+        "regular",
+        "master",
+    ]
+    assert join_button.label == MATCHMAKING_CHANNEL_JOIN_BUTTON_LABEL
+
+
+def assert_matchmaking_status_message(
+    message: FakeMessage,
+    snapshot: MatchmakingStatusSnapshot,
+) -> None:
+    assert message.raw_content is None
+    assert message.embed is not None
+    assert message.embed.description is not None
+    lines = message.embed.description.splitlines()
+
+    assert lines[0] == "直近30分の参加状況"
+    assert MATCHMAKING_STATUS_UPDATED_AT_PATTERN.fullmatch(lines[1]) is not None
+    assert lines[2:] == [
+        f"{entry.match_format.value}-{entry.queue_name}: {entry.active_count}"
+        for entry in snapshot.entries
+    ]
 
 
 def create_active_info_thread(
@@ -750,6 +954,43 @@ def create_active_info_thread(
     )
 
     asyncio.run(handlers.info_thread(as_interaction(interaction), command_name.value))
+
+    assert len(info_channel.created_threads) > 0, interaction.response.messages
+    return info_channel.created_threads[-1]
+
+
+def create_active_dev_info_thread(
+    handlers: BotCommandHandlers,
+    *,
+    executor_discord_user_id: int,
+    target_discord_user_id: int,
+    guild: FakeGuild,
+    info_channel: FakeTextChannel,
+    command_name: InfoThreadCommandName = InfoThreadCommandName.PLAYER_INFO,
+    interaction_channel_id: int = 13_299,
+    executor_name: str | None = None,
+    executor_global_name: str | None = None,
+    executor_nick: str | None = None,
+) -> FakeThread:
+    interaction = FakeInteraction(
+        user=FakeUser(
+            id=executor_discord_user_id,
+            name=executor_name,
+            global_name=executor_global_name,
+            nick=executor_nick,
+        ),
+        channel_id=interaction_channel_id,
+        guild_id=guild.id,
+        guild=guild,
+    )
+
+    asyncio.run(
+        handlers.dev_info_thread(
+            as_interaction(interaction),
+            command_name.value,
+            str(target_discord_user_id),
+        )
+    )
 
     assert len(info_channel.created_threads) > 0, interaction.response.messages
     return info_channel.created_threads[-1]
@@ -800,7 +1041,11 @@ def format_player_info_message(
                 f"wins: {wins}",
                 f"losses: {losses}",
                 f"draws: {draws}",
-                f"last_played_at: {'-' if last_played_at is None else last_played_at.isoformat()}",
+                (
+                    "last_played_at: -"
+                    if last_played_at is None
+                    else f"last_played_at: {format_discord_datetime(last_played_at)}"
+                ),
             ]
         )
     return "\n".join(lines)
@@ -1197,7 +1442,7 @@ def test_join_command_requires_registered_player(session_factory: sessionmaker[S
 
     assert_response(
         interaction,
-        ["プレイヤー登録が必要です。先に /register を実行してください。"],
+        [PLAYER_REGISTRATION_REQUIRED_MESSAGE],
         ephemeral=True,
     )
 
@@ -1327,46 +1572,23 @@ def test_join_command_returns_restricted_message_for_queue_join_restricted_playe
     assert_response(interaction, ["現在キュー参加を制限されています。"], ephemeral=True)
 
 
-def test_matchmaking_panel_join_button_requires_match_format_selection(
-    session_factory: sessionmaker[Session],
-) -> None:
-    handlers = create_handlers(session_factory)
-    view = MatchmakingPanelView(handlers)
-    interaction = FakeInteraction(user=FakeUser(id=123_456_789_012_345_681_3))
-    join_button = cast(discord.ui.Button[Any], view.children[2])
-
-    asyncio.run(join_button.callback(as_interaction(interaction)))
-
-    assert_response(
-        interaction,
-        [MATCHMAKING_CHANNEL_SELECT_MATCH_FORMAT_MESSAGE],
-        ephemeral=True,
-    )
-
-
 def test_matchmaking_panel_join_button_requires_queue_selection(
     session_factory: sessionmaker[Session],
 ) -> None:
     handlers = create_handlers(session_factory)
-    view = MatchmakingPanelView(handlers)
+    view = FormatSpecificMatchmakingPanelView(handlers, MatchFormat.TWO_VS_TWO)
     user = FakeUser(id=123_456_789_012_345_681_4)
-    match_format_select = cast(discord.ui.Select[Any], view.children[0])
-    join_button = cast(discord.ui.Button[Any], view.children[2])
-
-    set_select_values(match_format_select, [MatchFormat.TWO_VS_TWO.value])
-    select_interaction = FakeInteraction(user=user)
-    asyncio.run(match_format_select.callback(as_interaction(select_interaction)))
+    join_button = cast(discord.ui.Button[Any], view.children[1])
 
     interaction = FakeInteraction(user=user)
     asyncio.run(join_button.callback(as_interaction(interaction)))
 
-    assert select_interaction.response.deferred is True
-    assert select_interaction.response.messages == []
     assert_response(
         interaction,
         [MATCHMAKING_CHANNEL_SELECT_QUEUE_NAME_MESSAGE],
         ephemeral=True,
     )
+    assert_deferred_followup_response(interaction)
 
 
 def test_matchmaking_panel_join_button_uses_selected_values_for_join(
@@ -1379,10 +1601,9 @@ def test_matchmaking_panel_join_button_uses_selected_values_for_join(
         session_factory,
         matching_queue_service=MatchingQueueService(session_factory),
     )
-    view = MatchmakingPanelView(handlers)
-    match_format_select = cast(discord.ui.Select[Any], view.children[0])
-    queue_name_select = cast(discord.ui.Select[Any], view.children[1])
-    join_button = cast(discord.ui.Button[Any], view.children[2])
+    view = FormatSpecificMatchmakingPanelView(handlers, MatchFormat.ONE_VS_ONE)
+    queue_name_select = cast(discord.ui.Select[Any], view.children[0])
+    join_button = cast(discord.ui.Button[Any], view.children[1])
     user = FakeUser(
         id=discord_user_id,
         name="ui-queue-user",
@@ -1397,9 +1618,6 @@ def test_matchmaking_panel_join_button_uses_selected_values_for_join(
     )
     guild.channels.append(channel)
     setup_matchmaking_managed_ui_channel(handlers, channel.id)
-
-    set_select_values(match_format_select, [MatchFormat.ONE_VS_ONE.value])
-    asyncio.run(match_format_select.callback(as_interaction(FakeInteraction(user=user))))
 
     set_select_values(queue_name_select, ["regular"])
     asyncio.run(queue_name_select.callback(as_interaction(FakeInteraction(user=user))))
@@ -1419,6 +1637,7 @@ def test_matchmaking_panel_join_button_uses_selected_values_for_join(
         ["キューに参加しました。5分間マッチングします。\n在席確認は <#20001> で行ってください。"],
         ephemeral=True,
     )
+    assert_deferred_followup_response(interaction)
     assert queue_entry.match_format == MatchFormat.ONE_VS_ONE
     assert queue_entry.notification_channel_id == channel.id
     assert queue_entry.presence_thread_channel_id == 20_001
@@ -1427,6 +1646,10 @@ def test_matchmaking_panel_join_button_uses_selected_values_for_join(
     assert len(channel.created_threads) == 1
     assert channel.created_threads[0].name == "在席確認-ui-queue-guild"
     assert channel.created_threads[0].added_user_ids == [discord_user_id]
+    assert_body_only_embed_message(
+        channel.created_threads[0].sent_messages[0],
+        JOIN_SUCCESS_MESSAGE,
+    )
     assert [message.content for message in channel.created_threads[0].sent_messages] == [
         "キューに参加しました。5分間マッチングします。"
     ]
@@ -1499,6 +1722,7 @@ def test_matchmaking_presence_thread_present_button_updates_waiting_entry(
         ["在席を更新しました。次の期限は5分後です。"],
         ephemeral=True,
     )
+    assert_deferred_followup_response(button_interaction)
     assert queue_entry.status == MatchQueueEntryStatus.WAITING
     assert queue_entry.notification_channel_id == channel.id
     assert queue_entry.presence_thread_channel_id == thread.id
@@ -1848,9 +2072,7 @@ def test_update_matchmaking_status_command_updates_second_message(
         DEFAULT_MATCH_FORMAT,
         DEFAULT_QUEUE_NAME,
     )
-    expected_message = build_matchmaking_status_message(
-        matching_queue_service.get_matchmaking_status_snapshot()
-    )
+    expected_snapshot = matching_queue_service.get_matchmaking_status_snapshot()
     interaction = FakeInteraction(
         user=FakeUser(id=executor_discord_user_id),
         channel_id=command_channel.id,
@@ -1869,13 +2091,33 @@ def test_update_matchmaking_status_command_updates_second_message(
 
     assert managed_ui_channel is not None
     assert_response(interaction, ["参加状況を更新しました。"], ephemeral=True)
-    assert matchmaking_channel.sent_messages[1].content == expected_message
-    assert len(matchmaking_channel.sent_messages[1].content.splitlines()) == (
-        len(get_match_queue_class_definitions()) + 1
+    assert_matchmaking_status_message(matchmaking_channel.sent_messages[1], expected_snapshot)
+    assert_matchmaking_panel_message(
+        matchmaking_channel.sent_messages[2],
+        MatchFormat.ONE_VS_ONE,
     )
-    assert matchmaking_channel.sent_messages[2].content == MATCHMAKING_CHANNEL_MESSAGE
+    assert_matchmaking_panel_message(
+        matchmaking_channel.sent_messages[3],
+        MatchFormat.TWO_VS_TWO,
+    )
+    assert_matchmaking_panel_message(
+        matchmaking_channel.sent_messages[4],
+        MatchFormat.THREE_VS_THREE,
+    )
     assert managed_ui_channel.status_message_id == matchmaking_channel.sent_messages[1].id
-    assert managed_ui_channel.message_id == matchmaking_channel.sent_messages[2].id
+    assert managed_ui_channel.message_id is None
+    assert (
+        managed_ui_channel.matchmaking_one_v_one_message_id
+        == matchmaking_channel.sent_messages[2].id
+    )
+    assert (
+        managed_ui_channel.matchmaking_two_v_two_message_id
+        == matchmaking_channel.sent_messages[3].id
+    )
+    assert (
+        managed_ui_channel.matchmaking_three_v_three_message_id
+        == matchmaking_channel.sent_messages[4].id
+    )
 
 
 def test_matchmaking_status_button_updates_second_message(
@@ -1916,9 +2158,7 @@ def test_matchmaking_status_button_updates_second_message(
         DEFAULT_MATCH_FORMAT,
         DEFAULT_QUEUE_NAME,
     )
-    expected_message = build_matchmaking_status_message(
-        matching_queue_service.get_matchmaking_status_snapshot()
-    )
+    expected_snapshot = matching_queue_service.get_matchmaking_status_snapshot()
     status_message = matchmaking_channel.sent_messages[1]
     assert status_message.view is not None
     status_button = cast(discord.ui.Button[Any], status_message.view.children[0])
@@ -1933,8 +2173,9 @@ def test_matchmaking_status_button_updates_second_message(
     asyncio.run(status_button.callback(as_interaction(interaction)))
 
     assert_response(interaction, ["参加状況を更新しました。"], ephemeral=True)
-    assert status_message.content == expected_message
-    assert matchmaking_channel.sent_messages[2].content == MATCHMAKING_CHANNEL_MESSAGE
+    assert_deferred_followup_response(interaction)
+    assert_matchmaking_status_message(status_message, expected_snapshot)
+    assert_matchmaking_panel_message(matchmaking_channel.sent_messages[2], MatchFormat.ONE_VS_ONE)
 
 
 def test_matchmaking_status_button_requires_registered_player(
@@ -1986,7 +2227,7 @@ def test_matchmaking_status_button_requires_registered_player(
 
     assert_response(
         interaction,
-        ["プレイヤー登録が必要です。先に /register を実行してください。"],
+        [PLAYER_REGISTRATION_REQUIRED_MESSAGE],
         ephemeral=True,
     )
 
@@ -2068,7 +2309,7 @@ def test_update_matchmaking_status_command_requires_registered_player(
 
     assert_response(
         interaction,
-        ["プレイヤー登録が必要です。先に /register を実行してください。"],
+        [PLAYER_REGISTRATION_REQUIRED_MESSAGE],
         ephemeral=True,
     )
 
@@ -2198,14 +2439,16 @@ def test_update_matchmaking_status_command_returns_generic_failure_when_edit_fai
     guild.channels.append(matchmaking_channel)
     guide_message = asyncio.run(matchmaking_channel.send(content="guide"))
     status_message = asyncio.run(matchmaking_channel.send(content="status"))
-    ui_message = asyncio.run(matchmaking_channel.send(content=MATCHMAKING_CHANNEL_MESSAGE))
+    panel_message = asyncio.run(
+        matchmaking_channel.send(content=build_matchmaking_panel_message(MatchFormat.ONE_VS_ONE))
+    )
     del guide_message
     status_message.fail_edit_with = RuntimeError("boom")
     setup_matchmaking_managed_ui_channel(
         handlers,
         matchmaking_channel.id,
-        message_id=ui_message.id,
         status_message_id=status_message.id,
+        matchmaking_one_v_one_message_id=panel_message.id,
     )
     interaction = FakeInteraction(
         user=FakeUser(id=discord_user_id),
@@ -2280,6 +2523,27 @@ def test_player_info_command_returns_requesting_player_stats_in_active_info_thre
             }
         ),
     ]
+    assert_body_only_embed_message(
+        created_thread.sent_messages[0],
+        build_info_thread_initial_message(InfoThreadCommandName.PLAYER_INFO),
+    )
+    assert_body_only_embed_message(
+        created_thread.sent_messages[1],
+        format_player_info_message(
+            {
+                MatchFormat.ONE_VS_ONE: (1500.0, 0, 0, 0, 0, None),
+                MatchFormat.TWO_VS_TWO: (1500.0, 0, 0, 0, 0, None),
+                MatchFormat.THREE_VS_THREE: (
+                    1512.5,
+                    8,
+                    5,
+                    2,
+                    1,
+                    datetime(2026, 3, 20, 12, 34, 56, tzinfo=timezone.utc),
+                ),
+            }
+        ),
+    )
     assert created_thread.sent_messages[1].view is None
 
 
@@ -2352,9 +2616,14 @@ def test_info_thread_player_info_button_posts_current_stats_to_active_thread(
     asyncio.run(show_button.callback(as_interaction(interaction)))
 
     assert_response(interaction, ["プレイヤー情報を表示しました。"], ephemeral=True)
+    assert_deferred_followup_response(interaction)
     assert_all_controls_disabled(initial_message.view)
-    assert [message.content for message in created_thread.sent_messages] == [
+    assert_body_only_embed_message(
+        created_thread.sent_messages[0],
         build_info_thread_initial_message(InfoThreadCommandName.PLAYER_INFO),
+    )
+    assert_body_only_embed_message(
+        created_thread.sent_messages[1],
         format_player_info_message(
             {
                 MatchFormat.ONE_VS_ONE: (1500.0, 0, 0, 0, 0, None),
@@ -2369,7 +2638,7 @@ def test_info_thread_player_info_button_posts_current_stats_to_active_thread(
                 ),
             }
         ),
-    ]
+    )
     assert created_thread.sent_messages[1].view is None
 
 
@@ -2469,6 +2738,7 @@ def test_info_thread_player_info_button_returns_internal_error_and_disables_mess
         ["プレイヤー情報の取得に失敗しました。管理者に確認してください。"],
         ephemeral=True,
     )
+    assert_deferred_followup_response(interaction)
     assert_all_controls_disabled(initial_message.view)
     assert len(created_thread.sent_messages) == 1
 
@@ -2559,6 +2829,7 @@ def test_info_thread_player_info_season_button_requires_season_selection(
         [INFO_THREAD_PLAYER_INFO_SEASON_SELECT_SEASON_MESSAGE],
         ephemeral=True,
     )
+    assert_deferred_followup_response(interaction)
     assert_all_controls_disabled(initial_message.view)
     assert len(created_thread.sent_messages) == 1
 
@@ -2655,8 +2926,12 @@ def test_info_thread_player_info_season_button_posts_requested_season_stats_to_a
     assert season_interaction.response.deferred is True
     assert_response(interaction, ["シーズン別プレイヤー情報を表示しました。"], ephemeral=True)
     assert_all_controls_disabled(initial_message.view)
-    assert [message.content for message in created_thread.sent_messages] == [
+    assert_body_only_embed_message(
+        created_thread.sent_messages[0],
         build_info_thread_initial_message(InfoThreadCommandName.PLAYER_INFO_SEASON),
+    )
+    assert_body_only_embed_message(
+        created_thread.sent_messages[1],
         format_player_info_message(
             {
                 MatchFormat.ONE_VS_ONE: (1500.0, 0, 0, 0, 0, None),
@@ -2673,7 +2948,7 @@ def test_info_thread_player_info_season_button_posts_requested_season_stats_to_a
             season_id=season.id,
             season_name=season.name,
         ),
-    ]
+    )
     assert created_thread.sent_messages[1].view is None
 
 
@@ -2833,7 +3108,7 @@ def test_player_info_season_command_requires_active_info_thread_binding(
 
     assert_response(
         interaction,
-        ["先に /info_thread を実行してください。"],
+        [INFO_THREAD_REQUIRED_MESSAGE],
         ephemeral=True,
     )
 
@@ -2865,7 +3140,7 @@ def test_player_info_season_command_returns_thread_not_found_when_bound_thread_i
 
     assert_response(
         interaction,
-        ["情報確認用スレッドが見つかりません。先に /info_thread を実行してください。"],
+        [INFO_THREAD_NOT_FOUND_MESSAGE],
         ephemeral=True,
     )
 
@@ -2901,7 +3176,7 @@ def test_player_info_season_command_returns_thread_not_found_when_bound_thread_s
 
     assert_response(
         interaction,
-        ["情報確認用スレッドが見つかりません。先に /info_thread を実行してください。"],
+        [INFO_THREAD_NOT_FOUND_MESSAGE],
         ephemeral=True,
     )
     assert [message.content for message in created_thread.sent_messages] == [
@@ -3054,7 +3329,7 @@ def test_player_info_season_command_requires_registered_player(
 
     assert_response(
         interaction,
-        ["プレイヤー登録が必要です。先に /register を実行してください。"],
+        [PLAYER_REGISTRATION_REQUIRED_MESSAGE],
         ephemeral=True,
     )
 
@@ -3246,6 +3521,7 @@ def test_info_thread_leaderboard_button_requires_match_format_selection(
         [INFO_THREAD_LEADERBOARD_SELECT_MATCH_FORMAT_MESSAGE],
         ephemeral=True,
     )
+    assert_deferred_followup_response(interaction)
     assert_all_controls_disabled(initial_message.view)
     assert len(created_thread.sent_messages) == 1
 
@@ -3372,8 +3648,12 @@ def test_info_thread_leaderboard_button_posts_page_one_to_active_thread(
         ephemeral=True,
     )
     assert_all_controls_disabled(initial_message.view)
-    assert [message.content for message in created_thread.sent_messages] == [
+    assert_body_only_embed_message(
+        created_thread.sent_messages[0],
         build_info_thread_initial_message(InfoThreadCommandName.LEADERBOARD),
+    )
+    assert_body_only_embed_message(
+        created_thread.sent_messages[1],
         format_leaderboard_message(
             season_name=season_pair.active.name,
             match_format=MatchFormat.THREE_VS_THREE,
@@ -3384,7 +3664,7 @@ def test_info_thread_leaderboard_button_posts_page_one_to_active_thread(
                 (3, "Alice", 1600.0, None, -2, None),
             ],
         ),
-    ]
+    )
     assert created_thread.sent_messages[1].view is None
 
 
@@ -3445,14 +3725,17 @@ def test_leaderboard_command_adds_next_page_button_when_next_page_exists(
     )
     assert_info_thread_leaderboard_initial_controls(created_thread.sent_messages[0].view)
     assert_info_thread_leaderboard_next_page_control(created_thread.sent_messages[1].view)
-    assert created_thread.sent_messages[1].content == format_leaderboard_message(
-        season_name=season_pair.active.name,
-        match_format=MatchFormat.THREE_VS_THREE,
-        page=1,
-        entries=[
-            (index + 1, f"Player {index + 1}", float(2000 - index), None, None, None)
-            for index in range(20)
-        ],
+    assert_body_only_embed_message(
+        created_thread.sent_messages[1],
+        format_leaderboard_message(
+            season_name=season_pair.active.name,
+            match_format=MatchFormat.THREE_VS_THREE,
+            page=1,
+            entries=[
+                (index + 1, f"Player {index + 1}", float(2000 - index), None, None, None)
+                for index in range(20)
+            ],
+        ),
     )
 
 
@@ -3521,17 +3804,21 @@ def test_info_thread_leaderboard_next_page_button_posts_requested_page(
             ["ランキングを表示しました。"],
             ephemeral=True,
         )
+        assert_deferred_followup_response(button_interaction)
         assert_all_controls_disabled(next_page_message.view)
 
     asyncio.run(scenario())
 
-    assert created_thread.sent_messages[2].content == format_leaderboard_message(
-        season_name=season_pair.active.name,
-        match_format=MatchFormat.THREE_VS_THREE,
-        page=2,
-        entries=[
-            (21, "Player 21", 1980.0, None, None, None),
-        ],
+    assert_body_only_embed_message(
+        created_thread.sent_messages[2],
+        format_leaderboard_message(
+            season_name=season_pair.active.name,
+            match_format=MatchFormat.THREE_VS_THREE,
+            page=2,
+            entries=[
+                (21, "Player 21", 1980.0, None, None, None),
+            ],
+        ),
     )
     assert created_thread.sent_messages[2].view is None
 
@@ -3702,7 +3989,7 @@ def test_leaderboard_command_requires_registered_player(
 
     assert_response(
         interaction,
-        ["プレイヤー登録が必要です。先に /register を実行してください。"],
+        [PLAYER_REGISTRATION_REQUIRED_MESSAGE],
         ephemeral=True,
     )
 
@@ -3722,7 +4009,7 @@ def test_leaderboard_command_requires_active_info_thread_binding(
 
     assert_response(
         interaction,
-        ["先に /info_thread を実行してください。"],
+        [INFO_THREAD_REQUIRED_MESSAGE],
         ephemeral=True,
     )
 
@@ -3755,7 +4042,7 @@ def test_leaderboard_command_returns_thread_not_found_when_bound_thread_is_missi
 
     assert_response(
         interaction,
-        ["情報確認用スレッドが見つかりません。先に /info_thread を実行してください。"],
+        [INFO_THREAD_NOT_FOUND_MESSAGE],
         ephemeral=True,
     )
 
@@ -3796,7 +4083,7 @@ def test_leaderboard_command_returns_thread_not_found_when_bound_thread_send_fai
 
     assert_response(
         interaction,
-        ["情報確認用スレッドが見つかりません。先に /info_thread を実行してください。"],
+        [INFO_THREAD_NOT_FOUND_MESSAGE],
         ephemeral=True,
     )
     assert [message.content for message in created_thread.sent_messages] == [
@@ -4222,8 +4509,12 @@ def test_info_thread_leaderboard_season_button_posts_page_one_to_active_thread(
     assert match_format_interaction.response.deferred is True
     assert_response(interaction, ["ランキングを表示しました。"], ephemeral=True)
     assert_all_controls_disabled(initial_message.view)
-    assert [message.content for message in created_thread.sent_messages] == [
+    assert_body_only_embed_message(
+        created_thread.sent_messages[0],
         build_info_thread_initial_message(InfoThreadCommandName.LEADERBOARD_SEASON),
+    )
+    assert_body_only_embed_message(
+        created_thread.sent_messages[1],
         format_leaderboard_season_message(
             season_id=season.id,
             season_name=season.name,
@@ -4235,7 +4526,7 @@ def test_info_thread_leaderboard_season_button_posts_page_one_to_active_thread(
                 (3, "Alice", 1600.0),
             ],
         ),
-    ]
+    )
     assert created_thread.sent_messages[1].view is None
 
 
@@ -4315,19 +4606,22 @@ def test_leaderboard_season_command_adds_next_page_button_when_next_page_exists(
         expected_seasons=expected_started_seasons,
     )
     assert_info_thread_leaderboard_next_page_control(created_thread.sent_messages[1].view)
-    assert created_thread.sent_messages[1].content == format_leaderboard_season_message(
-        season_id=season.id,
-        season_name=season.name,
-        match_format=MatchFormat.THREE_VS_THREE,
-        page=1,
-        entries=[
-            (
-                index + 1,
-                f"Player {index + 1}",
-                float(2000 - index),
-            )
-            for index in range(20)
-        ],
+    assert_body_only_embed_message(
+        created_thread.sent_messages[1],
+        format_leaderboard_season_message(
+            season_id=season.id,
+            season_name=season.name,
+            match_format=MatchFormat.THREE_VS_THREE,
+            page=1,
+            entries=[
+                (
+                    index + 1,
+                    f"Player {index + 1}",
+                    float(2000 - index),
+                )
+                for index in range(20)
+            ],
+        ),
     )
 
 
@@ -4412,12 +4706,15 @@ def test_info_thread_leaderboard_season_next_page_button_posts_requested_page(
 
     asyncio.run(scenario())
 
-    assert created_thread.sent_messages[2].content == format_leaderboard_season_message(
-        season_id=season.id,
-        season_name=season.name,
-        match_format=MatchFormat.THREE_VS_THREE,
-        page=2,
-        entries=[(21, "Player 21", 1980.0)],
+    assert_body_only_embed_message(
+        created_thread.sent_messages[2],
+        format_leaderboard_season_message(
+            season_id=season.id,
+            season_name=season.name,
+            match_format=MatchFormat.THREE_VS_THREE,
+            page=2,
+            entries=[(21, "Player 21", 1980.0)],
+        ),
     )
     assert created_thread.sent_messages[2].view is None
 
@@ -4742,7 +5039,7 @@ def test_leaderboard_season_command_requires_registered_player(
 
     assert_response(
         interaction,
-        ["プレイヤー登録が必要です。先に /register を実行してください。"],
+        [PLAYER_REGISTRATION_REQUIRED_MESSAGE],
         ephemeral=True,
     )
 
@@ -4765,7 +5062,7 @@ def test_leaderboard_season_command_requires_active_info_thread_binding(
         )
     )
 
-    assert_response(interaction, ["先に /info_thread を実行してください。"], ephemeral=True)
+    assert_response(interaction, [INFO_THREAD_REQUIRED_MESSAGE], ephemeral=True)
 
 
 def test_leaderboard_season_command_returns_thread_not_found_when_bound_thread_is_missing(
@@ -4801,7 +5098,7 @@ def test_leaderboard_season_command_returns_thread_not_found_when_bound_thread_i
 
     assert_response(
         interaction,
-        ["情報確認用スレッドが見つかりません。先に /info_thread を実行してください。"],
+        [INFO_THREAD_NOT_FOUND_MESSAGE],
         ephemeral=True,
     )
 
@@ -4865,7 +5162,7 @@ def test_leaderboard_season_command_returns_thread_not_found_when_bound_thread_s
 
     assert_response(
         interaction,
-        ["情報確認用スレッドが見つかりません。先に /info_thread を実行してください。"],
+        [INFO_THREAD_NOT_FOUND_MESSAGE],
         ephemeral=True,
     )
     assert [message.content for message in created_thread.sent_messages] == [
@@ -5311,7 +5608,7 @@ def test_info_thread_command_requires_registered_player(
 
     assert_response(
         interaction,
-        ["プレイヤー登録が必要です。先に /register を実行してください。"],
+        [PLAYER_REGISTRATION_REQUIRED_MESSAGE],
         ephemeral=True,
     )
 
@@ -5472,7 +5769,7 @@ def test_player_info_command_requires_registered_player(
 
     assert_response(
         interaction,
-        ["プレイヤー登録が必要です。先に /register を実行してください。"],
+        [PLAYER_REGISTRATION_REQUIRED_MESSAGE],
         ephemeral=True,
     )
 
@@ -5490,7 +5787,7 @@ def test_player_info_command_requires_active_info_thread_binding(
 
     assert_response(
         interaction,
-        ["先に /info_thread を実行してください。"],
+        [INFO_THREAD_REQUIRED_MESSAGE],
         ephemeral=True,
     )
 
@@ -5521,7 +5818,7 @@ def test_player_info_command_returns_thread_not_found_when_bound_thread_is_missi
 
     assert_response(
         interaction,
-        ["情報確認用スレッドが見つかりません。先に /info_thread を実行してください。"],
+        [INFO_THREAD_NOT_FOUND_MESSAGE],
         ephemeral=True,
     )
 
@@ -5556,7 +5853,7 @@ def test_player_info_command_returns_thread_not_found_when_bound_thread_send_fai
 
     assert_response(
         interaction,
-        ["情報確認用スレッドが見つかりません。先に /info_thread を実行してください。"],
+        [INFO_THREAD_NOT_FOUND_MESSAGE],
         ephemeral=True,
     )
     assert [message.content for message in created_thread.sent_messages] == [
@@ -5763,6 +6060,70 @@ def test_matchmaking_news_match_announcement_spectate_button_responds_ephemerall
     assert match_operation_thread.added_user_ids == [spectator_discord_user_id]
 
 
+def test_matchmaking_news_match_announcement_spectate_button_defers_and_replies_via_followup(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    match_id, _ = create_match(
+        session,
+        session_factory,
+        start_discord_user_id=123_456_789_012_345_710_2,
+        channel_id=13_022,
+        guild_id=14_022,
+    )
+    spectator_discord_user_id = 123_456_789_012_345_716_2
+    spectator = create_player(session, spectator_discord_user_id)
+    handlers = create_handlers(
+        session_factory,
+        matching_queue_service=MatchingQueueService(session_factory),
+    )
+    guild = FakeGuild(id=14_022)
+    matchmaking_channel = FakeTextChannel(
+        id=13_022,
+        name="レート戦マッチング",
+        guild=guild,
+    )
+    announcement_channel = FakeTextChannel(
+        id=13_023,
+        name="レート戦マッチ速報",
+        guild=guild,
+    )
+    guild.channels.extend([matchmaking_channel, announcement_channel])
+    setup_matchmaking_managed_ui_channel(handlers, matchmaking_channel.id)
+    match_operation_thread = cast(
+        FakeThread,
+        asyncio.run(matchmaking_channel.create_thread(name=f"試合-{match_id}")),
+    )
+    button = MatchmakingNewsMatchAnnouncementSpectateButton(
+        match_id,
+        interaction_handler=handlers,
+    )
+    interaction = FakeInteraction(
+        user=FakeUser(id=spectator_discord_user_id),
+        channel_id=announcement_channel.id,
+        guild_id=guild.id,
+        guild=guild,
+    )
+
+    asyncio.run(button.callback(as_interaction(interaction)))
+
+    persisted_spectator = session.scalar(
+        select(MatchSpectator).where(
+            MatchSpectator.match_id == match_id,
+            MatchSpectator.player_id == spectator.id,
+        )
+    )
+
+    assert_response(
+        interaction,
+        ["観戦応募を受け付けました。現在 1 / 6 人です。"],
+        ephemeral=True,
+    )
+    assert_deferred_followup_response(interaction)
+    assert persisted_spectator is not None
+    assert match_operation_thread.added_user_ids == [spectator_discord_user_id]
+
+
 @pytest.mark.parametrize(
     "handler_name",
     [
@@ -5934,6 +6295,46 @@ def test_match_parent_actions_respond_ephemerally(
     )
 
 
+def test_match_operation_thread_parent_button_defers_and_replies_via_followup(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    match_id, players = create_match(
+        session,
+        session_factory,
+        start_discord_user_id=123_456_789_012_345_723_1,
+        channel_id=13_025,
+        guild_id=14_025,
+    )
+    handlers = create_handlers(
+        session_factory,
+        matching_queue_service=MatchingQueueService(session_factory),
+    )
+    setup_matchmaking_managed_ui_channel(handlers, 13_025)
+    button = MatchOperationThreadParentButton(match_id, interaction_handler=handlers)
+    interaction = FakeInteraction(
+        user=FakeUser(id=players[0].discord_user_id),
+        channel_id=13_125,
+        guild_id=14_025,
+    )
+
+    asyncio.run(button.callback(as_interaction(interaction)))
+
+    active_state = session.scalar(
+        select(ActiveMatchState).where(ActiveMatchState.match_id == match_id)
+    )
+
+    assert active_state is not None
+    assert active_state.parent_player_id == players[0].id
+    assert active_state.parent_decided_at is not None
+    assert_response(
+        interaction,
+        ["親に立候補しました。"],
+        ephemeral=True,
+    )
+    assert_deferred_followup_response(interaction)
+
+
 @pytest.mark.parametrize(
     "handler_name",
     [
@@ -6062,7 +6463,7 @@ def test_match_spectate_command_requires_registered_player(
 
     assert_response(
         interaction,
-        ["プレイヤー登録が必要です。先に /register を実行してください。"],
+        [PLAYER_REGISTRATION_REQUIRED_MESSAGE],
         ephemeral=True,
     )
 
@@ -6438,17 +6839,29 @@ def test_dev_match_approve_validates_dummy_user_id_ephemerally(
 def test_dev_register_requires_admin(
     session: Session,
     session_factory: sessionmaker[Session],
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    handlers = create_handlers(session_factory)
-    interaction = FakeInteraction(user=FakeUser(id=10))
+    with caplog.at_level(
+        logging.WARNING,
+        logger="dxd_rating.platform.discord.gateway.commands.application",
+    ):
+        handlers = create_handlers(session_factory)
+        interaction = FakeInteraction(user=FakeUser(id=10))
 
-    asyncio.run(handlers.dev_register(as_interaction(interaction), "123456789012345685"))
+        asyncio.run(handlers.dev_register(as_interaction(interaction), "123456789012345685"))
 
     persisted_player = session.scalar(
         select(Player).where(Player.discord_user_id == 123_456_789_012_345_685)
     )
 
-    assert interaction.response.messages == ["このコマンドは管理者のみ実行できます。"]
+    assert_response(
+        interaction,
+        ["このコマンドは管理者のみ実行できます。"],
+        ephemeral=True,
+    )
+    assert (
+        "Rejected admin-only command executor_discord_user_id=10 guild_id=2001 channel_id=1001"
+    ) in caplog.text
     assert persisted_player is None
 
 
@@ -6463,7 +6876,7 @@ def test_dev_register_sets_fixed_dummy_display_name(
 
     persisted_player = session.scalar(select(Player).where(Player.discord_user_id == 777))
 
-    assert interaction.response.messages == ["ダミーユーザーを登録しました。"]
+    assert_response(interaction, ["ダミーユーザーを登録しました。"], ephemeral=True)
     assert persisted_player is not None
     assert persisted_player.display_name == "<dummy_777>"
     assert persisted_player.display_name_updated_at is not None
@@ -6476,7 +6889,7 @@ def test_dev_register_validates_discord_user_id(session_factory: sessionmaker[Se
 
     asyncio.run(handlers.dev_register(as_interaction(interaction), "not-a-number"))
 
-    assert interaction.response.messages == ["discord_user_id が不正です。"]
+    assert_response(interaction, ["discord_user_id が不正です。"], ephemeral=True)
 
 
 def test_dev_register_rejects_non_dummy_discord_user_id(
@@ -6487,7 +6900,49 @@ def test_dev_register_rejects_non_dummy_discord_user_id(
 
     asyncio.run(handlers.dev_register(as_interaction(interaction), "1001"))
 
-    assert interaction.response.messages == ["discord_user_id が不正です。"]
+    assert_response(interaction, ["discord_user_id が不正です。"], ephemeral=True)
+
+
+def test_dev_register_returns_internal_error_message_ephemerally(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    session.execute(delete(Season))
+    session.commit()
+    handlers = create_handlers(session_factory, super_admin_user_ids=frozenset({10}))
+    interaction = FakeInteraction(user=FakeUser(id=10))
+
+    asyncio.run(handlers.dev_register(as_interaction(interaction), "777"))
+
+    assert_response(
+        interaction,
+        ["ダミーユーザーの登録に失敗しました。管理者に確認してください。"],
+        ephemeral=True,
+    )
+
+
+def test_dev_join_requires_admin(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    create_player(session, 123_456_789_012_345_685)
+    handlers = create_handlers(session_factory)
+    interaction = FakeInteraction(user=FakeUser(id=10))
+
+    asyncio.run(
+        handlers.dev_join(
+            as_interaction(interaction),
+            DEFAULT_MATCH_FORMAT.value,
+            DEFAULT_QUEUE_NAME,
+            "123456789012345685",
+        )
+    )
+
+    assert_response(
+        interaction,
+        ["このコマンドは管理者のみ実行できます。"],
+        ephemeral=True,
+    )
 
 
 def test_dev_join_creates_presence_thread_for_dummy_user_under_matchmaking_channel(
@@ -6535,7 +6990,7 @@ def test_dev_join_creates_presence_thread_for_dummy_user_under_matchmaking_chann
 
     queue_entry = get_queue_entry(session, player.id)
 
-    assert_response(interaction, ["指定したユーザーをキューに参加させました。"], ephemeral=False)
+    assert_response(interaction, ["指定したユーザーをキューに参加させました。"], ephemeral=True)
     assert queue_entry.notification_channel_id == matchmaking_channel.id
     assert queue_entry.presence_thread_channel_id == 20_001
     assert queue_entry.notification_guild_id == guild.id
@@ -6681,7 +7136,7 @@ def test_dev_join_returns_internal_error_when_setup_matchmaking_channel_is_missi
     assert_response(
         interaction,
         ["指定したユーザーのキュー参加に失敗しました。管理者に確認してください。"],
-        ephemeral=False,
+        ephemeral=True,
     )
 
 
@@ -6732,7 +7187,11 @@ def test_dev_join_returns_restricted_message_for_restricted_target(
         )
     )
 
-    assert interaction.response.messages == ["指定したユーザーは現在キュー参加を制限されています。"]
+    assert_response(
+        interaction,
+        ["指定したユーザーは現在キュー参加を制限されています。"],
+        ephemeral=True,
+    )
 
 
 def test_dev_present_returns_expired_message_for_expired_target(
@@ -6757,9 +7216,11 @@ def test_dev_present_returns_expired_message_for_expired_target(
 
     asyncio.run(handlers.dev_present(as_interaction(interaction), str(target_discord_user_id)))
 
-    assert interaction.response.messages == [
-        "指定したユーザーは期限切れのためキューから外れました。"
-    ]
+    assert_response(
+        interaction,
+        ["指定したユーザーは期限切れのためキューから外れました。"],
+        ephemeral=True,
+    )
 
 
 def test_dev_present_preserves_existing_presence_thread_destination(
@@ -6798,7 +7259,7 @@ def test_dev_present_preserves_existing_presence_thread_destination(
 
     queue_entry = get_queue_entry(session, player.id)
 
-    assert interaction.response.messages == ["指定したユーザーの在席を更新しました。"]
+    assert_response(interaction, ["指定したユーザーの在席を更新しました。"], ephemeral=True)
     assert queue_entry.notification_channel_id == 41_001
     assert queue_entry.notification_guild_id == 42_001
     assert queue_entry.presence_thread_channel_id == 43_001
@@ -6816,7 +7277,7 @@ def test_dev_leave_returns_target_not_registered_message(
 
     asyncio.run(handlers.dev_leave(as_interaction(interaction), "123456789012345688"))
 
-    assert interaction.response.messages == ["指定したユーザーは未登録です。"]
+    assert_response(interaction, ["指定したユーザーは未登録です。"], ephemeral=True)
 
 
 def test_dev_player_info_requires_admin(
@@ -6829,7 +7290,218 @@ def test_dev_player_info_requires_admin(
 
     asyncio.run(handlers.dev_player_info(as_interaction(interaction), "123456789012345689"))
 
-    assert interaction.response.messages == ["このコマンドは管理者のみ実行できます。"]
+    assert_response(
+        interaction,
+        ["このコマンドは管理者のみ実行できます。"],
+        ephemeral=True,
+    )
+
+
+def test_dev_info_thread_requires_admin(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    target_discord_user_id = 123_456_789_012_345_689_1
+    create_player(session, target_discord_user_id)
+    handlers = create_handlers(session_factory)
+    interaction = FakeInteraction(user=FakeUser(id=10))
+
+    asyncio.run(
+        handlers.dev_info_thread(
+            as_interaction(interaction),
+            InfoThreadCommandName.PLAYER_INFO.value,
+            str(target_discord_user_id),
+        )
+    )
+
+    assert_response(
+        interaction,
+        ["このコマンドは管理者のみ実行できます。"],
+        ephemeral=True,
+    )
+
+
+def test_dev_info_thread_validates_discord_user_id(session_factory: sessionmaker[Session]) -> None:
+    handlers = create_handlers(session_factory, super_admin_user_ids=frozenset({10}))
+    interaction = FakeInteraction(user=FakeUser(id=10))
+
+    asyncio.run(
+        handlers.dev_info_thread(
+            as_interaction(interaction),
+            InfoThreadCommandName.PLAYER_INFO.value,
+            "not-a-number",
+        )
+    )
+
+    assert_response(interaction, ["discord_user_id が不正です。"], ephemeral=True)
+
+
+def test_dev_info_thread_creates_thread_and_binding_for_real_user(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    executor_discord_user_id = 10
+    target_discord_user_id = 123_456_789_012_345_689_2
+    player = create_player(session, target_discord_user_id)
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({executor_discord_user_id}),
+    )
+    guild = FakeGuild(
+        id=14_200,
+        members={
+            target_discord_user_id: FakeMember(
+                id=target_discord_user_id,
+                nick="target-guild",
+            )
+        },
+    )
+    info_channel = FakeTextChannel(id=13_200, name="レート戦情報", guild=guild)
+    guild.channels.append(info_channel)
+    setup_info_managed_ui_channel(handlers, info_channel.id)
+    interaction = FakeInteraction(
+        user=FakeUser(id=executor_discord_user_id, nick="admin-guild"),
+        channel_id=13_299,
+        guild_id=guild.id,
+        guild=guild,
+    )
+
+    asyncio.run(
+        handlers.dev_info_thread(
+            as_interaction(interaction),
+            InfoThreadCommandName.LEADERBOARD.value,
+            str(target_discord_user_id),
+        )
+    )
+
+    session.expire_all()
+    binding = session.get(PlayerInfoThreadBinding, player.id)
+
+    assert_response(
+        interaction,
+        ["指定したユーザーの情報確認用スレッドを作成しました。"],
+        ephemeral=True,
+    )
+    assert len(info_channel.created_threads) == 1
+    created_thread = info_channel.created_threads[0]
+    assert created_thread.name == "情報-target-guild"
+    assert created_thread.added_user_ids == [target_discord_user_id, executor_discord_user_id]
+    assert [message.content for message in created_thread.sent_messages] == [
+        build_info_thread_initial_message(InfoThreadCommandName.LEADERBOARD)
+    ]
+    assert binding is not None
+    assert binding.thread_channel_id == created_thread.id
+
+
+def test_dev_info_thread_creates_thread_and_binding_for_dummy_user(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    executor_discord_user_id = 10
+    target_discord_user_id = 777
+    player = create_player(session, target_discord_user_id)
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({executor_discord_user_id}),
+    )
+    guild = FakeGuild(id=14_201)
+    info_channel = FakeTextChannel(id=13_201, name="レート戦情報", guild=guild)
+    guild.channels.append(info_channel)
+    setup_info_managed_ui_channel(handlers, info_channel.id)
+    interaction = FakeInteraction(
+        user=FakeUser(id=executor_discord_user_id),
+        channel_id=13_300,
+        guild_id=guild.id,
+        guild=guild,
+    )
+
+    asyncio.run(
+        handlers.dev_info_thread(
+            as_interaction(interaction),
+            InfoThreadCommandName.PLAYER_INFO.value,
+            str(target_discord_user_id),
+        )
+    )
+
+    session.expire_all()
+    binding = session.get(PlayerInfoThreadBinding, player.id)
+
+    assert_response(
+        interaction,
+        ["指定したユーザーの情報確認用スレッドを作成しました。"],
+        ephemeral=True,
+    )
+    assert len(info_channel.created_threads) == 1
+    created_thread = info_channel.created_threads[0]
+    assert created_thread.name == "情報-<dummy_777>"
+    assert created_thread.added_user_ids == [executor_discord_user_id]
+    assert [message.content for message in created_thread.sent_messages] == [
+        build_info_thread_initial_message(InfoThreadCommandName.PLAYER_INFO)
+    ]
+    assert binding is not None
+    assert binding.thread_channel_id == created_thread.id
+
+
+def test_dev_info_thread_overwrites_latest_binding_with_new_thread(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    executor_discord_user_id = 10
+    target_discord_user_id = 123_456_789_012_345_689_3
+    player = create_player(session, target_discord_user_id)
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({executor_discord_user_id}),
+    )
+    guild = FakeGuild(id=14_202)
+    info_channel = FakeTextChannel(id=13_202, name="レート戦情報", guild=guild)
+    guild.channels.append(info_channel)
+    setup_info_managed_ui_channel(handlers, info_channel.id)
+    interaction = FakeInteraction(
+        user=FakeUser(id=executor_discord_user_id),
+        channel_id=13_301,
+        guild_id=guild.id,
+        guild=guild,
+    )
+
+    asyncio.run(
+        handlers.dev_info_thread(
+            as_interaction(interaction),
+            InfoThreadCommandName.PLAYER_INFO.value,
+            str(target_discord_user_id),
+        )
+    )
+    asyncio.run(
+        handlers.dev_info_thread(
+            as_interaction(interaction),
+            InfoThreadCommandName.LEADERBOARD.value,
+            str(target_discord_user_id),
+        )
+    )
+
+    session.expire_all()
+    binding = session.get(PlayerInfoThreadBinding, player.id)
+
+    assert len(info_channel.created_threads) == 2
+    assert binding is not None
+    assert binding.thread_channel_id == info_channel.created_threads[-1].id
+
+
+def test_dev_info_thread_returns_target_not_registered_message(
+    session_factory: sessionmaker[Session],
+) -> None:
+    handlers = create_handlers(session_factory, super_admin_user_ids=frozenset({10}))
+    interaction = FakeInteraction(user=FakeUser(id=10))
+
+    asyncio.run(
+        handlers.dev_info_thread(
+            as_interaction(interaction),
+            InfoThreadCommandName.PLAYER_INFO.value,
+            "123456789012345699",
+        )
+    )
+
+    assert_response(interaction, ["指定したユーザーは未登録です。"], ephemeral=True)
 
 
 def test_dev_player_info_validates_discord_user_id(session_factory: sessionmaker[Session]) -> None:
@@ -6838,7 +7510,24 @@ def test_dev_player_info_validates_discord_user_id(session_factory: sessionmaker
 
     asyncio.run(handlers.dev_player_info(as_interaction(interaction), "not-a-number"))
 
-    assert interaction.response.messages == ["discord_user_id が不正です。"]
+    assert_response(interaction, ["discord_user_id が不正です。"], ephemeral=True)
+
+
+def test_dev_player_info_season_validates_discord_user_id(
+    session_factory: sessionmaker[Session],
+) -> None:
+    handlers = create_handlers(session_factory, super_admin_user_ids=frozenset({10}))
+    interaction = FakeInteraction(user=FakeUser(id=10))
+
+    asyncio.run(
+        handlers.dev_player_info_season(
+            as_interaction(interaction),
+            1,
+            "not-a-number",
+        )
+    )
+
+    assert_response(interaction, ["discord_user_id が不正です。"], ephemeral=True)
 
 
 def test_dev_player_info_returns_target_player_stats(
@@ -6860,11 +7549,35 @@ def test_dev_player_info_returns_target_player_stats(
         session_factory,
         super_admin_user_ids=frozenset({executor_discord_user_id}),
     )
-    interaction = FakeInteraction(user=FakeUser(id=executor_discord_user_id))
+    guild = FakeGuild(id=14_203)
+    info_channel = FakeTextChannel(id=13_203, name="レート戦情報", guild=guild)
+    guild.channels.append(info_channel)
+    setup_info_managed_ui_channel(handlers, info_channel.id)
+    created_thread = create_active_dev_info_thread(
+        handlers,
+        executor_discord_user_id=executor_discord_user_id,
+        target_discord_user_id=target_discord_user_id,
+        guild=guild,
+        info_channel=info_channel,
+        command_name=InfoThreadCommandName.PLAYER_INFO,
+        interaction_channel_id=13_302,
+    )
+    interaction = FakeInteraction(
+        user=FakeUser(id=executor_discord_user_id),
+        channel_id=13_303,
+        guild_id=guild.id,
+        guild=guild,
+    )
 
     asyncio.run(handlers.dev_player_info(as_interaction(interaction), str(target_discord_user_id)))
 
-    assert interaction.response.messages == [
+    assert_response(
+        interaction,
+        ["指定したユーザーのプレイヤー情報を表示しました。"],
+        ephemeral=True,
+    )
+    assert [message.content for message in created_thread.sent_messages] == [
+        build_info_thread_initial_message(InfoThreadCommandName.PLAYER_INFO),
         format_player_info_message(
             {
                 MatchFormat.ONE_VS_ONE: (1500.0, 0, 0, 0, 0, None),
@@ -6878,8 +7591,9 @@ def test_dev_player_info_returns_target_player_stats(
                     datetime(2026, 3, 20, 14, 0, 0, tzinfo=timezone.utc),
                 ),
             }
-        )
+        ),
     ]
+    assert created_thread.sent_messages[1].view is None
 
 
 def test_dev_player_info_season_returns_target_player_stats(
@@ -6905,7 +7619,25 @@ def test_dev_player_info_season_returns_target_player_stats(
         session_factory,
         super_admin_user_ids=frozenset({executor_discord_user_id}),
     )
-    interaction = FakeInteraction(user=FakeUser(id=executor_discord_user_id))
+    guild = FakeGuild(id=14_204)
+    info_channel = FakeTextChannel(id=13_204, name="レート戦情報", guild=guild)
+    guild.channels.append(info_channel)
+    setup_info_managed_ui_channel(handlers, info_channel.id)
+    created_thread = create_active_dev_info_thread(
+        handlers,
+        executor_discord_user_id=executor_discord_user_id,
+        target_discord_user_id=target_discord_user_id,
+        guild=guild,
+        info_channel=info_channel,
+        command_name=InfoThreadCommandName.PLAYER_INFO_SEASON,
+        interaction_channel_id=13_304,
+    )
+    interaction = FakeInteraction(
+        user=FakeUser(id=executor_discord_user_id),
+        channel_id=13_305,
+        guild_id=guild.id,
+        guild=guild,
+    )
 
     asyncio.run(
         handlers.dev_player_info_season(
@@ -6915,7 +7647,13 @@ def test_dev_player_info_season_returns_target_player_stats(
         )
     )
 
-    assert interaction.response.messages == [
+    assert_response(
+        interaction,
+        ["指定したユーザーのシーズン別プレイヤー情報を表示しました。"],
+        ephemeral=True,
+    )
+    assert [message.content for message in created_thread.sent_messages] == [
+        build_info_thread_initial_message(InfoThreadCommandName.PLAYER_INFO_SEASON),
         format_player_info_message(
             {
                 MatchFormat.ONE_VS_ONE: (1500.0, 0, 0, 0, 0, None),
@@ -6924,8 +7662,69 @@ def test_dev_player_info_season_returns_target_player_stats(
             },
             season_id=season_pair.upcoming.id,
             season_name="next-summer",
-        )
+        ),
     ]
+    assert created_thread.sent_messages[1].view is None
+
+
+def test_dev_player_info_requires_info_thread_binding(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    executor_discord_user_id = 10
+    target_discord_user_id = 123_456_789_012_345_690_2
+    create_player(session, target_discord_user_id)
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({executor_discord_user_id}),
+    )
+    interaction = FakeInteraction(user=FakeUser(id=executor_discord_user_id))
+
+    asyncio.run(handlers.dev_player_info(as_interaction(interaction), str(target_discord_user_id)))
+
+    assert_response(
+        interaction,
+        ["先に /info_thread または /dev_info_thread を実行してください。"],
+        ephemeral=True,
+    )
+
+
+def test_dev_player_info_returns_thread_not_found_when_bound_thread_is_missing(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    executor_discord_user_id = 10
+    target_discord_user_id = 123_456_789_012_345_690_3
+    player = create_player(session, target_discord_user_id)
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({executor_discord_user_id}),
+    )
+    guild = FakeGuild(id=14_205)
+    info_channel = FakeTextChannel(id=13_205, name="レート戦情報", guild=guild)
+    guild.channels.append(info_channel)
+    setup_info_managed_ui_channel(handlers, info_channel.id)
+    handlers.info_thread_binding_service.upsert_latest_thread_channel_id(
+        player_id=player.id,
+        thread_channel_id=99_005,
+    )
+    interaction = FakeInteraction(
+        user=FakeUser(id=executor_discord_user_id),
+        channel_id=13_306,
+        guild_id=guild.id,
+        guild=guild,
+    )
+
+    asyncio.run(handlers.dev_player_info(as_interaction(interaction), str(target_discord_user_id)))
+
+    assert_response(
+        interaction,
+        [
+            "情報確認用スレッドが見つかりません。"
+            "先に /info_thread または /dev_info_thread を実行してください。"
+        ],
+        ephemeral=True,
+    )
 
 
 def test_dev_player_info_returns_target_not_registered_message(
@@ -6936,7 +7735,245 @@ def test_dev_player_info_returns_target_not_registered_message(
 
     asyncio.run(handlers.dev_player_info(as_interaction(interaction), "123456789012345691"))
 
-    assert interaction.response.messages == ["指定したユーザーは未登録です。"]
+    assert_response(interaction, ["指定したユーザーは未登録です。"], ephemeral=True)
+
+
+def test_dev_info_thread_binding_is_shared_with_normal_player_info(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    executor_discord_user_id = 10
+    target_discord_user_id = 123_456_789_012_345_690_4
+    player = create_player(session, target_discord_user_id)
+    three_vs_three_stats = get_player_format_stats(session, player.id)
+    three_vs_three_stats.rating = 1510.0
+    session.commit()
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({executor_discord_user_id}),
+    )
+    guild = FakeGuild(
+        id=14_206,
+        members={target_discord_user_id: FakeMember(id=target_discord_user_id, nick="shared-user")},
+    )
+    info_channel = FakeTextChannel(id=13_206, name="レート戦情報", guild=guild)
+    guild.channels.append(info_channel)
+    setup_info_managed_ui_channel(handlers, info_channel.id)
+    created_thread = create_active_dev_info_thread(
+        handlers,
+        executor_discord_user_id=executor_discord_user_id,
+        target_discord_user_id=target_discord_user_id,
+        guild=guild,
+        info_channel=info_channel,
+        command_name=InfoThreadCommandName.PLAYER_INFO,
+        interaction_channel_id=13_307,
+    )
+    interaction = FakeInteraction(
+        user=FakeUser(id=target_discord_user_id, nick="shared-user"),
+        channel_id=13_308,
+        guild_id=guild.id,
+        guild=guild,
+    )
+
+    asyncio.run(handlers.player_info(as_interaction(interaction)))
+
+    assert_response(interaction, ["プレイヤー情報を表示しました。"], ephemeral=True)
+    assert len(created_thread.sent_messages) == 2
+
+
+def test_dev_leaderboard_posts_current_leaderboard_to_target_info_thread(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    executor_discord_user_id = 10
+    target_discord_user_id = 123_456_789_012_345_690_5
+    bob_discord_user_id = 123_456_789_012_345_690_6
+    carol_discord_user_id = 123_456_789_012_345_690_7
+    target = create_player(session, target_discord_user_id)
+    bob = create_player(session, bob_discord_user_id)
+    carol = create_player(session, carol_discord_user_id)
+    season_pair = ensure_active_and_upcoming_seasons(session)
+    target_stats = get_player_format_stats(session, target.id)
+    bob_stats = get_player_format_stats(session, bob.id)
+    carol_stats = get_player_format_stats(session, carol.id)
+    target_stats.rating = 1600
+    target_stats.games_played = 2
+    target_stats.wins = 2
+    bob_stats.rating = 1600
+    bob_stats.games_played = 5
+    bob_stats.wins = 4
+    bob_stats.losses = 1
+    carol_stats.rating = 1600
+    carol_stats.games_played = 5
+    carol_stats.wins = 3
+    carol_stats.losses = 2
+    target.display_name = "Target"
+    bob.display_name = "Bob"
+    carol.display_name = "Carol"
+    session.commit()
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({executor_discord_user_id}),
+    )
+    guild = FakeGuild(id=14_207)
+    info_channel = FakeTextChannel(id=13_207, name="レート戦情報", guild=guild)
+    guild.channels.append(info_channel)
+    setup_info_managed_ui_channel(handlers, info_channel.id)
+    created_thread = create_active_dev_info_thread(
+        handlers,
+        executor_discord_user_id=executor_discord_user_id,
+        target_discord_user_id=target_discord_user_id,
+        guild=guild,
+        info_channel=info_channel,
+        command_name=InfoThreadCommandName.LEADERBOARD,
+        interaction_channel_id=13_309,
+    )
+    interaction = FakeInteraction(
+        user=FakeUser(id=executor_discord_user_id),
+        channel_id=13_310,
+        guild_id=guild.id,
+        guild=guild,
+    )
+
+    asyncio.run(
+        handlers.dev_leaderboard(
+            as_interaction(interaction),
+            MatchFormat.THREE_VS_THREE.value,
+            1,
+            str(target_discord_user_id),
+        )
+    )
+
+    assert_response(
+        interaction,
+        ["指定したユーザーの情報確認用スレッドにランキングを表示しました。"],
+        ephemeral=True,
+    )
+    assert_body_only_embed_message(
+        created_thread.sent_messages[1],
+        format_leaderboard_message(
+            season_name=season_pair.active.name,
+            match_format=MatchFormat.THREE_VS_THREE,
+            page=1,
+            entries=[
+                (1, "Bob", 1600.0, None, None, None),
+                (2, "Carol", 1600.0, None, None, None),
+                (3, "Target", 1600.0, None, None, None),
+            ],
+        ),
+    )
+    assert created_thread.sent_messages[1].view is None
+
+
+def test_dev_leaderboard_requires_info_thread_binding(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    executor_discord_user_id = 10
+    target_discord_user_id = 123_456_789_012_345_690_8
+    create_player(session, target_discord_user_id)
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({executor_discord_user_id}),
+    )
+    interaction = FakeInteraction(user=FakeUser(id=executor_discord_user_id))
+
+    asyncio.run(
+        handlers.dev_leaderboard(
+            as_interaction(interaction),
+            MatchFormat.THREE_VS_THREE.value,
+            1,
+            str(target_discord_user_id),
+        )
+    )
+
+    assert_response(
+        interaction,
+        ["先に /info_thread または /dev_info_thread を実行してください。"],
+        ephemeral=True,
+    )
+
+
+def test_dev_leaderboard_season_posts_requested_season_leaderboard_to_target_info_thread(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    executor_discord_user_id = 10
+    target_discord_user_id = 123_456_789_012_345_690_9
+    target = create_player(session, target_discord_user_id)
+    current_time = get_database_now(session)
+    season = Season(
+        name="202602delta",
+        start_at=current_time - timedelta(days=40),
+        end_at=current_time - timedelta(days=10),
+        completed=True,
+        completed_at=current_time - timedelta(days=10),
+    )
+    session.add(season)
+    session.flush()
+    session.add(
+        PlayerFormatStats(
+            player_id=target.id,
+            season_id=season.id,
+            match_format=MatchFormat.THREE_VS_THREE,
+            rating=1600,
+            games_played=1,
+            wins=1,
+        )
+    )
+    session.commit()
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({executor_discord_user_id}),
+    )
+    guild = FakeGuild(id=14_208)
+    info_channel = FakeTextChannel(id=13_208, name="レート戦情報", guild=guild)
+    guild.channels.append(info_channel)
+    setup_info_managed_ui_channel(handlers, info_channel.id)
+    created_thread = create_active_dev_info_thread(
+        handlers,
+        executor_discord_user_id=executor_discord_user_id,
+        target_discord_user_id=target_discord_user_id,
+        guild=guild,
+        info_channel=info_channel,
+        command_name=InfoThreadCommandName.LEADERBOARD_SEASON,
+        interaction_channel_id=13_311,
+    )
+    interaction = FakeInteraction(
+        user=FakeUser(id=executor_discord_user_id),
+        channel_id=13_312,
+        guild_id=guild.id,
+        guild=guild,
+    )
+
+    asyncio.run(
+        handlers.dev_leaderboard_season(
+            as_interaction(interaction),
+            season.id,
+            MatchFormat.THREE_VS_THREE.value,
+            1,
+            str(target_discord_user_id),
+        )
+    )
+
+    assert_response(
+        interaction,
+        ["指定したユーザーの情報確認用スレッドにシーズン別ランキングを表示しました。"],
+        ephemeral=True,
+    )
+    assert_body_only_embed_message(
+        created_thread.sent_messages[1],
+        format_leaderboard_season_message(
+            season_id=season.id,
+            season_name=season.name,
+            match_format=MatchFormat.THREE_VS_THREE,
+            page=1,
+            entries=[
+                (1, "1234567890123456909", 1600.0),
+            ],
+        ),
+    )
+    assert created_thread.sent_messages[1].view is None
 
 
 def test_dev_is_admin_returns_yes_or_no(session_factory: sessionmaker[Session]) -> None:
@@ -6947,8 +7984,98 @@ def test_dev_is_admin_returns_yes_or_no(session_factory: sessionmaker[Session]) 
     asyncio.run(handlers.dev_is_admin(as_interaction(admin_interaction)))
     asyncio.run(handlers.dev_is_admin(as_interaction(non_admin_interaction)))
 
-    assert admin_interaction.response.messages == ["はい"]
-    assert non_admin_interaction.response.messages == ["いいえ"]
+    assert_response(admin_interaction, ["はい"], ephemeral=True)
+    assert_response(non_admin_interaction, ["いいえ"], ephemeral=True)
+
+
+def test_admin_match_result_responds_ephemerally_and_posts_public_followup(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    executor_discord_user_id = 10
+    match_id, players = create_match(
+        session,
+        session_factory,
+        start_discord_user_id=123_456_789_012_345_694,
+        channel_id=13_021,
+        guild_id=14_021,
+    )
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({executor_discord_user_id}),
+        matching_queue_service=MatchingQueueService(session_factory),
+    )
+    setup_matchmaking_managed_ui_channel(handlers, 13_021)
+    match_service = MatchFlowService(session_factory)
+    match_service.volunteer_parent(match_id, players[0].id)
+
+    session.expire_all()
+    active_state = session.scalar(
+        select(ActiveMatchState).where(ActiveMatchState.match_id == match_id)
+    )
+    assert active_state is not None
+    now = datetime.now(timezone.utc)
+    active_state.report_open_at = now - timedelta(minutes=1)
+    active_state.report_deadline_at = now + timedelta(minutes=10)
+    session.commit()
+    assert match_service.process_report_open(match_id) is True
+
+    participants = session.scalars(
+        select(MatchParticipant).where(MatchParticipant.match_id == match_id)
+    ).all()
+    participant_by_player_id = {participant.player_id: participant for participant in participants}
+    dissenting_player = next(
+        player
+        for player in players
+        if participant_by_player_id[player.id].team == MatchParticipantTeam.TEAM_B
+    )
+
+    for player in players:
+        participant = participant_by_player_id[player.id]
+        if participant.team == MatchParticipantTeam.TEAM_A:
+            input_result = MatchReportInputResult.WIN
+        elif player.id == dissenting_player.id:
+            input_result = MatchReportInputResult.DRAW
+        else:
+            input_result = MatchReportInputResult.LOSE
+        match_service.submit_report(match_id, player.id, input_result)
+
+    match_service.approve_provisional_result(match_id, dissenting_player.id)
+
+    interaction = FakeInteraction(
+        user=FakeUser(id=executor_discord_user_id),
+        channel_id=13_121,
+        guild_id=14_021,
+    )
+
+    asyncio.run(
+        handlers.admin_match_result(
+            as_interaction(interaction),
+            match_id,
+            MatchResult.DRAW.value,
+        )
+    )
+
+    session.expire_all()
+    finalized_result = session.get(FinalizedMatchResult, match_id)
+
+    assert finalized_result is not None
+    assert finalized_result.final_result == MatchResult.DRAW
+    assert_response_sequence(
+        interaction,
+        [
+            "試合結果を上書きしました。",
+            f"match_id: {match_id} の試合結果が管理者操作により「引き分け」に上書きされました。",
+        ],
+        [True, False],
+    )
+    assert interaction.response.raw_messages == ["試合結果を上書きしました。", None]
+    assert interaction.response.embeds[0] is None
+    assert interaction.response.embeds[1] is not None
+    assert (
+        interaction.response.embeds[1].description
+        == f"match_id: {match_id} の試合結果が管理者操作により「引き分け」に上書きされました。"
+    )
 
 
 def test_admin_rename_season_updates_target_season_name(
@@ -6975,7 +8102,7 @@ def test_admin_rename_season_updates_target_season_name(
     session.expire_all()
     refreshed_pair = ensure_active_and_upcoming_seasons(session)
 
-    assert interaction.response.messages == ["シーズン名を変更しました。"]
+    assert_response(interaction, ["シーズン名を変更しました。"], ephemeral=True)
     assert refreshed_pair.upcoming.id == season_pair.upcoming.id
     assert refreshed_pair.upcoming.name == "spring-cup"
 
@@ -7009,6 +8136,7 @@ def test_admin_setup_custom_ui_channel_creates_register_panel_and_button_registe
     managed_ui_channel = session.scalar(select(ManagedUiChannel))
     persisted_channel = guild.channels[0]
     persisted_message = persisted_channel.sent_messages[0]
+    persisted_category = find_category_by_name(guild, "レート戦")
 
     assert interaction.response.messages == ["UI 設置チャンネルを作成しました。"]
     assert interaction.response.ephemeral_flags == [True]
@@ -7019,9 +8147,10 @@ def test_admin_setup_custom_ui_channel_creates_register_panel_and_button_registe
     assert managed_ui_channel.channel_id == persisted_channel.id
     assert managed_ui_channel.message_id == persisted_message.id
     assert managed_ui_channel.created_by_discord_user_id == executor_discord_user_id
+    assert persisted_channel.category is persisted_category
     assert persisted_channel.overwrites[guild.default_role].view_channel is True
     assert persisted_channel.overwrites[guild.default_role].send_messages is False
-    assert persisted_message.content == REGISTER_PANEL_MESSAGE
+    assert_body_only_embed_message(persisted_message, REGISTER_PANEL_MESSAGE)
     assert persisted_message.view is not None
     button = cast(discord.ui.Button[Any], persisted_message.view.children[0])
     assert button.label == REGISTER_PANEL_BUTTON_LABEL
@@ -7072,6 +8201,7 @@ def test_admin_setup_custom_ui_channel_creates_info_channel_buttons(
     managed_ui_channel = session.scalar(select(ManagedUiChannel))
     persisted_channel = guild.channels[0]
     persisted_message = persisted_channel.sent_messages[0]
+    persisted_category = find_category_by_name(guild, "レート戦")
 
     assert_response(interaction, ["UI 設置チャンネルを作成しました。"], ephemeral=True)
     assert managed_ui_channel is not None
@@ -7079,11 +8209,12 @@ def test_admin_setup_custom_ui_channel_creates_info_channel_buttons(
     assert managed_ui_channel.channel_id == persisted_channel.id
     assert managed_ui_channel.message_id == persisted_message.id
     assert managed_ui_channel.created_by_discord_user_id == executor_discord_user_id
+    assert persisted_channel.category is persisted_category
     assert persisted_channel.overwrites[guild.default_role].view_channel is False
     assert persisted_channel.overwrites[guild.default_role].send_messages is False
     assert persisted_channel.overwrites[registered_role].view_channel is True
     assert persisted_channel.overwrites[registered_role].send_messages is False
-    assert persisted_message.content == INFO_CHANNEL_MESSAGE
+    assert_body_only_embed_message(persisted_message, INFO_CHANNEL_MESSAGE)
     assert persisted_message.view is not None
     info_buttons = [
         cast(discord.ui.Button[Any], child) for child in persisted_message.view.children
@@ -7139,26 +8270,40 @@ def test_admin_setup_custom_ui_channel_creates_matchmaking_channel_with_placehol
     session.expire_all()
     managed_ui_channel = session.scalar(select(ManagedUiChannel))
     persisted_channel = guild.channels[0]
+    persisted_category = find_category_by_name(guild, "レート戦")
 
     assert_response(interaction, ["UI 設置チャンネルを作成しました。"], ephemeral=True)
     assert managed_ui_channel is not None
     assert managed_ui_channel.ui_type == ManagedUiType.MATCHMAKING_CHANNEL
     assert managed_ui_channel.channel_id == persisted_channel.id
     assert managed_ui_channel.status_message_id == persisted_channel.sent_messages[1].id
-    assert managed_ui_channel.message_id == persisted_channel.sent_messages[2].id
+    assert managed_ui_channel.message_id is None
+    assert (
+        managed_ui_channel.matchmaking_one_v_one_message_id == persisted_channel.sent_messages[2].id
+    )
+    assert (
+        managed_ui_channel.matchmaking_two_v_two_message_id == persisted_channel.sent_messages[3].id
+    )
+    assert (
+        managed_ui_channel.matchmaking_three_v_three_message_id
+        == persisted_channel.sent_messages[4].id
+    )
     assert managed_ui_channel.created_by_discord_user_id == executor_discord_user_id
+    assert persisted_channel.category is persisted_category
     assert persisted_channel.overwrites[guild.default_role].view_channel is False
     assert persisted_channel.overwrites[guild.default_role].send_messages is False
     assert persisted_channel.overwrites[registered_role].view_channel is True
     assert persisted_channel.overwrites[registered_role].send_messages is False
-    assert len(persisted_channel.sent_messages) == 3
-    assert persisted_channel.sent_messages[0].content == build_expected_matchmaking_guide_message(
-        matchmaking_guide_url
+    assert len(persisted_channel.sent_messages) == 5
+    assert_body_only_embed_message(
+        persisted_channel.sent_messages[0],
+        build_matchmaking_guide_message(matchmaking_guide_url),
     )
     assert persisted_channel.sent_messages[0].view is None
-    assert persisted_channel.sent_messages[0].suppress_embeds is True
-    assert (
-        persisted_channel.sent_messages[1].content == MATCHMAKING_CHANNEL_STATUS_PLACEHOLDER_MESSAGE
+    assert persisted_channel.sent_messages[0].suppress_embeds is False
+    assert_body_only_embed_message(
+        persisted_channel.sent_messages[1],
+        MATCHMAKING_CHANNEL_STATUS_PLACEHOLDER_MESSAGE,
     )
     assert persisted_channel.sent_messages[1].view is not None
     assert persisted_channel.sent_messages[1].suppress_embeds is False
@@ -7169,30 +8314,9 @@ def test_admin_setup_custom_ui_channel_creates_matchmaking_channel_with_placehol
     assert status_button.label == MATCHMAKING_CHANNEL_UPDATE_STATUS_BUTTON_LABEL
     assert status_button.style is discord.ButtonStyle.success
     assert status_button.custom_id == MATCHMAKING_CHANNEL_UPDATE_STATUS_BUTTON_CUSTOM_ID
-    assert persisted_channel.sent_messages[2].content == MATCHMAKING_CHANNEL_MESSAGE
-    assert persisted_channel.sent_messages[2].view is not None
-    assert persisted_channel.sent_messages[2].suppress_embeds is False
-    match_format_select = cast(
-        discord.ui.Select[Any],
-        persisted_channel.sent_messages[2].view.children[0],
-    )
-    queue_name_select = cast(
-        discord.ui.Select[Any],
-        persisted_channel.sent_messages[2].view.children[1],
-    )
-    join_button = cast(
-        discord.ui.Button[Any],
-        persisted_channel.sent_messages[2].view.children[2],
-    )
-    assert match_format_select.placeholder == MATCHMAKING_CHANNEL_MATCH_FORMAT_PLACEHOLDER
-    assert [option.value for option in match_format_select.options] == ["1v1", "2v2", "3v3"]
-    assert queue_name_select.placeholder == MATCHMAKING_CHANNEL_QUEUE_NAME_PLACEHOLDER
-    assert [option.value for option in queue_name_select.options] == [
-        "beginner",
-        "regular",
-        "master",
-    ]
-    assert join_button.label == MATCHMAKING_CHANNEL_JOIN_BUTTON_LABEL
+    assert_matchmaking_panel_message(persisted_channel.sent_messages[2], MatchFormat.ONE_VS_ONE)
+    assert_matchmaking_panel_message(persisted_channel.sent_messages[3], MatchFormat.TWO_VS_TWO)
+    assert_matchmaking_panel_message(persisted_channel.sent_messages[4], MatchFormat.THREE_VS_THREE)
 
 
 def test_admin_setup_custom_ui_channel_creates_admin_operations_channel_for_super_admins(
@@ -7230,18 +8354,58 @@ def test_admin_setup_custom_ui_channel_creates_admin_operations_channel_for_supe
     managed_ui_channel = session.scalar(select(ManagedUiChannel))
     persisted_channel = guild.channels[0]
     persisted_message = persisted_channel.sent_messages[0]
+    persisted_category = find_category_by_name(guild, "レート戦")
 
     assert_response(interaction, ["UI 設置チャンネルを作成しました。"], ephemeral=True)
     assert managed_ui_channel is not None
     assert managed_ui_channel.ui_type == ManagedUiType.ADMIN_OPERATIONS_CHANNEL
     assert managed_ui_channel.channel_id == persisted_channel.id
     assert managed_ui_channel.message_id == persisted_message.id
+    assert persisted_channel.category is persisted_category
     assert persisted_channel.overwrites[guild.default_role].view_channel is False
     assert persisted_channel.overwrites[interaction.user].view_channel is True
     assert persisted_channel.overwrites[interaction.user].send_messages is True
     assert persisted_channel.overwrites[second_super_admin].view_channel is True
     assert persisted_channel.overwrites[second_super_admin].send_messages is True
-    assert persisted_message.content == ADMIN_OPERATIONS_CHANNEL_MESSAGE
+    assert_body_only_embed_message(persisted_message, ADMIN_OPERATIONS_CHANNEL_MESSAGE)
+
+
+def test_admin_setup_custom_ui_channel_reuses_existing_fixed_category(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    executor_discord_user_id = 10
+    registered_role = FakeRole(id=55_010_9, name=REGISTERED_PLAYER_ROLE_NAME)
+    guild = FakeGuild(id=2_108_31, roles=[registered_role])
+    existing_category = FakeCategoryChannel(id=60_001, name="レート戦", guild=guild)
+    guild.categories.append(existing_category)
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({executor_discord_user_id}),
+    )
+    interaction = FakeInteraction(
+        user=FakeUser(id=executor_discord_user_id),
+        guild_id=guild.id,
+        guild=guild,
+    )
+
+    asyncio.run(
+        handlers.admin_setup_custom_ui_channel(
+            as_interaction(interaction),
+            ManagedUiType.INFO_CHANNEL.value,
+            "レート戦情報",
+        )
+    )
+
+    session.expire_all()
+    managed_ui_channel = session.scalar(select(ManagedUiChannel))
+    persisted_channel = guild.channels[0]
+
+    assert_response(interaction, ["UI 設置チャンネルを作成しました。"], ephemeral=True)
+    assert managed_ui_channel is not None
+    assert guild.categories == [existing_category]
+    assert persisted_channel.category is existing_category
+    assert existing_category.channels == [persisted_channel]
 
 
 def test_info_channel_button_creates_info_thread_via_existing_command_flow(
@@ -7291,12 +8455,17 @@ def test_info_channel_button_creates_info_thread_via_existing_command_flow(
     binding = session.get(PlayerInfoThreadBinding, player.id)
 
     assert_response(button_interaction, ["情報確認用スレッドを作成しました。"], ephemeral=True)
+    assert_deferred_followup_response(button_interaction)
     assert len(persisted_channel.created_threads) == 1
     created_thread = persisted_channel.created_threads[0]
     assert created_thread.added_user_ids == [target_discord_user_id, executor_discord_user_id]
     assert [message.content for message in created_thread.sent_messages] == [
         build_info_thread_initial_message(InfoThreadCommandName.LEADERBOARD)
     ]
+    assert_body_only_embed_message(
+        created_thread.sent_messages[0],
+        build_info_thread_initial_message(InfoThreadCommandName.LEADERBOARD),
+    )
     assert binding is not None
     assert binding.thread_channel_id == created_thread.id
 
@@ -7339,9 +8508,10 @@ def test_info_channel_button_returns_registration_required_for_unregistered_user
 
     assert_response(
         button_interaction,
-        ["プレイヤー登録が必要です。先に /register を実行してください。"],
+        [PLAYER_REGISTRATION_REQUIRED_MESSAGE],
         ephemeral=True,
     )
+    assert_deferred_followup_response(button_interaction)
     assert persisted_channel.created_threads == []
 
 
@@ -7533,7 +8703,7 @@ def test_admin_setup_custom_ui_channel_creates_info_channel_without_thread_permi
     session.expire_all()
 
     assert_response(interaction, ["UI 設置チャンネルを作成しました。"], ephemeral=True)
-    assert guild.channels[0].sent_messages[0].content == INFO_CHANNEL_MESSAGE
+    assert_body_only_embed_message(guild.channels[0].sent_messages[0], INFO_CHANNEL_MESSAGE)
     assert guild.channels[0].sent_messages[0].view is not None
     assert session.scalar(select(ManagedUiChannel)) is not None
 
@@ -7598,6 +8768,37 @@ def test_admin_setup_custom_ui_channel_reports_discord_forbidden_detail_when_ini
     assert session.scalar(select(ManagedUiChannel)) is None
 
 
+def test_admin_setup_custom_ui_channel_reports_discord_forbidden_detail_when_category_create_fails(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    guild = FakeGuild(id=2_101_7_1, create_category_error=make_forbidden())
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({10}),
+    )
+    interaction = FakeInteraction(user=FakeUser(id=10), guild_id=guild.id, guild=guild)
+
+    asyncio.run(
+        handlers.admin_setup_custom_ui_channel(
+            as_interaction(interaction),
+            ManagedUiType.REGISTER_PANEL.value,
+            "レート戦はこちらから",
+        )
+    )
+
+    session.expire_all()
+
+    assert_response(
+        interaction,
+        ["Bot に必要な権限がありません。 Discord API: 403 Forbidden (error code: 0): Forbidden"],
+        ephemeral=True,
+    )
+    assert guild.categories == []
+    assert guild.channels == []
+    assert session.scalar(select(ManagedUiChannel)) is None
+
+
 def test_admin_setup_ui_channels_returns_already_created_when_required_ui_exists(
     session_factory: sessionmaker[Session],
 ) -> None:
@@ -7650,10 +8851,12 @@ def test_admin_setup_ui_channels_creates_registered_channel_set(
     assert [definition.ui_type for definition in get_required_managed_ui_definitions()] == [
         managed_ui_channel.ui_type for managed_ui_channel in managed_ui_channels
     ]
+    managed_ui_category = find_category_by_name(guild, "レート戦")
     expected_channel_names = [
         definition.recommended_channel_name for definition in get_required_managed_ui_definitions()
     ]
     assert expected_channel_names == [channel.name for channel in guild.channels]
+    assert all(channel.category is managed_ui_category for channel in guild.channels)
 
     registered_role = find_role_by_name(guild, REGISTERED_PLAYER_ROLE_NAME)
     assert registered_role is not None
@@ -7661,7 +8864,7 @@ def test_admin_setup_ui_channels_creates_registered_channel_set(
     register_channel = find_channel_by_name(guild, "レート戦はこちらから")
     assert register_channel.overwrites[guild.default_role].view_channel is True
     assert register_channel.overwrites[guild.default_role].send_messages is False
-    assert register_channel.sent_messages[0].content == REGISTER_PANEL_MESSAGE
+    assert_body_only_embed_message(register_channel.sent_messages[0], REGISTER_PANEL_MESSAGE)
 
     matchmaking_channel = find_channel_by_name(guild, "レート戦マッチング")
     assert matchmaking_channel.overwrites[guild.default_role].view_channel is False
@@ -7669,15 +8872,16 @@ def test_admin_setup_ui_channels_creates_registered_channel_set(
     assert matchmaking_channel.overwrites[registered_role].send_messages is False
     assert matchmaking_channel.overwrites[guild.me].create_private_threads is True
     assert matchmaking_channel.overwrites[guild.me].send_messages_in_threads is True
-    assert len(matchmaking_channel.sent_messages) == 3
-    assert matchmaking_channel.sent_messages[0].content == build_expected_matchmaking_guide_message(
-        DEFAULT_MATCHMAKING_GUIDE_URL
+    assert len(matchmaking_channel.sent_messages) == 5
+    assert_body_only_embed_message(
+        matchmaking_channel.sent_messages[0],
+        build_matchmaking_guide_message(DEFAULT_MATCHMAKING_GUIDE_URL),
     )
     assert matchmaking_channel.sent_messages[0].view is None
-    assert matchmaking_channel.sent_messages[0].suppress_embeds is True
-    assert (
-        matchmaking_channel.sent_messages[1].content
-        == MATCHMAKING_CHANNEL_STATUS_PLACEHOLDER_MESSAGE
+    assert matchmaking_channel.sent_messages[0].suppress_embeds is False
+    assert_body_only_embed_message(
+        matchmaking_channel.sent_messages[1],
+        MATCHMAKING_CHANNEL_STATUS_PLACEHOLDER_MESSAGE,
     )
     assert matchmaking_channel.sent_messages[1].view is not None
     assert matchmaking_channel.sent_messages[1].suppress_embeds is False
@@ -7688,49 +8892,52 @@ def test_admin_setup_ui_channels_creates_registered_channel_set(
     assert status_button.label == MATCHMAKING_CHANNEL_UPDATE_STATUS_BUTTON_LABEL
     assert status_button.style is discord.ButtonStyle.success
     assert status_button.custom_id == MATCHMAKING_CHANNEL_UPDATE_STATUS_BUTTON_CUSTOM_ID
-    assert matchmaking_channel.sent_messages[2].content == MATCHMAKING_CHANNEL_MESSAGE
-    assert matchmaking_channel.sent_messages[2].view is not None
-    assert matchmaking_channel.sent_messages[2].suppress_embeds is False
+    assert_matchmaking_panel_message(
+        matchmaking_channel.sent_messages[2],
+        MatchFormat.ONE_VS_ONE,
+    )
+    assert_matchmaking_panel_message(
+        matchmaking_channel.sent_messages[3],
+        MatchFormat.TWO_VS_TWO,
+    )
+    assert_matchmaking_panel_message(
+        matchmaking_channel.sent_messages[4],
+        MatchFormat.THREE_VS_THREE,
+    )
     matchmaking_channel_record = next(
         managed_ui_channel
         for managed_ui_channel in managed_ui_channels
         if managed_ui_channel.ui_type == ManagedUiType.MATCHMAKING_CHANNEL
     )
     assert matchmaking_channel_record.status_message_id == matchmaking_channel.sent_messages[1].id
-    assert matchmaking_channel_record.message_id == matchmaking_channel.sent_messages[2].id
-    match_format_select = cast(
-        discord.ui.Select[Any],
-        matchmaking_channel.sent_messages[2].view.children[0],
+    assert matchmaking_channel_record.message_id is None
+    assert (
+        matchmaking_channel_record.matchmaking_one_v_one_message_id
+        == matchmaking_channel.sent_messages[2].id
     )
-    queue_name_select = cast(
-        discord.ui.Select[Any],
-        matchmaking_channel.sent_messages[2].view.children[1],
+    assert (
+        matchmaking_channel_record.matchmaking_two_v_two_message_id
+        == matchmaking_channel.sent_messages[3].id
     )
-    join_button = cast(
-        discord.ui.Button[Any],
-        matchmaking_channel.sent_messages[2].view.children[2],
+    assert (
+        matchmaking_channel_record.matchmaking_three_v_three_message_id
+        == matchmaking_channel.sent_messages[4].id
     )
-    assert match_format_select.placeholder == MATCHMAKING_CHANNEL_MATCH_FORMAT_PLACEHOLDER
-    assert [option.value for option in match_format_select.options] == ["1v1", "2v2", "3v3"]
-    assert queue_name_select.placeholder == MATCHMAKING_CHANNEL_QUEUE_NAME_PLACEHOLDER
-    assert [option.value for option in queue_name_select.options] == [
-        "beginner",
-        "regular",
-        "master",
-    ]
-    assert join_button.label == MATCHMAKING_CHANNEL_JOIN_BUTTON_LABEL
 
     matchmaking_news_channel = find_channel_by_name(guild, "レート戦マッチ速報")
     assert matchmaking_news_channel.overwrites[guild.default_role].view_channel is False
     assert matchmaking_news_channel.overwrites[registered_role].view_channel is True
-    assert matchmaking_news_channel.sent_messages[0].content == MATCHMAKING_NEWS_CHANNEL_MESSAGE
+    assert_body_only_embed_message(
+        matchmaking_news_channel.sent_messages[0],
+        MATCHMAKING_NEWS_CHANNEL_MESSAGE,
+    )
     assert matchmaking_news_channel.sent_messages[0].view is None
 
     info_channel = find_channel_by_name(guild, "レート戦情報")
     assert info_channel.overwrites[guild.default_role].view_channel is False
     assert info_channel.overwrites[registered_role].view_channel is True
     assert info_channel.overwrites[registered_role].send_messages is False
-    assert info_channel.sent_messages[0].content == INFO_CHANNEL_MESSAGE
+    assert_body_only_embed_message(info_channel.sent_messages[0], INFO_CHANNEL_MESSAGE)
     assert info_channel.sent_messages[0].view is not None
     info_buttons = [
         cast(discord.ui.Button[Any], child) for child in info_channel.sent_messages[0].view.children
@@ -7758,21 +8965,27 @@ def test_admin_setup_ui_channels_creates_registered_channel_set(
     system_announcements_channel = find_channel_by_name(guild, "レート戦アナウンス")
     assert system_announcements_channel.overwrites[guild.default_role].view_channel is False
     assert system_announcements_channel.overwrites[registered_role].view_channel is True
-    assert (
-        system_announcements_channel.sent_messages[0].content
-        == SYSTEM_ANNOUNCEMENTS_CHANNEL_MESSAGE
+    assert_body_only_embed_message(
+        system_announcements_channel.sent_messages[0],
+        SYSTEM_ANNOUNCEMENTS_CHANNEL_MESSAGE,
     )
 
     admin_contact_channel = find_channel_by_name(guild, "運営連絡・フィードバック")
     assert admin_contact_channel.overwrites[guild.default_role].view_channel is True
     assert admin_contact_channel.overwrites[guild.default_role].send_messages is True
-    assert admin_contact_channel.sent_messages[0].content == ADMIN_CONTACT_CHANNEL_MESSAGE
+    assert_body_only_embed_message(
+        admin_contact_channel.sent_messages[0],
+        ADMIN_CONTACT_CHANNEL_MESSAGE,
+    )
 
     admin_operations_channel = find_channel_by_name(guild, "運営専用")
     assert admin_operations_channel.overwrites[guild.default_role].view_channel is False
     assert admin_operations_channel.overwrites[interaction.user].view_channel is True
     assert admin_operations_channel.overwrites[interaction.user].send_messages is True
-    assert admin_operations_channel.sent_messages[0].content == ADMIN_OPERATIONS_CHANNEL_MESSAGE
+    assert_body_only_embed_message(
+        admin_operations_channel.sent_messages[0],
+        ADMIN_OPERATIONS_CHANNEL_MESSAGE,
+    )
 
 
 def test_admin_setup_ui_channels_creates_private_channels_in_development_mode(
@@ -7808,9 +9021,11 @@ def test_admin_setup_ui_channels_creates_private_channels_in_development_mode(
 
     assert_response(interaction, ["必要な UI 設置チャンネルを作成しました。"], ephemeral=True)
     assert len(managed_ui_channels) == len(get_required_managed_ui_definitions())
+    managed_ui_category = find_category_by_name(guild, "レート戦")
     assert all(
         channel.overwrites[guild.default_role].view_channel is False for channel in guild.channels
     )
+    assert all(channel.category is managed_ui_category for channel in guild.channels)
 
     registered_role = find_role_by_name(guild, REGISTERED_PLAYER_ROLE_NAME)
     assert registered_role is not None
@@ -7872,6 +9087,60 @@ def test_admin_setup_ui_channels_reports_missing_manage_roles_permission(
         ephemeral=True,
     )
     assert guild.channels == []
+    assert session.scalar(select(ManagedUiChannel)) is None
+
+
+def test_admin_setup_ui_channels_reports_conflict_when_fixed_category_name_is_used_by_channel(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    guild = FakeGuild(id=2_102_6_1)
+    guild.channels.append(FakeTextChannel(id=60_020, name="レート戦", guild=guild))
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({10}),
+    )
+    interaction = FakeInteraction(user=FakeUser(id=10), guild_id=guild.id, guild=guild)
+
+    asyncio.run(handlers.admin_setup_ui_channels(as_interaction(interaction)))
+
+    session.expire_all()
+
+    assert_response(
+        interaction,
+        ["固定カテゴリ名「レート戦」の通常チャンネルがすでに存在します。"],
+        ephemeral=True,
+    )
+    assert guild.categories == []
+    assert session.scalar(select(ManagedUiChannel)) is None
+
+
+def test_admin_setup_ui_channels_reports_conflict_when_fixed_category_is_ambiguous(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    guild = FakeGuild(id=2_102_6_2)
+    guild.categories.extend(
+        [
+            FakeCategoryChannel(id=60_021, name="レート戦", guild=guild),
+            FakeCategoryChannel(id=60_022, name="レート戦", guild=guild),
+        ]
+    )
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({10}),
+    )
+    interaction = FakeInteraction(user=FakeUser(id=10), guild_id=guild.id, guild=guild)
+
+    asyncio.run(handlers.admin_setup_ui_channels(as_interaction(interaction)))
+
+    session.expire_all()
+
+    assert_response(
+        interaction,
+        ["固定カテゴリ名「レート戦」のカテゴリが複数存在します。"],
+        ephemeral=True,
+    )
     assert session.scalar(select(ManagedUiChannel)) is None
 
 
@@ -8222,12 +9491,34 @@ def test_admin_restrict_and_unrestrict_user_commands_manage_restrictions(
         select(MatchQueueEntry).where(MatchQueueEntry.player_id == player.id)
     )
 
-    assert restrict_interaction.response.messages == [
-        "指定したユーザーのキュー参加を7日制限しました。"
-    ]
-    assert unrestrict_interaction.response.messages == [
-        "指定したユーザーのキュー参加制限を解除しました。"
-    ]
+    assert_response_sequence(
+        restrict_interaction,
+        [
+            "指定したユーザーのキュー参加を7日制限しました。",
+            f"<@{target_discord_user_id}>",
+        ],
+        [True, False],
+    )
+    assert_public_embed_response(
+        restrict_interaction,
+        1,
+        expected_content=f"<@{target_discord_user_id}>",
+        expected_body="キュー参加を7日制限しました。",
+    )
+    assert_response_sequence(
+        unrestrict_interaction,
+        [
+            "指定したユーザーのキュー参加制限を解除しました。",
+            f"<@{target_discord_user_id}>",
+        ],
+        [True, False],
+    )
+    assert_public_embed_response(
+        unrestrict_interaction,
+        1,
+        expected_content=f"<@{target_discord_user_id}>",
+        expected_body="キュー参加制限を解除しました。",
+    )
     assert restriction is not None
     assert restriction.restriction_type == PlayerAccessRestrictionType.QUEUE_JOIN
     assert restriction.reason == "test reason"
@@ -8267,7 +9558,20 @@ def test_admin_restrict_user_accepts_dummy_user_reference(
         select(PlayerAccessRestriction).where(PlayerAccessRestriction.player_id == player.id)
     )
 
-    assert interaction.response.messages == ["指定したユーザーの観戦を1日制限しました。"]
+    assert_response_sequence(
+        interaction,
+        [
+            "指定したユーザーの観戦を1日制限しました。",
+            f"<dummy_{target_discord_user_id}>",
+        ],
+        [True, False],
+    )
+    assert_public_embed_response(
+        interaction,
+        1,
+        expected_content=f"<dummy_{target_discord_user_id}>",
+        expected_body="観戦を1日制限しました。",
+    )
     assert restriction is not None
     assert restriction.restriction_type == PlayerAccessRestrictionType.SPECTATE
 
@@ -8289,7 +9593,7 @@ def test_admin_restrict_user_requires_target_selection(
         )
     )
 
-    assert interaction.response.messages == ["対象ユーザーの指定が不正です。"]
+    assert_response(interaction, ["対象ユーザーの指定が不正です。"], ephemeral=True)
 
 
 def test_admin_add_penalty_accepts_dummy_user_reference(
@@ -8320,14 +9624,27 @@ def test_admin_add_penalty_accepts_dummy_user_reference(
         {"player_id": player.id, "penalty_type": PenaltyType.LATE},
     )
 
-    assert interaction.response.messages == ["ペナルティを加算しました。"]
+    assert_response_sequence(
+        interaction,
+        [
+            "ペナルティを加算しました。",
+            f"<dummy_{target_discord_user_id}>",
+        ],
+        [True, False],
+    )
+    assert_public_embed_response(
+        interaction,
+        1,
+        expected_content=f"<dummy_{target_discord_user_id}>",
+        expected_body="遅刻ペナルティを+1しました。現在の累積: 1",
+    )
     assert penalty is not None
     assert penalty.count == 1
 
 
 def test_dev_commands_register_discord_user_id_as_last_option() -> None:
     handlers = BotCommandHandlers(
-        settings=create_settings(),
+        settings=create_settings(development_mode=True),
         session_factory=sessionmaker(),
     )
     client = discord.Client(intents=discord.Intents.none())
@@ -8340,8 +9657,11 @@ def test_dev_commands_register_discord_user_id_as_last_option() -> None:
         "dev_join": ["match_format", "queue_name", "discord_user_id"],
         "dev_present": ["discord_user_id"],
         "dev_leave": ["discord_user_id"],
+        "dev_info_thread": ["command_name", "discord_user_id"],
         "dev_player_info": ["discord_user_id"],
         "dev_player_info_season": ["season_id", "discord_user_id"],
+        "dev_leaderboard": ["match_format", "page", "discord_user_id"],
+        "dev_leaderboard_season": ["season_id", "match_format", "page", "discord_user_id"],
         "dev_match_parent": ["match_id", "discord_user_id"],
         "dev_match_spectate": ["match_id", "discord_user_id"],
         "dev_match_win": ["match_id", "discord_user_id"],
@@ -8355,6 +9675,70 @@ def test_dev_commands_register_discord_user_id_as_last_option() -> None:
         command = tree.get_command(command_name)
         assert command is not None
         assert [parameter.name for parameter in command.parameters] == expected
+
+
+def test_production_registers_only_admin_commands() -> None:
+    handlers = BotCommandHandlers(
+        settings=create_settings(),
+        session_factory=sessionmaker(),
+    )
+    client = discord.Client(intents=discord.Intents.none())
+    tree = discord.app_commands.CommandTree(client)
+
+    register_app_commands(tree, handlers)
+
+    admin_command_names = [
+        "admin_match_result",
+        "admin_setup_ui_channels",
+        "admin_add_late",
+        "admin_sub_late",
+        "admin_restrict_user",
+        "admin_unrestrict_user",
+    ]
+    general_command_names = [
+        "register",
+        "join",
+        "present",
+        "leave",
+        "update_matchmaking_status",
+        "player_info",
+        "info_thread",
+        "player_info_season",
+        "leaderboard",
+        "leaderboard_season",
+        "match_parent",
+        "match_spectate",
+        "match_win",
+        "match_lose",
+        "match_draw",
+        "match_void",
+        "match_approve",
+    ]
+    dev_command_names = [
+        "dev_register",
+        "dev_join",
+        "dev_present",
+        "dev_leave",
+        "dev_info_thread",
+        "dev_player_info",
+        "dev_player_info_season",
+        "dev_leaderboard",
+        "dev_leaderboard_season",
+        "dev_match_parent",
+        "dev_match_spectate",
+        "dev_match_win",
+        "dev_match_lose",
+        "dev_match_draw",
+        "dev_match_void",
+        "dev_match_approve",
+        "dev_is_admin",
+    ]
+
+    for command_name in admin_command_names:
+        assert tree.get_command(command_name) is not None
+
+    for command_name in general_command_names + dev_command_names:
+        assert tree.get_command(command_name) is None
 
 
 def test_admin_restriction_commands_are_registered_with_expected_parameters() -> None:
@@ -8438,7 +9822,7 @@ def test_admin_managed_ui_commands_are_registered_with_expected_parameters() -> 
 
 def test_update_matchmaking_status_command_is_registered_without_parameters() -> None:
     handlers = BotCommandHandlers(
-        settings=create_settings(),
+        settings=create_settings(development_mode=True),
         session_factory=sessionmaker(),
     )
     client = discord.Client(intents=discord.Intents.none())
@@ -8454,7 +9838,7 @@ def test_update_matchmaking_status_command_is_registered_without_parameters() ->
 
 def test_info_thread_command_is_registered_with_expected_parameters_and_choices() -> None:
     handlers = BotCommandHandlers(
-        settings=create_settings(),
+        settings=create_settings(development_mode=True),
         session_factory=sessionmaker(),
     )
     client = discord.Client(intents=discord.Intents.none())
@@ -8476,7 +9860,7 @@ def test_info_thread_command_is_registered_with_expected_parameters_and_choices(
 
 def test_leaderboard_command_is_registered_with_expected_parameters_and_choices() -> None:
     handlers = BotCommandHandlers(
-        settings=create_settings(),
+        settings=create_settings(development_mode=True),
         session_factory=sessionmaker(),
     )
     client = discord.Client(intents=discord.Intents.none())
@@ -8493,7 +9877,7 @@ def test_leaderboard_command_is_registered_with_expected_parameters_and_choices(
 
 def test_leaderboard_season_command_is_registered_with_expected_parameters_and_choices() -> None:
     handlers = BotCommandHandlers(
-        settings=create_settings(),
+        settings=create_settings(development_mode=True),
         session_factory=sessionmaker(),
     )
     client = discord.Client(intents=discord.Intents.none())
@@ -8514,7 +9898,7 @@ def test_leaderboard_season_command_is_registered_with_expected_parameters_and_c
 
 def test_match_spectate_command_is_registered_with_match_id_parameter() -> None:
     handlers = BotCommandHandlers(
-        settings=create_settings(),
+        settings=create_settings(development_mode=True),
         session_factory=sessionmaker(),
     )
     client = discord.Client(intents=discord.Intents.none())
@@ -8525,3 +9909,123 @@ def test_match_spectate_command_is_registered_with_match_id_parameter() -> None:
     command = tree.get_command("match_spectate")
     assert command is not None
     assert [parameter.name for parameter in command.parameters] == ["match_id"]
+
+
+def test_register_command_defers_and_replies_via_followup(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    handlers = create_handlers(session_factory, development_mode=True)
+    client = discord.Client(intents=discord.Intents.none())
+    tree = discord.app_commands.CommandTree(client)
+    interaction = FakeInteraction(user=FakeUser(id=10))
+
+    register_app_commands(tree, handlers)
+
+    command = tree.get_command("register")
+
+    assert command is not None
+    asyncio.run(command.callback(as_interaction(interaction)))
+
+    assert_response(interaction, ["登録が完了しました。"], ephemeral=True)
+    assert interaction.response.defer_call_count == 1
+    assert interaction.response.defer_ephemeral is True
+    assert interaction.response.defer_thinking is True
+    assert interaction.response.send_message_call_count == 0
+    assert interaction.followup.send_call_count == 1
+
+
+def test_register_command_returns_generic_internal_error_on_unhandled_exception(
+    session_factory: sessionmaker[Session],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    handlers = create_handlers(session_factory, development_mode=True)
+    client = discord.Client(intents=discord.Intents.none())
+    tree = discord.app_commands.CommandTree(client)
+    interaction = FakeInteraction(user=FakeUser(id=10))
+
+    async def raise_unhandled(interaction: discord.Interaction[Any]) -> None:
+        raise RuntimeError("boom")
+
+    handlers.register = raise_unhandled  # type: ignore[method-assign]
+    register_app_commands(tree, handlers)
+
+    command = tree.get_command("register")
+
+    assert command is not None
+    with caplog.at_level(logging.ERROR):
+        asyncio.run(command.callback(as_interaction(interaction)))
+
+    assert_response(interaction, [APPLICATION_COMMAND_INTERNAL_ERROR_MESSAGE], ephemeral=True)
+    assert interaction.response.defer_call_count == 1
+    assert interaction.followup.send_call_count == 1
+    assert "Unhandled exception in application command" in caplog.text
+
+
+def test_register_command_returns_generic_internal_error_when_handler_sends_no_response(
+    session_factory: sessionmaker[Session],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    handlers = create_handlers(session_factory, development_mode=True)
+    client = discord.Client(intents=discord.Intents.none())
+    tree = discord.app_commands.CommandTree(client)
+    interaction = FakeInteraction(user=FakeUser(id=10))
+
+    async def no_response(interaction: discord.Interaction[Any]) -> None:
+        return None
+
+    handlers.register = no_response  # type: ignore[method-assign]
+    register_app_commands(tree, handlers)
+
+    command = tree.get_command("register")
+
+    assert command is not None
+    with caplog.at_level(logging.ERROR):
+        asyncio.run(command.callback(as_interaction(interaction)))
+
+    assert_response(interaction, [APPLICATION_COMMAND_INTERNAL_ERROR_MESSAGE], ephemeral=True)
+    assert interaction.response.defer_call_count == 1
+    assert interaction.followup.send_call_count == 1
+    assert "Application command completed without executor response" in caplog.text
+
+
+def test_common_runner_sends_executor_and_public_followups_for_admin_penalty(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    executor_discord_user_id = 10
+    target_discord_user_id = 123
+    create_player(session, target_discord_user_id)
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({executor_discord_user_id}),
+        matching_queue_service=MatchingQueueService(session_factory),
+    )
+    interaction = FakeInteraction(user=FakeUser(id=executor_discord_user_id))
+    asyncio.run(
+        handlers.run_application_command(
+            as_interaction(interaction),
+            "admin_add_late",
+            handlers.admin_add_penalty,
+            PenaltyType.LATE,
+            dummy_user=f"<dummy_{target_discord_user_id}>",
+        )
+    )
+
+    assert_response_sequence(
+        interaction,
+        [
+            "ペナルティを加算しました。",
+            f"<dummy_{target_discord_user_id}>",
+        ],
+        [True, False],
+    )
+    assert_public_embed_response(
+        interaction,
+        1,
+        expected_content=f"<dummy_{target_discord_user_id}>",
+        expected_body="遅刻ペナルティを+1しました。現在の累積: 1",
+    )
+    assert interaction.response.defer_call_count == 1
+    assert interaction.response.send_message_call_count == 0
+    assert interaction.followup.send_call_count == 2

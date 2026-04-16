@@ -2,58 +2,49 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, ClassVar, Protocol, Sequence
 
 import discord
 
 from dxd_rating.contexts.seasons.application import SeasonInfo
-from dxd_rating.contexts.ui.application import InfoThreadCommandName
 from dxd_rating.platform.db.models import MatchFormat
+from dxd_rating.platform.discord.copy.info import (
+    INFO_THREAD_LEADERBOARD_FALLBACK_ERROR_MESSAGE,
+    INFO_THREAD_LEADERBOARD_MATCH_FORMAT_PLACEHOLDER,
+    INFO_THREAD_LEADERBOARD_NEXT_PAGE_BUTTON_LABEL,
+    INFO_THREAD_LEADERBOARD_SEASON_PLACEHOLDER,
+    INFO_THREAD_LEADERBOARD_SEASON_SELECT_BOTH_MESSAGE,
+    INFO_THREAD_LEADERBOARD_SEASON_SELECT_SEASON_MESSAGE,
+    INFO_THREAD_LEADERBOARD_SELECT_MATCH_FORMAT_MESSAGE,
+    INFO_THREAD_LEADERBOARD_SHOW_BUTTON_LABEL,
+    INFO_THREAD_PLAYER_INFO_FALLBACK_ERROR_MESSAGE,
+    INFO_THREAD_PLAYER_INFO_SEASON_FALLBACK_ERROR_MESSAGE,
+    INFO_THREAD_PLAYER_INFO_SEASON_PLACEHOLDER,
+    INFO_THREAD_PLAYER_INFO_SEASON_SELECT_SEASON_MESSAGE,
+    INFO_THREAD_PLAYER_INFO_SHOW_BUTTON_LABEL,
+)
 from dxd_rating.shared.constants import get_match_format_definitions
 
-INFO_THREAD_RETRY_INFO_THREAD_MESSAGE_SUFFIX = (
-    "再度操作するには /info_thread を実行して新しい情報確認用スレッドを作成してください。"
-)
-INFO_THREAD_PLAYER_INFO_SHOW_BUTTON_LABEL = "プレイヤー情報を表示"
 INFO_THREAD_PLAYER_INFO_SHOW_BUTTON_CUSTOM_ID = "dxd_rating:info_thread:player_info:show"
-INFO_THREAD_PLAYER_INFO_FALLBACK_ERROR_MESSAGE = (
-    "プレイヤー情報の取得に失敗しました。管理者に確認してください。"
-)
-INFO_THREAD_PLAYER_INFO_SEASON_PLACEHOLDER = "シーズンを選択"
 INFO_THREAD_PLAYER_INFO_SEASON_SEASON_SELECT_CUSTOM_ID = (
     "dxd_rating:info_thread:player_info_season:season_id"
 )
 INFO_THREAD_PLAYER_INFO_SEASON_SHOW_BUTTON_CUSTOM_ID = (
     "dxd_rating:info_thread:player_info_season:show"
 )
-INFO_THREAD_PLAYER_INFO_SEASON_SELECT_SEASON_MESSAGE = (
-    f"シーズンを選択してください。{INFO_THREAD_RETRY_INFO_THREAD_MESSAGE_SUFFIX}"
-)
-INFO_THREAD_PLAYER_INFO_SEASON_FALLBACK_ERROR_MESSAGE = (
-    "シーズン別プレイヤー情報の取得に失敗しました。管理者に確認してください。"
-)
-INFO_THREAD_LEADERBOARD_MATCH_FORMAT_PLACEHOLDER = "試合形式を選択"
 INFO_THREAD_LEADERBOARD_MATCH_FORMAT_SELECT_CUSTOM_ID = (
     "dxd_rating:info_thread:leaderboard:match_format"
 )
-INFO_THREAD_LEADERBOARD_SHOW_BUTTON_LABEL = "ランキングを表示"
 INFO_THREAD_LEADERBOARD_SHOW_BUTTON_CUSTOM_ID = "dxd_rating:info_thread:leaderboard:show"
-INFO_THREAD_LEADERBOARD_SELECT_MATCH_FORMAT_MESSAGE = (
-    f"試合形式を選択してください。{INFO_THREAD_RETRY_INFO_THREAD_MESSAGE_SUFFIX}"
-)
-INFO_THREAD_LEADERBOARD_NEXT_PAGE_BUTTON_LABEL = "次のページ"
 INFO_THREAD_LEADERBOARD_NEXT_PAGE_BUTTON_CUSTOM_ID_PREFIX = (
     "dxd_rating:info_thread:leaderboard:next"
 )
 INFO_THREAD_LEADERBOARD_NEXT_PAGE_BUTTON_TEMPLATE = (
     r"^dxd_rating:info_thread:leaderboard:next:(?P<match_format>[^:]+):(?P<target_page>\d+)$"
 )
-INFO_THREAD_LEADERBOARD_FALLBACK_ERROR_MESSAGE = (
-    "ランキングの取得に失敗しました。管理者に確認してください。"
-)
 INFO_THREAD_LEADERBOARD_SEASON_MAX_OPTIONS = 25
-INFO_THREAD_LEADERBOARD_SEASON_PLACEHOLDER = "シーズンを選択"
 INFO_THREAD_LEADERBOARD_SEASON_SEASON_SELECT_CUSTOM_ID = (
     "dxd_rating:info_thread:leaderboard_season:season_id"
 )
@@ -62,12 +53,6 @@ INFO_THREAD_LEADERBOARD_SEASON_MATCH_FORMAT_SELECT_CUSTOM_ID = (
 )
 INFO_THREAD_LEADERBOARD_SEASON_SHOW_BUTTON_CUSTOM_ID = (
     "dxd_rating:info_thread:leaderboard_season:show"
-)
-INFO_THREAD_LEADERBOARD_SEASON_SELECT_SEASON_MESSAGE = (
-    f"シーズンを選択してください。{INFO_THREAD_RETRY_INFO_THREAD_MESSAGE_SUFFIX}"
-)
-INFO_THREAD_LEADERBOARD_SEASON_SELECT_BOTH_MESSAGE = (
-    f"シーズンと試合形式を選択してください。{INFO_THREAD_RETRY_INFO_THREAD_MESSAGE_SUFFIX}"
 )
 INFO_THREAD_LEADERBOARD_SEASON_NEXT_PAGE_BUTTON_CUSTOM_ID_PREFIX = (
     "dxd_rating:info_thread:leaderboard_season:next"
@@ -79,35 +64,25 @@ INFO_THREAD_LEADERBOARD_SEASON_NEXT_PAGE_BUTTON_TEMPLATE = (
 
 logger = logging.getLogger(__name__)
 
-INFO_THREAD_INITIAL_MESSAGES = {
-    InfoThreadCommandName.PLAYER_INFO: "\n".join(
-        [
-            "このスレッドは現在シーズンのプレイヤー情報確認用です。",
-            "「プレイヤー情報を表示」を押してください。",
-        ]
-    ),
-    InfoThreadCommandName.PLAYER_INFO_SEASON: "\n".join(
-        [
-            "このスレッドはシーズン別プレイヤー情報確認用です。",
-            "シーズンを選んで「プレイヤー情報を表示」を押してください。",
-        ]
-    ),
-    InfoThreadCommandName.LEADERBOARD: "\n".join(
-        [
-            "このスレッドは現在シーズンのランキング確認用です。",
-            "試合形式を選んで「ランキングを表示」を押してください。",
-        ]
-    ),
-    InfoThreadCommandName.LEADERBOARD_SEASON: "\n".join(
-        [
-            "このスレッドはシーズン別ランキング確認用です。",
-            "シーズンと試合形式を選んで「ランキングを表示」を押してください。",
-        ]
-    ),
-}
+
+class _ComponentInteractionHandler(Protocol):
+    async def send_component_message(
+        self,
+        interaction: discord.Interaction[Any],
+        message: str,
+    ) -> None: ...
+
+    async def run_component_interaction(
+        self,
+        interaction: discord.Interaction[Any],
+        interaction_name: str,
+        callback: Callable[[], Awaitable[None]],
+        *,
+        fallback_message: str,
+    ) -> None: ...
 
 
-class InfoThreadLeaderboardInteractionHandler(Protocol):
+class InfoThreadLeaderboardInteractionHandler(_ComponentInteractionHandler, Protocol):
     async def player_info_from_info_thread(
         self,
         interaction: discord.Interaction[Any],
@@ -269,7 +244,11 @@ async def _disable_interaction_message_components(
     if message is None:
         raise RuntimeError("Info thread interaction is missing source message")
 
-    await interaction.response.edit_message(view=_build_disabled_message_component_view(message))
+    edit = getattr(message, "edit", None)
+    if not callable(edit):
+        raise RuntimeError("Info thread interaction message is not editable")
+
+    await edit(view=_build_disabled_message_component_view(message))
 
 
 @dataclass(slots=True)
@@ -302,7 +281,12 @@ class InfoThreadPlayerInfoShowButton(discord.ui.Button["InfoThreadPlayerInfoInit
         if view is None:
             raise RuntimeError("Info thread player_info view is not attached")
 
-        await view.show_player_info(interaction)
+        await view._interaction_handler.run_component_interaction(
+            interaction,
+            "info_thread:player_info:show",
+            lambda: view.show_player_info(interaction),
+            fallback_message=INFO_THREAD_PLAYER_INFO_FALLBACK_ERROR_MESSAGE,
+        )
 
 
 class InfoThreadPlayerInfoInitialView(discord.ui.View):
@@ -367,7 +351,12 @@ class InfoThreadPlayerInfoSeasonShowButton(
         if view is None:
             raise RuntimeError("Info thread player_info_season view is not attached")
 
-        await view.show_player_info(interaction)
+        await view._interaction_handler.run_component_interaction(
+            interaction,
+            "info_thread:player_info_season:show",
+            lambda: view.show_player_info(interaction),
+            fallback_message=INFO_THREAD_PLAYER_INFO_SEASON_FALLBACK_ERROR_MESSAGE,
+        )
 
 
 class InfoThreadPlayerInfoSeasonInitialView(discord.ui.View):
@@ -409,7 +398,7 @@ class InfoThreadPlayerInfoSeasonInitialView(discord.ui.View):
             PlayerInfoSeasonSelectionState(),
         )
         if selection_state.season_id is None:
-            await _send_ephemeral_component_message(
+            await self._interaction_handler.send_component_message(
                 interaction,
                 INFO_THREAD_PLAYER_INFO_SEASON_SELECT_SEASON_MESSAGE,
             )
@@ -463,7 +452,12 @@ class InfoThreadLeaderboardShowButton(discord.ui.Button["InfoThreadLeaderboardIn
         if view is None:
             raise RuntimeError("Info thread leaderboard view is not attached")
 
-        await view.show_leaderboard(interaction)
+        await view._interaction_handler.run_component_interaction(
+            interaction,
+            "info_thread:leaderboard:show",
+            lambda: view.show_leaderboard(interaction),
+            fallback_message=INFO_THREAD_LEADERBOARD_FALLBACK_ERROR_MESSAGE,
+        )
 
 
 class InfoThreadLeaderboardInitialView(discord.ui.View):
@@ -504,7 +498,7 @@ class InfoThreadLeaderboardInitialView(discord.ui.View):
             LeaderboardSelectionState(),
         )
         if selection_state.match_format is None:
-            await _send_ephemeral_component_message(
+            await self._interaction_handler.send_component_message(
                 interaction,
                 INFO_THREAD_LEADERBOARD_SELECT_MATCH_FORMAT_MESSAGE,
             )
@@ -584,7 +578,12 @@ class InfoThreadLeaderboardSeasonShowButton(
         if view is None:
             raise RuntimeError("Info thread leaderboard season view is not attached")
 
-        await view.show_leaderboard(interaction)
+        await view._interaction_handler.run_component_interaction(
+            interaction,
+            "info_thread:leaderboard_season:show",
+            lambda: view.show_leaderboard(interaction),
+            fallback_message=INFO_THREAD_LEADERBOARD_FALLBACK_ERROR_MESSAGE,
+        )
 
 
 class InfoThreadLeaderboardSeasonInitialView(discord.ui.View):
@@ -640,21 +639,21 @@ class InfoThreadLeaderboardSeasonInitialView(discord.ui.View):
             LeaderboardSeasonSelectionState(),
         )
         if selection_state.season_id is None and selection_state.match_format is None:
-            await _send_ephemeral_component_message(
+            await self._interaction_handler.send_component_message(
                 interaction,
                 INFO_THREAD_LEADERBOARD_SEASON_SELECT_BOTH_MESSAGE,
             )
             return
 
         if selection_state.season_id is None:
-            await _send_ephemeral_component_message(
+            await self._interaction_handler.send_component_message(
                 interaction,
                 INFO_THREAD_LEADERBOARD_SEASON_SELECT_SEASON_MESSAGE,
             )
             return
 
         if selection_state.match_format is None:
-            await _send_ephemeral_component_message(
+            await self._interaction_handler.send_component_message(
                 interaction,
                 INFO_THREAD_LEADERBOARD_SELECT_MATCH_FORMAT_MESSAGE,
             )
@@ -730,11 +729,23 @@ class InfoThreadLeaderboardNextPageButton(
     async def callback(self, interaction: discord.Interaction[Any]) -> None:
         if self._interaction_handler is None:
             logger.error("Info thread leaderboard interaction handler is not configured")
+            await interaction.response.defer(ephemeral=True, thinking=True)
             await _send_fallback_error_message(interaction)
             return
 
+        await self._interaction_handler.run_component_interaction(
+            interaction,
+            "info_thread:leaderboard:next_page",
+            lambda: self._run_callback(interaction),
+            fallback_message=INFO_THREAD_LEADERBOARD_FALLBACK_ERROR_MESSAGE,
+        )
+
+    async def _run_callback(self, interaction: discord.Interaction[Any]) -> None:
         await _disable_interaction_message_components(interaction)
-        await self._interaction_handler.leaderboard_from_info_thread(
+        interaction_handler = self._interaction_handler
+        if interaction_handler is None:
+            raise RuntimeError("Info thread leaderboard interaction handler is not configured")
+        await interaction_handler.leaderboard_from_info_thread(
             interaction,
             self.match_format.value,
             self.target_page,
@@ -831,11 +842,25 @@ class InfoThreadLeaderboardSeasonNextPageButton(
     async def callback(self, interaction: discord.Interaction[Any]) -> None:
         if self._interaction_handler is None:
             logger.error("Info thread leaderboard season interaction handler is not configured")
+            await interaction.response.defer(ephemeral=True, thinking=True)
             await _send_fallback_error_message(interaction)
             return
 
+        await self._interaction_handler.run_component_interaction(
+            interaction,
+            "info_thread:leaderboard_season:next_page",
+            lambda: self._run_callback(interaction),
+            fallback_message=INFO_THREAD_LEADERBOARD_FALLBACK_ERROR_MESSAGE,
+        )
+
+    async def _run_callback(self, interaction: discord.Interaction[Any]) -> None:
         await _disable_interaction_message_components(interaction)
-        await self._interaction_handler.leaderboard_season_from_info_thread(
+        interaction_handler = self._interaction_handler
+        if interaction_handler is None:
+            raise RuntimeError(
+                "Info thread leaderboard season interaction handler is not configured"
+            )
+        await interaction_handler.leaderboard_season_from_info_thread(
             interaction,
             self.season_id,
             self.match_format.value,
@@ -877,10 +902,6 @@ class InfoThreadLeaderboardSeasonNextPageView(discord.ui.View):
                 interaction_handler=interaction_handler,
             )
         )
-
-
-def build_info_thread_initial_message(command_name: InfoThreadCommandName) -> str:
-    return INFO_THREAD_INITIAL_MESSAGES[command_name]
 
 
 def create_info_thread_player_info_initial_view(

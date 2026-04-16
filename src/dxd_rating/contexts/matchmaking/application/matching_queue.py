@@ -57,35 +57,19 @@ from dxd_rating.platform.db.models import (
 )
 from dxd_rating.platform.db.session import session_scope
 from dxd_rating.shared.constants import (
-    MATCH_PARENT_SELECTION_WINDOW,
     MATCH_QUEUE_TTL,
     OUTBOX_NOTIFY_CHANNEL,
     PRESENCE_REMINDER_LEAD_TIME,
+    PRODUCTION_MATCH_TIMING_WINDOWS,
     MatchFormatDefinition,
     MatchQueueClassDefinition,
+    MatchTimingWindows,
     get_match_format_definition,
     get_match_queue_class_definitions,
     normalize_match_queue_name,
 )
 
 DEFAULT_CLEANUP_BATCH_SIZE = 100
-
-JOIN_QUEUE_MESSAGE = "キューに参加しました。5分間マッチングします。"
-INVALID_MATCH_FORMAT_MESSAGE = "指定したフォーマットは存在しません。"
-INVALID_QUEUE_NAME_MESSAGE = "指定したキューは存在しません。"
-QUEUE_JOIN_NOT_ALLOWED_MESSAGE = "現在のレーティングではそのキューに参加できません。"
-QUEUE_JOIN_RESTRICTED_MESSAGE = "現在キュー参加を制限されています。"
-QUEUE_ALREADY_JOINED_MESSAGE = "すでにキュー参加中です。"
-QUEUE_PRESENT_UPDATED_MESSAGE = "在席を更新しました。次の期限は5分後です。"
-QUEUE_NOT_JOINED_MESSAGE = "キューに参加していません。"
-QUEUE_PRESENT_EXPIRED_MESSAGE = "期限切れのためキューから外れました。"
-QUEUE_LEFT_MESSAGE = "キューから退出しました。"
-QUEUE_ALREADY_EXPIRED_MESSAGE = "すでに期限切れでキューから外れています。"
-PRESENCE_REMINDER_NOTIFICATION_MESSAGE = (
-    "在席確認です。1分以内に在席更新がない場合はマッチングキューから外れます。"
-)
-QUEUE_EXPIRED_NOTIFICATION_MESSAGE = "期限切れでマッチングキューから外れました。"
-MATCH_CREATED_NOTIFICATION_MESSAGE = "マッチ成立です。"
 
 
 def _is_transient_task_db_error(exc: Exception) -> bool:
@@ -110,7 +94,6 @@ class JoinQueueResult:
     revision: int
     expire_at: datetime
     queue_class_id: str
-    message: str = JOIN_QUEUE_MESSAGE
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,14 +102,12 @@ class PresentQueueResult:
     revision: int | None
     expire_at: datetime | None
     expired: bool
-    message: str
 
 
 @dataclass(frozen=True, slots=True)
 class LeaveQueueResult:
     queue_entry_id: int | None
     expired: bool
-    message: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -183,10 +164,21 @@ class MatchmakingStatusSnapshotEntry:
     active_count: int
 
 
+@dataclass(frozen=True, slots=True)
+class MatchmakingStatusSnapshot:
+    entries: tuple[MatchmakingStatusSnapshotEntry, ...]
+    updated_at: datetime
+
+
 class NotificationDestinationPayload(TypedDict, total=False):
     kind: str
     channel_id: int
     guild_id: int | None
+
+
+class TeamRatingEntryPayload(TypedDict):
+    discord_user_id: int
+    rating: float
 
 
 class MatchingQueueService:
@@ -197,9 +189,11 @@ class MatchingQueueService:
         *,
         queue_class_definitions: Sequence[MatchQueueClassDefinition] | None = None,
         random_generator: RandomLike | None = None,
+        match_timing_windows: MatchTimingWindows = PRODUCTION_MATCH_TIMING_WINDOWS,
     ) -> None:
         self.session_factory = session_factory
         self.logger = logger or logging.getLogger(__name__)
+        self.match_timing_windows = match_timing_windows
         self._match_format_definitions_by_format = {
             definition.match_format: definition
             for definition in (
@@ -270,12 +264,12 @@ class MatchingQueueService:
                     resolved_match_format
                 ],
             ):
-                raise QueueJoinNotAllowedError(QUEUE_JOIN_NOT_ALLOWED_MESSAGE)
+                raise QueueJoinNotAllowedError()
 
             waiting_entry = self._get_waiting_entry_for_update(session, player_id)
 
             if waiting_entry is not None and waiting_entry.expire_at > current_time:
-                raise QueueAlreadyJoinedError(QUEUE_ALREADY_JOINED_MESSAGE)
+                raise QueueAlreadyJoinedError()
 
             if waiting_entry is not None and waiting_entry.expire_at <= current_time:
                 self._mark_entry_expired(
@@ -330,7 +324,7 @@ class MatchingQueueService:
             waiting_entry = self._get_waiting_entry_for_update(session, player_id)
 
             if waiting_entry is None:
-                raise QueueNotJoinedError(QUEUE_NOT_JOINED_MESSAGE)
+                raise QueueNotJoinedError()
 
             if waiting_entry.expire_at <= current_time:
                 self._mark_entry_expired(
@@ -342,7 +336,6 @@ class MatchingQueueService:
                     revision=None,
                     expire_at=None,
                     expired=True,
-                    message=QUEUE_PRESENT_EXPIRED_MESSAGE,
                 )
             else:
                 waiting_entry.last_present_at = current_time
@@ -360,7 +353,6 @@ class MatchingQueueService:
                     revision=waiting_entry.revision,
                     expire_at=waiting_entry.expire_at,
                     expired=False,
-                    message=QUEUE_PRESENT_UPDATED_MESSAGE,
                 )
 
         if result is None:
@@ -421,7 +413,7 @@ class MatchingQueueService:
                 )
             )
 
-    def get_matchmaking_status_snapshot(self) -> tuple[MatchmakingStatusSnapshotEntry, ...]:
+    def get_matchmaking_status_snapshot(self) -> MatchmakingStatusSnapshot:
         with session_scope(self.session_factory) as session:
             current_time = self._get_database_now(session)
             window_start = current_time - timedelta(minutes=30)
@@ -440,7 +432,7 @@ class MatchingQueueService:
                 removed_after=window_start,
             )
 
-        return tuple(
+        entries = tuple(
             MatchmakingStatusSnapshotEntry(
                 match_format=definition.match_format,
                 queue_name=definition.queue_name,
@@ -453,6 +445,7 @@ class MatchingQueueService:
             )
             for definition in self._queue_class_definitions
         )
+        return MatchmakingStatusSnapshot(entries=entries, updated_at=current_time)
 
     def leave(self, player_id: int) -> LeaveQueueResult:
         result: LeaveQueueResult | None = None
@@ -467,7 +460,6 @@ class MatchingQueueService:
                 result = LeaveQueueResult(
                     queue_entry_id=None,
                     expired=False,
-                    message=QUEUE_LEFT_MESSAGE,
                 )
             elif waiting_entry.expire_at <= current_time:
                 self._mark_entry_expired(
@@ -477,7 +469,6 @@ class MatchingQueueService:
                 result = LeaveQueueResult(
                     queue_entry_id=waiting_entry.id,
                     expired=True,
-                    message=QUEUE_ALREADY_EXPIRED_MESSAGE,
                 )
             else:
                 waiting_entry.status = MatchQueueEntryStatus.LEFT
@@ -486,7 +477,6 @@ class MatchingQueueService:
                 result = LeaveQueueResult(
                     queue_entry_id=waiting_entry.id,
                     expired=False,
-                    message=QUEUE_LEFT_MESSAGE,
                 )
 
         if result is None:
@@ -690,13 +680,14 @@ class MatchingQueueService:
                 match_format=format_definition.match_format,
                 lock_rows=True,
             )
+            ratings_by_player_id = {
+                player_id: player_format_stats.rating
+                for player_id, player_format_stats in player_format_stats_by_player_id.items()
+            }
             prepared_matches = self._prepare_matches_for_batch(
                 queue_entries,
                 format_definition,
-                ratings_by_player_id={
-                    player_id: player_format_stats.rating
-                    for player_id, player_format_stats in player_format_stats_by_player_id.items()
-                },
+                ratings_by_player_id=ratings_by_player_id,
             )
             for prepared_match in prepared_matches:
                 match = Match(
@@ -711,7 +702,9 @@ class MatchingQueueService:
                     ActiveMatchState(
                         match_id=match.id,
                         created_at=current_time,
-                        parent_deadline_at=current_time + MATCH_PARENT_SELECTION_WINDOW,
+                        parent_deadline_at=(
+                            current_time + self.match_timing_windows.parent_selection_window
+                        ),
                         parent_player_id=None,
                         parent_decided_at=None,
                         report_open_at=None,
@@ -758,6 +751,7 @@ class MatchingQueueService:
                     queue_class_id,
                     prepared_match.team_a_entries,
                     prepared_match.team_b_entries,
+                    ratings_by_player_id=ratings_by_player_id,
                 ):
                     destination = payload["destination"]
                     channel_id = destination["channel_id"]
@@ -843,11 +837,21 @@ class MatchingQueueService:
         queue_class_id: str,
         team_a_entries: Sequence[MatchQueueEntry],
         team_b_entries: Sequence[MatchQueueEntry],
+        *,
+        ratings_by_player_id: dict[int, float],
     ) -> tuple[dict[str, Any], ...]:
         queue_class_definition = self._require_queue_class_definition_by_id(queue_class_id)
         matchmaking_channel = self._get_managed_ui_channel(
             session,
             ManagedUiType.MATCHMAKING_CHANNEL,
+        )
+        team_a_rating_entries = self._build_team_rating_entries(
+            team_entries=team_a_entries,
+            ratings_by_player_id=ratings_by_player_id,
+        )
+        team_b_rating_entries = self._build_team_rating_entries(
+            team_entries=team_b_entries,
+            ratings_by_player_id=ratings_by_player_id,
         )
         participant_payloads = self._build_participant_match_created_payloads(
             match_id=match_id,
@@ -856,6 +860,8 @@ class MatchingQueueService:
             matchmaking_channel=matchmaking_channel,
             team_a_entries=team_a_entries,
             team_b_entries=team_b_entries,
+            team_a_rating_entries=team_a_rating_entries,
+            team_b_rating_entries=team_b_rating_entries,
         )
         matchmaking_news_payload = self._build_matchmaking_news_match_created_payload(
             session,
@@ -865,6 +871,8 @@ class MatchingQueueService:
             matchmaking_channel=matchmaking_channel,
             team_a_entries=team_a_entries,
             team_b_entries=team_b_entries,
+            team_a_rating_entries=team_a_rating_entries,
+            team_b_rating_entries=team_b_rating_entries,
         )
         if matchmaking_news_payload is not None:
             return (matchmaking_news_payload, *participant_payloads)
@@ -881,6 +889,8 @@ class MatchingQueueService:
         matchmaking_channel: ManagedUiChannel | None,
         team_a_entries: Sequence[MatchQueueEntry],
         team_b_entries: Sequence[MatchQueueEntry],
+        team_a_rating_entries: Sequence[TeamRatingEntryPayload],
+        team_b_rating_entries: Sequence[TeamRatingEntryPayload],
     ) -> dict[str, Any] | None:
         matchmaking_news_channel = self._get_managed_ui_channel(
             session,
@@ -926,6 +936,8 @@ class MatchingQueueService:
             },
             "team_a_discord_user_ids": team_a_discord_user_ids,
             "team_b_discord_user_ids": team_b_discord_user_ids,
+            "team_a_rating_entries": list(team_a_rating_entries),
+            "team_b_rating_entries": list(team_b_rating_entries),
             "team_a_player_display_names": [
                 self._resolve_match_announcement_player_display_name(
                     players_by_id,
@@ -957,6 +969,8 @@ class MatchingQueueService:
         matchmaking_channel: ManagedUiChannel | None,
         team_a_entries: Sequence[MatchQueueEntry],
         team_b_entries: Sequence[MatchQueueEntry],
+        team_a_rating_entries: Sequence[TeamRatingEntryPayload],
+        team_b_rating_entries: Sequence[TeamRatingEntryPayload],
     ) -> tuple[dict[str, Any], ...]:
         all_entries = tuple(
             sorted(
@@ -994,6 +1008,8 @@ class MatchingQueueService:
                     queue_entry=queue_entry,
                     team_a_discord_user_ids=team_a_discord_user_ids,
                     team_b_discord_user_ids=team_b_discord_user_ids,
+                    team_a_rating_entries=team_a_rating_entries,
+                    team_b_rating_entries=team_b_rating_entries,
                     queue_entry_ids=queue_entry_ids,
                     player_ids=player_ids,
                 )
@@ -1011,6 +1027,8 @@ class MatchingQueueService:
         queue_entry: MatchQueueEntry,
         team_a_discord_user_ids: Sequence[int],
         team_b_discord_user_ids: Sequence[int],
+        team_a_rating_entries: Sequence[TeamRatingEntryPayload],
+        team_b_rating_entries: Sequence[TeamRatingEntryPayload],
         queue_entry_ids: Sequence[int],
         player_ids: Sequence[int],
     ) -> dict[str, Any]:
@@ -1027,6 +1045,8 @@ class MatchingQueueService:
             "mention_discord_user_id": queue_entry.notification_mention_discord_user_id,
             "team_a_discord_user_ids": list(team_a_discord_user_ids),
             "team_b_discord_user_ids": list(team_b_discord_user_ids),
+            "team_a_rating_entries": list(team_a_rating_entries),
+            "team_b_rating_entries": list(team_b_rating_entries),
         }
         self._apply_match_operation_thread_payload(
             payload,
@@ -1034,6 +1054,20 @@ class MatchingQueueService:
             create_match_operation_thread=True,
         )
         return payload
+
+    def _build_team_rating_entries(
+        self,
+        *,
+        team_entries: Sequence[MatchQueueEntry],
+        ratings_by_player_id: dict[int, float],
+    ) -> list[TeamRatingEntryPayload]:
+        return [
+            {
+                "discord_user_id": queue_entry.notification_mention_discord_user_id,
+                "rating": ratings_by_player_id[queue_entry.player_id],
+            }
+            for queue_entry in team_entries
+        ]
 
     def _get_managed_ui_channel(
         self,
@@ -1110,7 +1144,7 @@ class MatchingQueueService:
     def _ensure_player_exists(self, session: Session, player_id: int) -> Player:
         player = session.get(Player, player_id)
         if player is None:
-            raise PlayerNotRegisteredError(f"Player is not registered: {player_id}")
+            raise PlayerNotRegisteredError()
         return player
 
     def _resolve_match_format(self, match_format: MatchFormat | str) -> MatchFormat:
@@ -1119,7 +1153,7 @@ class MatchingQueueService:
                 return match_format
             return MatchFormat(match_format)
         except ValueError as exc:
-            raise InvalidMatchFormatError(INVALID_MATCH_FORMAT_MESSAGE) from exc
+            raise InvalidMatchFormatError() from exc
 
     def _resolve_queue_class_definition(
         self,
@@ -1130,7 +1164,7 @@ class MatchingQueueService:
             (match_format, normalize_match_queue_name(queue_name))
         )
         if definition is None:
-            raise InvalidQueueNameError(INVALID_QUEUE_NAME_MESSAGE)
+            raise InvalidQueueNameError()
         return definition
 
     def _ensure_queue_join_not_restricted(self, session: Session, player_id: int) -> None:
@@ -1140,7 +1174,7 @@ class MatchingQueueService:
             restriction_type=PlayerAccessRestrictionType.QUEUE_JOIN,
         )
         if restriction is not None:
-            raise QueueJoinRestrictedError(QUEUE_JOIN_RESTRICTED_MESSAGE)
+            raise QueueJoinRestrictedError()
 
     def _require_queue_class_definition_by_id(
         self,

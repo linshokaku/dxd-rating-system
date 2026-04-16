@@ -1,100 +1,93 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 import discord
 
-from dxd_rating.contexts.matchmaking.application import MatchmakingStatusSnapshotEntry
 from dxd_rating.contexts.ui.application import (
     InfoThreadCommandName,
     ManagedUiType,
     get_managed_ui_definition,
 )
 from dxd_rating.platform.db.models import MatchFormat
+from dxd_rating.platform.discord.copy.info import (
+    INFO_CHANNEL_FALLBACK_ERROR_MESSAGE,
+    INFO_CHANNEL_LEADERBOARD_BUTTON_LABEL,
+    INFO_CHANNEL_LEADERBOARD_SEASON_BUTTON_LABEL,
+    INFO_CHANNEL_MESSAGE,
+    INFO_CHANNEL_PLAYER_INFO_BUTTON_LABEL,
+    INFO_CHANNEL_PLAYER_INFO_SEASON_BUTTON_LABEL,
+)
+from dxd_rating.platform.discord.copy.match import MATCHMAKING_NEWS_CHANNEL_MESSAGE
+from dxd_rating.platform.discord.copy.matchmaking import (
+    MATCHMAKING_CHANNEL_FALLBACK_ERROR_MESSAGE,
+    MATCHMAKING_CHANNEL_JOIN_BUTTON_LABEL,
+    MATCHMAKING_CHANNEL_QUEUE_NAME_PLACEHOLDER,
+    MATCHMAKING_CHANNEL_SELECT_QUEUE_NAME_MESSAGE,
+    MATCHMAKING_CHANNEL_STATUS_PLACEHOLDER_MESSAGE,
+    MATCHMAKING_CHANNEL_STATUS_UPDATE_FALLBACK_ERROR_MESSAGE,
+    MATCHMAKING_CHANNEL_UPDATE_STATUS_BUTTON_LABEL,
+    build_matchmaking_guide_message,
+    build_matchmaking_panel_message,
+)
+from dxd_rating.platform.discord.copy.registration import (
+    REGISTER_PANEL_BUTTON_LABEL,
+    REGISTER_PANEL_FALLBACK_ERROR_MESSAGE,
+    REGISTER_PANEL_MESSAGE,
+)
+from dxd_rating.platform.discord.copy.system import (
+    ADMIN_CONTACT_CHANNEL_MESSAGE,
+    ADMIN_OPERATIONS_CHANNEL_MESSAGE,
+    SYSTEM_ANNOUNCEMENTS_CHANNEL_MESSAGE,
+)
+from dxd_rating.platform.discord.message_embeds import (
+    build_body_only_public_message_send_kwargs,
+)
 from dxd_rating.shared.constants import (
+    MatchQueueClassDefinition,
     get_match_format_definitions,
     get_match_queue_class_definitions,
     normalize_match_queue_name,
 )
 
-REGISTER_PANEL_MESSAGE = "\n".join(
-    [
-        "プレイヤー登録はこちらから行えます。",
-        "ボタンを押すと利用規約に同意したものとして扱います。",
-        "登録後は Bot の各種機能を利用できます。",
-        "登録後はマッチング関連チャンネルとシステムアナウンスを閲覧できます。",
-    ]
-)
-REGISTER_PANEL_BUTTON_LABEL = "利用規約に同意して登録"
 REGISTER_PANEL_BUTTON_CUSTOM_ID = "dxd_rating:register_panel:register"
-MATCHMAKING_CHANNEL_MESSAGE = "\n".join(
-    [
-        "この UI はマッチングキュー参加用です。",
-        "試合形式と階級を選んでから参加ボタンを押してください。",
-        "在席更新とキュー退出は /present と /leave を使ってください。",
-    ]
-)
-MATCHMAKING_CHANNEL_STATUS_PLACEHOLDER_MESSAGE = "\n".join(
-    [
-        "直近30分の参加状況",
-        "参加状況はまだ取得されていません",
-    ]
-)
-MATCHMAKING_CHANNEL_MATCH_FORMAT_PLACEHOLDER = "試合形式を選択"
-MATCHMAKING_CHANNEL_QUEUE_NAME_PLACEHOLDER = "階級を選択"
-MATCHMAKING_CHANNEL_JOIN_BUTTON_LABEL = "参加"
-MATCHMAKING_CHANNEL_UPDATE_STATUS_BUTTON_LABEL = "更新する"
-MATCHMAKING_CHANNEL_MATCH_FORMAT_SELECT_CUSTOM_ID = "dxd_rating:matchmaking_channel:match_format"
-MATCHMAKING_CHANNEL_QUEUE_NAME_SELECT_CUSTOM_ID = "dxd_rating:matchmaking_channel:queue_name"
-MATCHMAKING_CHANNEL_JOIN_BUTTON_CUSTOM_ID = "dxd_rating:matchmaking_channel:join"
+MATCHMAKING_CHANNEL_QUEUE_NAME_SELECT_CUSTOM_ID_PREFIX = "dxd_rating:matchmaking_channel:queue_name"
+MATCHMAKING_CHANNEL_JOIN_BUTTON_CUSTOM_ID_PREFIX = "dxd_rating:matchmaking_channel:join"
 MATCHMAKING_CHANNEL_UPDATE_STATUS_BUTTON_CUSTOM_ID = "dxd_rating:matchmaking_channel:update_status"
-MATCHMAKING_CHANNEL_SELECT_MATCH_FORMAT_MESSAGE = "試合形式を選択してください。"
-MATCHMAKING_CHANNEL_SELECT_QUEUE_NAME_MESSAGE = "階級を選択してください。"
-MATCHMAKING_NEWS_CHANNEL_MESSAGE = "\n".join(
-    [
-        "このチャンネルにはマッチ成立時のアナウンスが投稿されます。",
-        "観戦ボタンもこのチャンネルのアナウンスメッセージに表示されます。",
-    ]
-)
-INFO_CHANNEL_MESSAGE = "\n".join(
-    [
-        "このチャンネルはレート戦の情報確認用です。",
-        "使いたい項目のボタンを押すと、自分用の情報確認スレッドを作成できます。",
-        "スレッド作成直後にランキングやプレイヤー情報は自動表示されません。",
-    ]
-)
-INFO_CHANNEL_LEADERBOARD_BUTTON_LABEL = "現在シーズンのランキング"
 INFO_CHANNEL_LEADERBOARD_BUTTON_CUSTOM_ID = "dxd_rating:info_channel:leaderboard"
-INFO_CHANNEL_LEADERBOARD_SEASON_BUTTON_LABEL = "シーズン別ランキング"
 INFO_CHANNEL_LEADERBOARD_SEASON_BUTTON_CUSTOM_ID = "dxd_rating:info_channel:leaderboard_season"
-INFO_CHANNEL_PLAYER_INFO_BUTTON_LABEL = "現在シーズンのプレイヤー情報"
 INFO_CHANNEL_PLAYER_INFO_BUTTON_CUSTOM_ID = "dxd_rating:info_channel:player_info"
-INFO_CHANNEL_PLAYER_INFO_SEASON_BUTTON_LABEL = "シーズン別プレイヤー情報"
 INFO_CHANNEL_PLAYER_INFO_SEASON_BUTTON_CUSTOM_ID = "dxd_rating:info_channel:player_info_season"
-SYSTEM_ANNOUNCEMENTS_CHANNEL_MESSAGE = "このチャンネルは運営からのシステムアナウンス専用です。"
-ADMIN_CONTACT_CHANNEL_MESSAGE = "運営への連絡やフィードバックはこちらへどうぞ。"
-ADMIN_OPERATIONS_CHANNEL_MESSAGE = "このチャンネルは super admin 専用の運用連絡チャンネルです。"
 MAX_MANAGED_UI_CHANNEL_NAME_LENGTH = 100
-REGISTER_PANEL_FALLBACK_ERROR_MESSAGE = "登録に失敗しました。管理者に確認してください。"
-MATCHMAKING_CHANNEL_FALLBACK_ERROR_MESSAGE = "操作に失敗しました。管理者に確認してください。"
-MATCHMAKING_CHANNEL_STATUS_UPDATE_FALLBACK_ERROR_MESSAGE = (
-    "参加状況の更新に失敗しました。管理者に確認してください。"
-)
-INFO_CHANNEL_FALLBACK_ERROR_MESSAGE = (
-    "情報確認用スレッドの作成に失敗しました。管理者に確認してください。"
-)
 
 logger = logging.getLogger(__name__)
 
 
-class RegisterPanelInteractionHandler(Protocol):
+class _ComponentInteractionHandler(Protocol):
+    async def send_component_message(
+        self,
+        interaction: discord.Interaction[Any],
+        message: str,
+    ) -> None: ...
+
+    async def run_component_interaction(
+        self,
+        interaction: discord.Interaction[Any],
+        interaction_name: str,
+        callback: Callable[[], Awaitable[None]],
+        *,
+        fallback_message: str,
+    ) -> None: ...
+
+
+class RegisterPanelInteractionHandler(_ComponentInteractionHandler, Protocol):
     async def register_from_ui(self, interaction: discord.Interaction[Any]) -> None: ...
 
 
-class MatchmakingPanelInteractionHandler(Protocol):
+class MatchmakingPanelInteractionHandler(_ComponentInteractionHandler, Protocol):
     async def join_from_ui(
         self,
         interaction: discord.Interaction[Any],
@@ -103,14 +96,14 @@ class MatchmakingPanelInteractionHandler(Protocol):
     ) -> None: ...
 
 
-class MatchmakingStatusInteractionHandler(Protocol):
+class MatchmakingStatusInteractionHandler(_ComponentInteractionHandler, Protocol):
     async def update_matchmaking_status_from_ui(
         self,
         interaction: discord.Interaction[Any],
     ) -> None: ...
 
 
-class InfoChannelInteractionHandler(Protocol):
+class InfoChannelInteractionHandler(_ComponentInteractionHandler, Protocol):
     async def info_thread_from_ui(
         self,
         interaction: discord.Interaction[Any],
@@ -143,7 +136,12 @@ class RegisterPanelView(discord.ui.View):
         interaction: discord.Interaction[Any],
         _: discord.ui.Button[discord.ui.View],
     ) -> None:
-        await self._interaction_handler.register_from_ui(interaction)
+        await self._interaction_handler.run_component_interaction(
+            interaction,
+            "register_panel:register",
+            lambda: self._interaction_handler.register_from_ui(interaction),
+            fallback_message=REGISTER_PANEL_FALLBACK_ERROR_MESSAGE,
+        )
 
     async def on_error(
         self,
@@ -170,50 +168,40 @@ class RegisterPanelView(discord.ui.View):
 
 @dataclass(slots=True)
 class MatchmakingPanelSelectionState:
-    match_format: str | None = None
     queue_name: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class InitialManagedUiMessages:
-    primary_message: discord.Message
+    primary_message: discord.Message | None = None
     status_message: discord.Message | None = None
+    matchmaking_one_v_one_message: discord.Message | None = None
+    matchmaking_two_v_two_message: discord.Message | None = None
+    matchmaking_three_v_three_message: discord.Message | None = None
 
 
-def build_matchmaking_guide_message(guide_url: str) -> str:
-    return "\n".join(
-        [
-            "レート戦の遊び方",
-            "下のメッセージで試合形式と階級を選んで、参加ボタンを押すとマッチングを始められます。",
-            "マッチしたら、まず試合を進める人の「親」を1人決めてください。",
-            "試合は3セットで行い、勝ったセットが多いチームの勝ちです。",
-            "勝ったセット数が同じなら引き分けです。",
-            "どちらかが2回続けて勝ったら、その時点で試合終了です。",
-            "試合が終わったら、参加した **全員** が勝敗報告をしてください。",
-            f"くわしい遊び方は [こちらから]({guide_url}) 確認できます。",
-        ]
+def _build_matchmaking_component_custom_id(prefix: str, match_format: MatchFormat) -> str:
+    return f"{prefix}:{match_format.value}"
+
+
+def build_matchmaking_queue_name_select_custom_id(match_format: MatchFormat) -> str:
+    return _build_matchmaking_component_custom_id(
+        MATCHMAKING_CHANNEL_QUEUE_NAME_SELECT_CUSTOM_ID_PREFIX,
+        match_format,
     )
 
 
-def build_matchmaking_status_message(
-    snapshot: Sequence[MatchmakingStatusSnapshotEntry],
-) -> str:
-    lines = ["直近30分の参加状況"]
-    lines.extend(
-        f"{entry.match_format.value}-{entry.queue_name}: {entry.active_count}" for entry in snapshot
+def build_matchmaking_join_button_custom_id(match_format: MatchFormat) -> str:
+    return _build_matchmaking_component_custom_id(
+        MATCHMAKING_CHANNEL_JOIN_BUTTON_CUSTOM_ID_PREFIX,
+        match_format,
     )
-    return "\n".join(lines)
 
 
-def _build_matchmaking_match_format_options() -> list[discord.SelectOption]:
-    return [
-        discord.SelectOption(label=definition.description, value=definition.match_format.value)
-        for definition in get_match_format_definitions()
-    ]
-
-
-def _get_matchmaking_queue_names_for_format(match_format: MatchFormat) -> tuple[str, ...]:
-    queue_names: list[str] = []
+def _get_matchmaking_queue_definitions_for_format(
+    match_format: MatchFormat,
+) -> tuple[MatchQueueClassDefinition, ...]:
+    queue_definitions: list[MatchQueueClassDefinition] = []
     seen_queue_names: set[str] = set()
     for definition in get_match_queue_class_definitions():
         if definition.match_format is not match_format:
@@ -223,58 +211,59 @@ def _get_matchmaking_queue_names_for_format(match_format: MatchFormat) -> tuple[
         if normalized_queue_name in seen_queue_names:
             continue
 
-        queue_names.append(definition.queue_name)
+        queue_definitions.append(definition)
         seen_queue_names.add(normalized_queue_name)
 
-    return tuple(queue_names)
+    return tuple(queue_definitions)
+
+
+def _format_matchmaking_queue_rating_value(rating: float) -> str:
+    numeric_rating = float(rating)
+    if numeric_rating.is_integer():
+        return str(int(numeric_rating))
+    return f"{numeric_rating:g}"
+
+
+def _format_matchmaking_queue_rating_range(definition: MatchQueueClassDefinition) -> str:
+    if definition.minimum_rating is None and definition.maximum_rating is None:
+        return "全レート"
+    if definition.minimum_rating is None and definition.maximum_rating is not None:
+        return f"{_format_matchmaking_queue_rating_value(definition.maximum_rating)}未満"
+    if definition.minimum_rating is not None and definition.maximum_rating is None:
+        return f"{_format_matchmaking_queue_rating_value(definition.minimum_rating)}以上"
+    if definition.minimum_rating is not None and definition.maximum_rating is not None:
+        minimum_rating = _format_matchmaking_queue_rating_value(definition.minimum_rating)
+        maximum_rating = _format_matchmaking_queue_rating_value(definition.maximum_rating)
+        return f"{minimum_rating}以上 {maximum_rating}未満"
+    raise RuntimeError("Unexpected queue rating range")
+
+
+def _build_matchmaking_queue_option_label(definition: MatchQueueClassDefinition) -> str:
+    return f"{definition.queue_name} ({_format_matchmaking_queue_rating_range(definition)})"
 
 
 def _build_matchmaking_queue_options(match_format: MatchFormat) -> list[discord.SelectOption]:
     return [
-        discord.SelectOption(label=queue_name, value=queue_name)
-        for queue_name in _get_matchmaking_queue_names_for_format(match_format)
+        discord.SelectOption(
+            label=_build_matchmaking_queue_option_label(definition),
+            value=definition.queue_name,
+        )
+        for definition in _get_matchmaking_queue_definitions_for_format(match_format)
     ]
 
 
-async def _send_ephemeral_component_message(
-    interaction: discord.Interaction[Any],
-    message: str,
-) -> None:
-    if interaction.response.is_done():
-        await interaction.followup.send(message, ephemeral=True)
-        return
-
-    await interaction.response.send_message(message, ephemeral=True)
-
-
-class MatchmakingMatchFormatSelect(discord.ui.Select["MatchmakingPanelView"]):
-    def __init__(self) -> None:
-        super().__init__(
-            placeholder=MATCHMAKING_CHANNEL_MATCH_FORMAT_PLACEHOLDER,
-            min_values=1,
-            max_values=1,
-            options=_build_matchmaking_match_format_options(),
-            custom_id=MATCHMAKING_CHANNEL_MATCH_FORMAT_SELECT_CUSTOM_ID,
-            row=0,
-        )
-
-    async def callback(self, interaction: discord.Interaction[Any]) -> None:
-        view = self.view
-        if view is None:
-            raise RuntimeError("Matchmaking panel view is not attached")
-
-        await view.select_match_format(interaction, self.values[0])
-
-
-class MatchmakingQueueNameSelect(discord.ui.Select["MatchmakingPanelView"]):
-    def __init__(self) -> None:
+class FormatSpecificMatchmakingQueueNameSelect(
+    discord.ui.Select["FormatSpecificMatchmakingPanelView"]
+):
+    def __init__(self, match_format: MatchFormat) -> None:
+        self.match_format = match_format
         super().__init__(
             placeholder=MATCHMAKING_CHANNEL_QUEUE_NAME_PLACEHOLDER,
             min_values=1,
             max_values=1,
-            options=_build_matchmaking_queue_options(MatchFormat.THREE_VS_THREE),
-            custom_id=MATCHMAKING_CHANNEL_QUEUE_NAME_SELECT_CUSTOM_ID,
-            row=1,
+            options=_build_matchmaking_queue_options(match_format),
+            custom_id=build_matchmaking_queue_name_select_custom_id(match_format),
+            row=0,
         )
 
     async def callback(self, interaction: discord.Interaction[Any]) -> None:
@@ -285,13 +274,14 @@ class MatchmakingQueueNameSelect(discord.ui.Select["MatchmakingPanelView"]):
         await view.select_queue_name(interaction, self.values[0])
 
 
-class MatchmakingJoinButton(discord.ui.Button["MatchmakingPanelView"]):
-    def __init__(self) -> None:
+class FormatSpecificMatchmakingJoinButton(discord.ui.Button["FormatSpecificMatchmakingPanelView"]):
+    def __init__(self, match_format: MatchFormat) -> None:
+        self.match_format = match_format
         super().__init__(
             label=MATCHMAKING_CHANNEL_JOIN_BUTTON_LABEL,
             style=discord.ButtonStyle.primary,
-            custom_id=MATCHMAKING_CHANNEL_JOIN_BUTTON_CUSTOM_ID,
-            row=2,
+            custom_id=build_matchmaking_join_button_custom_id(match_format),
+            row=1,
         )
 
     async def callback(self, interaction: discord.Interaction[Any]) -> None:
@@ -299,44 +289,28 @@ class MatchmakingJoinButton(discord.ui.Button["MatchmakingPanelView"]):
         if view is None:
             raise RuntimeError("Matchmaking panel view is not attached")
 
-        await view.join_queue(interaction)
+        await view._interaction_handler.run_component_interaction(
+            interaction,
+            f"matchmaking_channel:{view.match_format.value}:join",
+            lambda: view.join_queue(interaction),
+            fallback_message=MATCHMAKING_CHANNEL_FALLBACK_ERROR_MESSAGE,
+        )
 
 
-class MatchmakingPanelView(discord.ui.View):
-    def __init__(self, interaction_handler: MatchmakingPanelInteractionHandler) -> None:
+class FormatSpecificMatchmakingPanelView(discord.ui.View):
+    def __init__(
+        self,
+        interaction_handler: MatchmakingPanelInteractionHandler,
+        match_format: MatchFormat,
+    ) -> None:
         super().__init__(timeout=None)
         self._interaction_handler = interaction_handler
+        self.match_format = match_format
         self._selection_state_by_user_id: dict[int, MatchmakingPanelSelectionState] = {}
-        self.match_format_select = MatchmakingMatchFormatSelect()
-        self.queue_name_select = MatchmakingQueueNameSelect()
-        self.join_button = MatchmakingJoinButton()
-        self.add_item(self.match_format_select)
+        self.queue_name_select = FormatSpecificMatchmakingQueueNameSelect(match_format)
+        self.join_button = FormatSpecificMatchmakingJoinButton(match_format)
         self.add_item(self.queue_name_select)
         self.add_item(self.join_button)
-
-    async def select_match_format(
-        self,
-        interaction: discord.Interaction[Any],
-        match_format: str,
-    ) -> None:
-        selection_state = self._selection_state_by_user_id.setdefault(
-            interaction.user.id,
-            MatchmakingPanelSelectionState(),
-        )
-        selection_state.match_format = match_format
-
-        try:
-            selected_match_format = MatchFormat(match_format)
-        except ValueError:
-            selection_state.queue_name = None
-            await interaction.response.defer()
-            return
-
-        valid_queue_names = set(_get_matchmaking_queue_names_for_format(selected_match_format))
-        if selection_state.queue_name not in valid_queue_names:
-            selection_state.queue_name = None
-
-        await interaction.response.defer()
 
     async def select_queue_name(
         self,
@@ -355,15 +329,8 @@ class MatchmakingPanelView(discord.ui.View):
             interaction.user.id,
             MatchmakingPanelSelectionState(),
         )
-        if selection_state.match_format is None:
-            await _send_ephemeral_component_message(
-                interaction,
-                MATCHMAKING_CHANNEL_SELECT_MATCH_FORMAT_MESSAGE,
-            )
-            return
-
         if selection_state.queue_name is None:
-            await _send_ephemeral_component_message(
+            await self._interaction_handler.send_component_message(
                 interaction,
                 MATCHMAKING_CHANNEL_SELECT_QUEUE_NAME_MESSAGE,
             )
@@ -371,7 +338,7 @@ class MatchmakingPanelView(discord.ui.View):
 
         await self._interaction_handler.join_from_ui(
             interaction,
-            selection_state.match_format,
+            self.match_format.value,
             selection_state.queue_name,
         )
 
@@ -398,6 +365,25 @@ class MatchmakingPanelView(discord.ui.View):
             logger.exception("Failed to send matchmaking panel fallback error response")
 
 
+def create_matchmaking_panel_view(
+    interaction_handler: MatchmakingPanelInteractionHandler,
+    match_format: MatchFormat,
+) -> discord.ui.View:
+    return FormatSpecificMatchmakingPanelView(interaction_handler, match_format)
+
+
+def create_matchmaking_panel_views(
+    interaction_handler: MatchmakingPanelInteractionHandler,
+) -> tuple[discord.ui.View, ...]:
+    return tuple(
+        create_matchmaking_panel_view(
+            interaction_handler,
+            definition.match_format,
+        )
+        for definition in get_match_format_definitions()
+    )
+
+
 class MatchmakingStatusView(discord.ui.View):
     def __init__(self, interaction_handler: MatchmakingStatusInteractionHandler) -> None:
         super().__init__(timeout=None)
@@ -413,7 +399,12 @@ class MatchmakingStatusView(discord.ui.View):
         interaction: discord.Interaction[Any],
         _: discord.ui.Button[discord.ui.View],
     ) -> None:
-        await self._interaction_handler.update_matchmaking_status_from_ui(interaction)
+        await self._interaction_handler.run_component_interaction(
+            interaction,
+            "matchmaking_channel:update_status",
+            lambda: self._interaction_handler.update_matchmaking_status_from_ui(interaction),
+            fallback_message=MATCHMAKING_CHANNEL_STATUS_UPDATE_FALLBACK_ERROR_MESSAGE,
+        )
 
     async def on_error(
         self,
@@ -454,9 +445,14 @@ class InfoChannelView(discord.ui.View):
         interaction: discord.Interaction[Any],
         _: discord.ui.Button[discord.ui.View],
     ) -> None:
-        await self._interaction_handler.info_thread_from_ui(
+        await self._interaction_handler.run_component_interaction(
             interaction,
-            InfoThreadCommandName.LEADERBOARD,
+            "info_channel:leaderboard",
+            lambda: self._interaction_handler.info_thread_from_ui(
+                interaction,
+                InfoThreadCommandName.LEADERBOARD,
+            ),
+            fallback_message=INFO_CHANNEL_FALLBACK_ERROR_MESSAGE,
         )
 
     @discord.ui.button(
@@ -470,9 +466,14 @@ class InfoChannelView(discord.ui.View):
         interaction: discord.Interaction[Any],
         _: discord.ui.Button[discord.ui.View],
     ) -> None:
-        await self._interaction_handler.info_thread_from_ui(
+        await self._interaction_handler.run_component_interaction(
             interaction,
-            InfoThreadCommandName.LEADERBOARD_SEASON,
+            "info_channel:leaderboard_season",
+            lambda: self._interaction_handler.info_thread_from_ui(
+                interaction,
+                InfoThreadCommandName.LEADERBOARD_SEASON,
+            ),
+            fallback_message=INFO_CHANNEL_FALLBACK_ERROR_MESSAGE,
         )
 
     @discord.ui.button(
@@ -486,9 +487,14 @@ class InfoChannelView(discord.ui.View):
         interaction: discord.Interaction[Any],
         _: discord.ui.Button[discord.ui.View],
     ) -> None:
-        await self._interaction_handler.info_thread_from_ui(
+        await self._interaction_handler.run_component_interaction(
             interaction,
-            InfoThreadCommandName.PLAYER_INFO,
+            "info_channel:player_info",
+            lambda: self._interaction_handler.info_thread_from_ui(
+                interaction,
+                InfoThreadCommandName.PLAYER_INFO,
+            ),
+            fallback_message=INFO_CHANNEL_FALLBACK_ERROR_MESSAGE,
         )
 
     @discord.ui.button(
@@ -502,9 +508,14 @@ class InfoChannelView(discord.ui.View):
         interaction: discord.Interaction[Any],
         _: discord.ui.Button[discord.ui.View],
     ) -> None:
-        await self._interaction_handler.info_thread_from_ui(
+        await self._interaction_handler.run_component_interaction(
             interaction,
-            InfoThreadCommandName.PLAYER_INFO_SEASON,
+            "info_channel:player_info_season",
+            lambda: self._interaction_handler.info_thread_from_ui(
+                interaction,
+                InfoThreadCommandName.PLAYER_INFO_SEASON,
+            ),
+            fallback_message=INFO_CHANNEL_FALLBACK_ERROR_MESSAGE,
         )
 
     async def on_error(
@@ -536,7 +547,7 @@ def create_persistent_views(
     return (
         RegisterPanelView(interaction_handler),
         MatchmakingStatusView(interaction_handler),
-        MatchmakingPanelView(interaction_handler),
+        *create_matchmaking_panel_views(interaction_handler),
         InfoChannelView(interaction_handler),
     )
 
@@ -551,8 +562,6 @@ def create_managed_ui_view(
 ) -> discord.ui.View:
     if ui_type is ManagedUiType.REGISTER_PANEL:
         return RegisterPanelView(interaction_handler)
-    if ui_type is ManagedUiType.MATCHMAKING_CHANNEL:
-        return MatchmakingPanelView(interaction_handler)
     if ui_type is ManagedUiType.INFO_CHANNEL:
         return InfoChannelView(interaction_handler)
 
@@ -712,48 +721,82 @@ async def send_initial_managed_ui_message(
     if ui_type is ManagedUiType.REGISTER_PANEL:
         return InitialManagedUiMessages(
             primary_message=await channel.send(
-                content=REGISTER_PANEL_MESSAGE,
-                view=RegisterPanelView(interaction_handler),
+                **build_body_only_public_message_send_kwargs(
+                    REGISTER_PANEL_MESSAGE,
+                    view=RegisterPanelView(interaction_handler),
+                )
             )
         )
     if ui_type is ManagedUiType.MATCHMAKING_CHANNEL:
         await channel.send(
-            content=build_matchmaking_guide_message(matchmaking_guide_url),
-            suppress_embeds=True,
+            **build_body_only_public_message_send_kwargs(
+                build_matchmaking_guide_message(matchmaking_guide_url),
+                suppress_embeds_for_fallback=True,
+            )
         )
         status_message = await channel.send(
-            content=MATCHMAKING_CHANNEL_STATUS_PLACEHOLDER_MESSAGE,
-            view=create_matchmaking_status_view(interaction_handler),
+            **build_body_only_public_message_send_kwargs(
+                MATCHMAKING_CHANNEL_STATUS_PLACEHOLDER_MESSAGE,
+                view=create_matchmaking_status_view(interaction_handler),
+            )
         )
+        panel_messages_by_format: dict[MatchFormat, discord.Message] = {}
+        for definition in get_match_format_definitions():
+            panel_messages_by_format[definition.match_format] = await channel.send(
+                **build_body_only_public_message_send_kwargs(
+                    build_matchmaking_panel_message(definition.match_format),
+                    view=create_matchmaking_panel_view(
+                        interaction_handler,
+                        definition.match_format,
+                    ),
+                ),
+            )
         return InitialManagedUiMessages(
-            primary_message=await channel.send(
-                content=MATCHMAKING_CHANNEL_MESSAGE,
-                view=MatchmakingPanelView(interaction_handler),
-            ),
             status_message=status_message,
+            matchmaking_one_v_one_message=panel_messages_by_format[MatchFormat.ONE_VS_ONE],
+            matchmaking_two_v_two_message=panel_messages_by_format[MatchFormat.TWO_VS_TWO],
+            matchmaking_three_v_three_message=panel_messages_by_format[MatchFormat.THREE_VS_THREE],
         )
     if ui_type is ManagedUiType.MATCHMAKING_NEWS_CHANNEL:
         return InitialManagedUiMessages(
-            primary_message=await channel.send(content=MATCHMAKING_NEWS_CHANNEL_MESSAGE)
+            primary_message=await channel.send(
+                **build_body_only_public_message_send_kwargs(
+                    MATCHMAKING_NEWS_CHANNEL_MESSAGE,
+                )
+            )
         )
     if ui_type is ManagedUiType.INFO_CHANNEL:
         return InitialManagedUiMessages(
             primary_message=await channel.send(
-                content=INFO_CHANNEL_MESSAGE,
-                view=InfoChannelView(interaction_handler),
+                **build_body_only_public_message_send_kwargs(
+                    INFO_CHANNEL_MESSAGE,
+                    view=InfoChannelView(interaction_handler),
+                )
             )
         )
     if ui_type is ManagedUiType.SYSTEM_ANNOUNCEMENTS_CHANNEL:
         return InitialManagedUiMessages(
-            primary_message=await channel.send(content=SYSTEM_ANNOUNCEMENTS_CHANNEL_MESSAGE)
+            primary_message=await channel.send(
+                **build_body_only_public_message_send_kwargs(
+                    SYSTEM_ANNOUNCEMENTS_CHANNEL_MESSAGE,
+                )
+            )
         )
     if ui_type is ManagedUiType.ADMIN_CONTACT_CHANNEL:
         return InitialManagedUiMessages(
-            primary_message=await channel.send(content=ADMIN_CONTACT_CHANNEL_MESSAGE)
+            primary_message=await channel.send(
+                **build_body_only_public_message_send_kwargs(
+                    ADMIN_CONTACT_CHANNEL_MESSAGE,
+                )
+            )
         )
     if ui_type is ManagedUiType.ADMIN_OPERATIONS_CHANNEL:
         return InitialManagedUiMessages(
-            primary_message=await channel.send(content=ADMIN_OPERATIONS_CHANNEL_MESSAGE)
+            primary_message=await channel.send(
+                **build_body_only_public_message_send_kwargs(
+                    ADMIN_OPERATIONS_CHANNEL_MESSAGE,
+                )
+            )
         )
 
     raise ValueError(f"Unsupported ui_type: {ui_type}")

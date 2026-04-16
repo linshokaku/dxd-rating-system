@@ -17,13 +17,6 @@ import dxd_rating.platform.runtime.match_runtime as match_runtime_module
 import dxd_rating.platform.runtime.outbox as outbox_runtime
 from dxd_rating.contexts.common.application import RetryableTaskError
 from dxd_rating.contexts.matches.application import (
-    MATCH_ADMIN_REVIEW_REQUIRED_NOTIFICATION_MESSAGE,
-    MATCH_APPROVAL_REQUESTED_NOTIFICATION_MESSAGE,
-    MATCH_APPROVAL_STARTED_NOTIFICATION_MESSAGE,
-    MATCH_AUTO_PENALTY_APPLIED_NOTIFICATION_MESSAGE,
-    MATCH_FINALIZED_NOTIFICATION_MESSAGE,
-    MATCH_PARENT_ASSIGNED_NOTIFICATION_MESSAGE,
-    MATCH_REPORT_OPENED_NOTIFICATION_MESSAGE,
     ActiveMatchTimerState,
     MatchApprovalResult,
     MatchFinalizationResult,
@@ -31,15 +24,13 @@ from dxd_rating.contexts.matches.application import (
     MatchReportSubmissionResult,
 )
 from dxd_rating.contexts.matchmaking.application import (
-    MATCH_CREATED_NOTIFICATION_MESSAGE,
-    PRESENCE_REMINDER_NOTIFICATION_MESSAGE,
-    QUEUE_EXPIRED_NOTIFICATION_MESSAGE,
     CreatedMatchResult,
     ExpireQueueEntryResult,
     JoinQueueResult,
     LeaveQueueResult,
     MatchingQueueNotificationContext,
     MatchingQueueService,
+    MatchmakingStatusSnapshot,
     MatchmakingStatusSnapshotEntry,
     PresenceReminderResult,
     PresentQueueResult,
@@ -59,25 +50,39 @@ from dxd_rating.platform.db.models import (
     OutboxEvent,
     OutboxEventType,
 )
+from dxd_rating.platform.discord.copy.match import (
+    MATCH_ADMIN_REVIEW_REQUIRED_NOTIFICATION_MESSAGE,
+    MATCH_APPROVAL_REQUESTED_NOTIFICATION_MESSAGE,
+    MATCH_APPROVAL_STARTED_NOTIFICATION_MESSAGE,
+    MATCH_AUTO_PENALTY_APPLIED_NOTIFICATION_MESSAGE,
+    MATCH_CREATED_NOTIFICATION_MESSAGE,
+    MATCH_FINALIZED_NOTIFICATION_MESSAGE,
+    MATCH_OPERATION_THREAD_APPROVE_BUTTON_LABEL,
+    MATCH_OPERATION_THREAD_DRAW_BUTTON_LABEL,
+    MATCH_OPERATION_THREAD_LOSE_BUTTON_LABEL,
+    MATCH_OPERATION_THREAD_PARENT_BUTTON_LABEL,
+    MATCH_OPERATION_THREAD_VOID_BUTTON_LABEL,
+    MATCH_OPERATION_THREAD_VOID_COMMAND_GUIDE_MESSAGE,
+    MATCH_OPERATION_THREAD_VOID_GUIDE_MESSAGE,
+    MATCH_OPERATION_THREAD_WIN_BUTTON_LABEL,
+    MATCH_REPORT_OPENED_NOTIFICATION_MESSAGE,
+    MATCHMAKING_NEWS_MATCH_ANNOUNCEMENT_SPECTATE_BUTTON_LABEL,
+)
+from dxd_rating.platform.discord.copy.matchmaking import (
+    MATCHMAKING_PRESENCE_THREAD_LEAVE_BUTTON_LABEL,
+    MATCHMAKING_PRESENCE_THREAD_PRESENT_BUTTON_LABEL,
+    PRESENCE_REMINDER_NOTIFICATION_MESSAGE,
+    QUEUE_EXPIRED_NOTIFICATION_MESSAGE,
+)
 from dxd_rating.platform.discord.rest import DiscordOutboxEventPublisher
 from dxd_rating.platform.discord.ui import (
     MATCH_OPERATION_THREAD_APPROVE_BUTTON_CUSTOM_ID_PREFIX,
-    MATCH_OPERATION_THREAD_APPROVE_BUTTON_LABEL,
     MATCH_OPERATION_THREAD_DRAW_BUTTON_CUSTOM_ID_PREFIX,
-    MATCH_OPERATION_THREAD_DRAW_BUTTON_LABEL,
     MATCH_OPERATION_THREAD_LOSE_BUTTON_CUSTOM_ID_PREFIX,
-    MATCH_OPERATION_THREAD_LOSE_BUTTON_LABEL,
     MATCH_OPERATION_THREAD_PARENT_BUTTON_CUSTOM_ID_PREFIX,
-    MATCH_OPERATION_THREAD_PARENT_BUTTON_LABEL,
     MATCH_OPERATION_THREAD_VOID_BUTTON_CUSTOM_ID_PREFIX,
-    MATCH_OPERATION_THREAD_VOID_BUTTON_LABEL,
-    MATCH_OPERATION_THREAD_VOID_GUIDE_MESSAGE,
     MATCH_OPERATION_THREAD_WIN_BUTTON_CUSTOM_ID_PREFIX,
-    MATCH_OPERATION_THREAD_WIN_BUTTON_LABEL,
     MATCHMAKING_NEWS_MATCH_ANNOUNCEMENT_SPECTATE_BUTTON_CUSTOM_ID_PREFIX,
-    MATCHMAKING_NEWS_MATCH_ANNOUNCEMENT_SPECTATE_BUTTON_LABEL,
-    MATCHMAKING_PRESENCE_THREAD_LEAVE_BUTTON_LABEL,
-    MATCHMAKING_PRESENCE_THREAD_PRESENT_BUTTON_LABEL,
 )
 from dxd_rating.platform.runtime import (
     BotRuntime,
@@ -91,6 +96,7 @@ from dxd_rating.platform.runtime import (
     PendingOutboxEvent,
 )
 from dxd_rating.shared.constants import (
+    DEVELOPMENT_MATCH_TIMING_WINDOWS,
     MATCH_QUEUE_TTL,
     PRESENCE_REMINDER_LEAD_TIME,
     get_match_queue_class_definition_by_name,
@@ -104,6 +110,12 @@ DEFAULT_QUEUE_DEFINITION = get_match_queue_class_definition_by_name(
 assert DEFAULT_QUEUE_DEFINITION is not None
 DEFAULT_QUEUE_NAME = DEFAULT_QUEUE_DEFINITION.queue_name
 DEFAULT_QUEUE_CLASS_ID = DEFAULT_QUEUE_DEFINITION.queue_class_id
+
+
+def _render_embed_content(embed: discord.Embed | None) -> str:
+    if embed is None or embed.description is None:
+        return ""
+    return embed.description
 
 
 @pytest.fixture(autouse=True)
@@ -227,18 +239,23 @@ class FakeDiscordChannel:
     guild: FakeDiscordGuild | None = None
     parent: object | None = None
     sent_messages: list[str] = field(default_factory=list)
+    raw_contents: list[str | None] = field(default_factory=list)
+    sent_embeds: list[discord.Embed | None] = field(default_factory=list)
     allowed_mentions_history: list[discord.AllowedMentions] = field(default_factory=list)
     sent_views: list[discord.ui.View | None] = field(default_factory=list)
     created_threads: list["FakeDiscordThread"] = field(default_factory=list)
 
     async def send(
         self,
-        content: str,
+        content: str | None = None,
         *,
+        embed: discord.Embed | None = None,
         allowed_mentions: discord.AllowedMentions,
         view: discord.ui.View | None = None,
     ) -> None:
-        self.sent_messages.append(content)
+        self.sent_messages.append(content if content is not None else _render_embed_content(embed))
+        self.raw_contents.append(content)
+        self.sent_embeds.append(embed)
         self.allowed_mentions_history.append(allowed_mentions)
         self.sent_views.append(view)
 
@@ -265,18 +282,23 @@ class FakeDiscordThread:
     guild: FakeDiscordGuild | None = None
     parent: object | None = None
     sent_messages: list[str] = field(default_factory=list)
+    raw_contents: list[str | None] = field(default_factory=list)
+    sent_embeds: list[discord.Embed | None] = field(default_factory=list)
     allowed_mentions_history: list[discord.AllowedMentions] = field(default_factory=list)
     sent_views: list[discord.ui.View | None] = field(default_factory=list)
     added_user_ids: list[int] = field(default_factory=list)
 
     async def send(
         self,
-        content: str,
+        content: str | None = None,
         *,
+        embed: discord.Embed | None = None,
         allowed_mentions: discord.AllowedMentions,
         view: discord.ui.View | None = None,
     ) -> None:
-        self.sent_messages.append(content)
+        self.sent_messages.append(content if content is not None else _render_embed_content(embed))
+        self.raw_contents.append(content)
+        self.sent_embeds.append(embed)
         self.allowed_mentions_history.append(allowed_mentions)
         self.sent_views.append(view)
 
@@ -291,15 +313,20 @@ class FakeDiscordThread:
 class FakeDiscordUser:
     id: int
     sent_messages: list[str] = field(default_factory=list)
+    raw_contents: list[str | None] = field(default_factory=list)
+    sent_embeds: list[discord.Embed | None] = field(default_factory=list)
     allowed_mentions_history: list[discord.AllowedMentions] = field(default_factory=list)
 
     async def send(
         self,
-        content: str,
+        content: str | None = None,
         *,
+        embed: discord.Embed | None = None,
         allowed_mentions: discord.AllowedMentions,
     ) -> None:
-        self.sent_messages.append(content)
+        self.sent_messages.append(content if content is not None else _render_embed_content(embed))
+        self.raw_contents.append(content)
+        self.sent_embeds.append(embed)
         self.allowed_mentions_history.append(allowed_mentions)
 
 
@@ -414,6 +441,28 @@ class FakeDiscordClient:
         if user is None:
             raise LookupError(f"Unknown user: {user_id}")
         return user
+
+
+def assert_body_only_public_embed(
+    sendable: FakeDiscordChannel | FakeDiscordThread,
+    index: int,
+    expected_body: str,
+) -> None:
+    assert sendable.raw_contents[index] is None
+    assert sendable.sent_embeds[index] is not None
+    assert sendable.sent_embeds[index].description == expected_body
+
+
+def assert_public_embed_with_notification_content(
+    sendable: FakeDiscordChannel | FakeDiscordThread,
+    index: int,
+    *,
+    expected_content: str,
+    expected_body: str,
+) -> None:
+    assert sendable.raw_contents[index] == expected_content
+    assert sendable.sent_embeds[index] is not None
+    assert sendable.sent_embeds[index].description == expected_body
 
 
 def create_player(session: Session, discord_user_id: int) -> int:
@@ -623,6 +672,101 @@ def test_match_runtime_join_queue_calls_service_and_schedules_timers(
     ]
 
 
+def test_match_runtime_try_create_matches_uses_injected_parent_selection_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = Mock()
+    created_at = datetime.now(timezone.utc)
+    created_match = CreatedMatchResult(
+        match_id=601,
+        queue_entry_ids=(101, 102),
+        player_ids=(201, 202),
+        match_format=DEFAULT_MATCH_FORMAT,
+        created_at=created_at,
+    )
+    service.try_create_matches.return_value = (created_match,)
+    runtime = MatchRuntime(
+        service=service,
+        match_timing_windows=DEVELOPMENT_MATCH_TIMING_WINDOWS,
+    )
+    cancelled_queue_keys: list[object] = []
+    cancelled_match_keys: list[object] = []
+    handler_calls: list[dict[str, object]] = []
+    scheduled: list[dict[str, object]] = []
+
+    def fake_handler_call(
+        handler: Callable[..., object],
+        *args: object,
+        **kwargs: object,
+    ) -> Callable[[], Awaitable[object]]:
+        handler_calls.append(
+            {
+                "handler_name": handler.__name__,
+                "args": args,
+                "kwargs": kwargs,
+            }
+        )
+
+        async def call_handler() -> object:
+            return None
+
+        return call_handler
+
+    def fake_schedule_match_task(
+        *,
+        key: object,
+        task_name: str,
+        scheduled_at: datetime,
+        deadline: datetime | None,
+        handler_call: Callable[[], Awaitable[object]],
+    ) -> bool:
+        scheduled.append(
+            {
+                "key": key,
+                "task_name": task_name,
+                "scheduled_at": scheduled_at,
+                "deadline": deadline,
+                "handler_call": handler_call,
+            }
+        )
+        return True
+
+    monkeypatch.setattr(
+        runtime, "_cancel_scheduled_task", lambda key: cancelled_queue_keys.append(key)
+    )
+    monkeypatch.setattr(runtime, "_cancel_match_task", lambda key: cancelled_match_keys.append(key))
+    monkeypatch.setattr(runtime, "_handler_call", fake_handler_call)
+    monkeypatch.setattr(runtime, "_schedule_match_task", fake_schedule_match_task)
+
+    result = asyncio.run(runtime._try_create_matches(DEFAULT_QUEUE_CLASS_ID))
+
+    assert result == (created_match,)
+    service.try_create_matches.assert_called_once_with(DEFAULT_QUEUE_CLASS_ID)
+    assert cancelled_queue_keys == [
+        runtime._presence_reminder_task_key(101),
+        runtime._expire_task_key(101),
+        runtime._presence_reminder_task_key(102),
+        runtime._expire_task_key(102),
+    ]
+    assert cancelled_match_keys == [runtime._parent_deadline_task_key(created_match.match_id)]
+    assert handler_calls == [
+        {
+            "handler_name": "process_parent_deadline",
+            "args": (created_match.match_id,),
+            "kwargs": {},
+        }
+    ]
+    assert [scheduled_item | {"handler_call": None} for scheduled_item in scheduled] == [
+        {
+            "key": runtime._parent_deadline_task_key(created_match.match_id),
+            "task_name": "match parent deadline",
+            "scheduled_at": (created_at + DEVELOPMENT_MATCH_TIMING_WINDOWS.parent_selection_window),
+            "deadline": None,
+            "handler_call": None,
+        }
+    ]
+
+
 def test_match_runtime_present_calls_service_and_replaces_timers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -634,7 +778,6 @@ def test_match_runtime_present_calls_service_and_replaces_timers(
         revision=4,
         expire_at=expire_at,
         expired=False,
-        message="updated",
     )
     service.present.return_value = present_result
     runtime = MatchRuntime(service=service)
@@ -737,7 +880,6 @@ def test_match_runtime_present_updates_database_clock_offset_from_expire_at(
         revision=4,
         expire_at=expected_database_now + MATCH_QUEUE_TTL,
         expired=False,
-        message="updated",
     )
     service.present.return_value = present_result
     runtime = MatchRuntime(service=service)
@@ -760,7 +902,6 @@ def test_match_runtime_present_cancels_timers_when_entry_already_expired(
         revision=None,
         expire_at=None,
         expired=True,
-        message="expired",
     )
     service.present.return_value = present_result
     runtime = MatchRuntime(service=service)
@@ -789,7 +930,6 @@ def test_match_runtime_leave_calls_service_and_cancels_timers(
     leave_result = LeaveQueueResult(
         queue_entry_id=301,
         expired=False,
-        message="left",
     )
     service.leave.return_value = leave_result
     runtime = MatchRuntime(service=service)
@@ -813,12 +953,15 @@ def test_match_runtime_leave_calls_service_and_cancels_timers(
 
 def test_match_runtime_get_matchmaking_status_snapshot_calls_service() -> None:
     service = Mock()
-    snapshot = (
-        MatchmakingStatusSnapshotEntry(
-            match_format=MatchFormat.THREE_VS_THREE,
-            queue_name="beginner",
-            active_count=2,
+    snapshot = MatchmakingStatusSnapshot(
+        entries=(
+            MatchmakingStatusSnapshotEntry(
+                match_format=MatchFormat.THREE_VS_THREE,
+                queue_name="beginner",
+                active_count=2,
+            ),
         ),
+        updated_at=datetime(2026, 4, 5, 0, 0, tzinfo=timezone.utc),
     )
     service.get_matchmaking_status_snapshot.return_value = snapshot
     runtime = MatchRuntime(service=service)
@@ -2054,9 +2197,13 @@ def test_discord_outbox_publisher_sends_presence_reminder_to_channel_destination
         )
     )
 
-    assert channel.sent_messages == [
-        f"<@{discord_user_id}> {PRESENCE_REMINDER_NOTIFICATION_MESSAGE}"
-    ]
+    assert channel.sent_messages == [f"<@{discord_user_id}>"]
+    assert_public_embed_with_notification_content(
+        channel,
+        0,
+        expected_content=f"<@{discord_user_id}>",
+        expected_body=PRESENCE_REMINDER_NOTIFICATION_MESSAGE,
+    )
     allowed_mentions = channel.allowed_mentions_history[0]
     assert isinstance(allowed_mentions, discord.AllowedMentions)
     assert allowed_mentions.users is True
@@ -2105,7 +2252,13 @@ def test_discord_outbox_publisher_fetches_uncached_channel_for_queue_expired() -
     )
 
     assert client.fetched_channel_ids == [channel.id]
-    assert channel.sent_messages == [f"<@{discord_user_id}> {QUEUE_EXPIRED_NOTIFICATION_MESSAGE}"]
+    assert channel.sent_messages == [f"<@{discord_user_id}>"]
+    assert_public_embed_with_notification_content(
+        channel,
+        0,
+        expected_content=f"<@{discord_user_id}>",
+        expected_body=QUEUE_EXPIRED_NOTIFICATION_MESSAGE,
+    )
     allowed_mentions = channel.allowed_mentions_history[0]
     assert isinstance(allowed_mentions, discord.AllowedMentions)
     assert allowed_mentions.users is True
@@ -2218,9 +2371,13 @@ def test_discord_outbox_publisher_prefixes_channel_reminder_with_target_user_men
         )
     )
 
-    assert channel.sent_messages == [
-        f"<@{discord_user_id}> {PRESENCE_REMINDER_NOTIFICATION_MESSAGE}"
-    ]
+    assert channel.sent_messages == [f"<@{discord_user_id}>"]
+    assert_public_embed_with_notification_content(
+        channel,
+        0,
+        expected_content=f"<@{discord_user_id}>",
+        expected_body=PRESENCE_REMINDER_NOTIFICATION_MESSAGE,
+    )
 
 
 def test_discord_outbox_publisher_sends_split_match_created_events() -> None:
@@ -2322,13 +2479,13 @@ def test_discord_outbox_publisher_renders_matchmaking_news_match_announcement() 
             "試合形式: 3v3",
             "試合階級: beginner",
             "Team A",
-            "    Player A",
-            "    Player B",
-            "    Player C",
+            "    Player A: 1512",
+            "    Player B: 1499",
+            "    Player C: 1488",
             "Team B",
-            "    Player D",
-            "    Player E",
-            "    Player F",
+            "    Player D: 1524",
+            "    Player E: 1507",
+            "    Player F: 1476",
         ]
     )
 
@@ -2347,6 +2504,18 @@ def test_discord_outbox_publisher_renders_matchmaking_news_match_announcement() 
                         "channel_id": channel.id,
                         "guild_id": channel.guild.id,
                     },
+                    "team_a_discord_user_ids": [80_201, 80_202, 80_203],
+                    "team_b_discord_user_ids": [80_204, 80_205, 80_206],
+                    "team_a_rating_entries": [
+                        {"discord_user_id": 80_201, "rating": 1512.1},
+                        {"discord_user_id": 80_202, "rating": 1498.6},
+                        {"discord_user_id": 80_203, "rating": 1487.8},
+                    ],
+                    "team_b_rating_entries": [
+                        {"discord_user_id": 80_204, "rating": 1523.8},
+                        {"discord_user_id": 80_205, "rating": 1506.6},
+                        {"discord_user_id": 80_206, "rating": 1476.2},
+                    ],
                     "team_a_player_display_names": [
                         "Player A",
                         "Player B",
@@ -2365,6 +2534,7 @@ def test_discord_outbox_publisher_renders_matchmaking_news_match_announcement() 
     asyncio.run(scenario())
 
     assert channel.sent_messages == [expected_message]
+    assert_body_only_public_embed(channel, 0, expected_message)
     assert channel.sent_views == [None]
 
 
@@ -2432,6 +2602,7 @@ def test_discord_outbox_publisher_adds_matchmaking_news_spectate_button_for_matc
     asyncio.run(scenario())
 
     assert channel.sent_messages == [expected_message]
+    assert_body_only_public_embed(channel, 0, expected_message)
     assert len(channel.sent_views) == 1
     view = channel.sent_views[0]
     assert view is not None
@@ -2480,13 +2651,13 @@ def test_discord_outbox_publisher_creates_match_operation_thread_for_match_creat
             "試合形式: 3v3",
             "試合階級: regular",
             "Team A",
-            "    Player A",
-            "    Player B",
-            "    Player C",
+            "    Player A: 1512",
+            "    Player B: 1499",
+            "    Player C: 1488",
             "Team B",
-            "    Player D",
-            "    Player E",
-            "    Player F",
+            "    Player D: 1524",
+            "    Player E: 1507",
+            "    Player F: 1476",
         ]
     )
     expected_thread_messages = [
@@ -2496,13 +2667,13 @@ def test_discord_outbox_publisher_creates_match_operation_thread_for_match_creat
                 "試合形式: 3v3",
                 "試合階級: regular",
                 "Team A",
-                "    <@81100>",
-                "    <@81101>",
-                "    <@81102>",
+                "    <@81100>: 1512",
+                "    <@81101>: 1499",
+                "    <@81102>: 1488",
                 "Team B",
-                "    <@81103>",
-                "    <@81104>",
-                "    <@81105>",
+                "    <@81103>: 1524",
+                "    <@81104>: 1507",
+                "    <@81105>: 1476",
                 MATCH_OPERATION_THREAD_VOID_GUIDE_MESSAGE,
             ]
         ),
@@ -2537,6 +2708,16 @@ def test_discord_outbox_publisher_creates_match_operation_thread_for_match_creat
                     },
                     "team_a_discord_user_ids": [81_100, 81_101, 81_102],
                     "team_b_discord_user_ids": [81_103, 81_104, 81_105],
+                    "team_a_rating_entries": [
+                        {"discord_user_id": 81_100, "rating": 1512.1},
+                        {"discord_user_id": 81_101, "rating": 1498.6},
+                        {"discord_user_id": 81_102, "rating": 1487.8},
+                    ],
+                    "team_b_rating_entries": [
+                        {"discord_user_id": 81_103, "rating": 1523.8},
+                        {"discord_user_id": 81_104, "rating": 1506.6},
+                        {"discord_user_id": 81_105, "rating": 1476.2},
+                    ],
                     "team_a_player_display_names": ["Player A", "Player B", "Player C"],
                     "team_b_player_display_names": ["Player D", "Player E", "Player F"],
                     "match_operation_thread_parent_channel_id": matchmaking_channel.id,
@@ -2549,6 +2730,7 @@ def test_discord_outbox_publisher_creates_match_operation_thread_for_match_creat
     asyncio.run(scenario())
 
     assert announcement_channel.sent_messages == [expected_announcement_message]
+    assert_body_only_public_embed(announcement_channel, 0, expected_announcement_message)
     assert len(matchmaking_channel.created_threads) == 1
 
     created_thread = matchmaking_channel.created_threads[0]
@@ -2563,6 +2745,9 @@ def test_discord_outbox_publisher_creates_match_operation_thread_for_match_creat
         89_001,
     ]
     assert created_thread.sent_messages == expected_thread_messages
+    assert_body_only_public_embed(created_thread, 0, expected_thread_messages[0])
+    assert_body_only_public_embed(created_thread, 1, expected_thread_messages[1])
+    assert_body_only_public_embed(created_thread, 2, expected_thread_messages[2])
     assert len(created_thread.sent_views) == 3
     initial_view = created_thread.sent_views[0]
     assert initial_view is not None
@@ -2615,9 +2800,9 @@ def test_discord_outbox_publisher_links_presence_thread_to_match_operation_threa
         match_operation_thread_interaction_handler=FakeMatchOperationThreadInteractionHandler(),
     )
 
-    expected_presence_message = "\n".join(
+    expected_presence_body = "\n".join(
         [
-            "<@81110> マッチ成立です。",
+            "マッチ成立です。",
             "試合運営は <#9001131001> で行ってください。",
         ]
     )
@@ -2628,13 +2813,13 @@ def test_discord_outbox_publisher_links_presence_thread_to_match_operation_threa
                 "試合形式: 3v3",
                 "試合階級: regular",
                 "Team A",
-                "    <@81110>",
-                "    <@81111>",
-                "    <@81112>",
+                "    <@81110>: 1512",
+                "    <@81111>: 1499",
+                "    <@81112>: 1488",
                 "Team B",
-                "    <@81113>",
-                "    <@81114>",
-                "    <@81115>",
+                "    <@81113>: 1524",
+                "    <@81114>: 1507",
+                "    <@81115>: 1476",
                 MATCH_OPERATION_THREAD_VOID_GUIDE_MESSAGE,
             ]
         ),
@@ -2670,6 +2855,16 @@ def test_discord_outbox_publisher_links_presence_thread_to_match_operation_threa
                     "mention_discord_user_id": 81_110,
                     "team_a_discord_user_ids": [81_110, 81_111, 81_112],
                     "team_b_discord_user_ids": [81_113, 81_114, 81_115],
+                    "team_a_rating_entries": [
+                        {"discord_user_id": 81_110, "rating": 1512.1},
+                        {"discord_user_id": 81_111, "rating": 1498.6},
+                        {"discord_user_id": 81_112, "rating": 1487.8},
+                    ],
+                    "team_b_rating_entries": [
+                        {"discord_user_id": 81_113, "rating": 1523.8},
+                        {"discord_user_id": 81_114, "rating": 1506.6},
+                        {"discord_user_id": 81_115, "rating": 1476.2},
+                    ],
                     "match_operation_thread_parent_channel_id": matchmaking_channel.id,
                     "create_match_operation_thread": True,
                 },
@@ -2679,7 +2874,13 @@ def test_discord_outbox_publisher_links_presence_thread_to_match_operation_threa
 
     asyncio.run(scenario())
 
-    assert presence_thread.sent_messages == [expected_presence_message]
+    assert presence_thread.sent_messages == ["<@81110>"]
+    assert_public_embed_with_notification_content(
+        presence_thread,
+        0,
+        expected_content="<@81110>",
+        expected_body=expected_presence_body,
+    )
     assert presence_thread.sent_views == [None]
     assert len(matchmaking_channel.created_threads) == 1
     created_thread = matchmaking_channel.created_threads[0]
@@ -2694,6 +2895,7 @@ def test_discord_outbox_publisher_links_presence_thread_to_match_operation_threa
         89_011,
     ]
     assert created_thread.sent_messages == expected_thread_messages
+    assert_body_only_public_embed(created_thread, 0, expected_thread_messages[0])
 
 
 def test_discord_outbox_publisher_reuses_existing_match_operation_thread_for_same_match() -> None:
@@ -2783,6 +2985,21 @@ def test_discord_outbox_publisher_reuses_existing_match_operation_thread_for_sam
             ]
         ),
     ]
+    assert_body_only_public_embed(
+        matchmaking_channel.created_threads[0],
+        0,
+        matchmaking_channel.created_threads[0].sent_messages[0],
+    )
+    assert_body_only_public_embed(
+        matchmaking_channel.created_threads[0],
+        1,
+        matchmaking_channel.created_threads[0].sent_messages[1],
+    )
+    assert_body_only_public_embed(
+        matchmaking_channel.created_threads[0],
+        2,
+        matchmaking_channel.created_threads[0].sent_messages[2],
+    )
     initial_view = matchmaking_channel.created_threads[0].sent_views[0]
     assert initial_view is not None
     assert [getattr(child, "label", None) for child in initial_view.children] == [
@@ -2828,11 +3045,11 @@ def test_discord_outbox_publisher_routes_approval_request_to_match_operation_thr
         admin_discord_user_ids=frozenset({89_003}),
     )
 
-    expected_message = "\n".join(
+    expected_body = "\n".join(
         [
-            f"<@83001> <@83002> {MATCH_APPROVAL_REQUESTED_NOTIFICATION_MESSAGE}",
+            MATCH_APPROVAL_REQUESTED_NOTIFICATION_MESSAGE,
             "仮決定結果: チーム B の勝ち",
-            "承認締切: 2026-03-20T12:44:56+00:00",
+            "承認締切: 2026/03/20 21:44:56 JST",
             "承認できない場合は証拠を提示したうえで admin へ連絡してください。",
         ]
     )
@@ -2868,7 +3085,13 @@ def test_discord_outbox_publisher_routes_approval_request_to_match_operation_thr
     assert len(matchmaking_channel.created_threads) == 1
     created_thread = matchmaking_channel.created_threads[0]
     assert created_thread.added_user_ids == [83_001, 83_002, 89_003]
-    assert created_thread.sent_messages == [expected_message]
+    assert created_thread.sent_messages == ["<@83001> <@83002>"]
+    assert_public_embed_with_notification_content(
+        created_thread,
+        0,
+        expected_content="<@83001> <@83002>",
+        expected_body=expected_body,
+    )
     assert created_thread.sent_views == [None]
 
 
@@ -3033,7 +3256,7 @@ def test_discord_outbox_publisher_routes_report_opened_to_match_operation_thread
             MATCH_REPORT_OPENED_NOTIFICATION_MESSAGE,
             "自分視点で「勝ち」「引き分け」「負け」を選んでください。",
             "無効試合にすべき場合は「無効試合申請」を押してください。",
-            "勝敗報告締切: 2026-03-20T12:20:00+00:00",
+            "勝敗報告締切: 2026/03/20 21:20:00 JST",
         ]
     )
 
@@ -3102,9 +3325,11 @@ def test_discord_outbox_publisher_routes_report_opened_to_match_operation_thread
             ]
         )
     ]
+    assert_body_only_public_embed(match_channel, 0, match_channel.sent_messages[0])
     assert len(matchmaking_channel.created_threads) == 1
     created_thread = matchmaking_channel.created_threads[0]
     assert created_thread.sent_messages[3] == expected_message
+    assert_body_only_public_embed(created_thread, 3, expected_message)
     report_view = created_thread.sent_views[3]
     assert report_view is not None
     assert [getattr(child, "label", None) for child in report_view.children] == [
@@ -3190,10 +3415,11 @@ def test_discord_outbox_publisher_reuses_existing_thread_for_report_opened_after
                 MATCH_REPORT_OPENED_NOTIFICATION_MESSAGE,
                 "自分視点で「勝ち」「引き分け」「負け」を選んでください。",
                 "無効試合にすべき場合は「無効試合申請」を押してください。",
-                "勝敗報告締切: 2026-03-20T12:45:00+00:00",
+                "勝敗報告締切: 2026/03/20 21:45:00 JST",
             ]
         )
     ]
+    assert_body_only_public_embed(existing_thread, 0, existing_thread.sent_messages[0])
     report_view = existing_thread.sent_views[0]
     assert report_view is not None
     assert [getattr(child, "label", None) for child in report_view.children] == [
@@ -3254,19 +3480,36 @@ def test_discord_outbox_publisher_routes_match_notifications_to_existing_thread(
             "    Player F",
         ]
     )
-    expected_parent_message = "\n".join(
+    expected_parent_embed_message = "\n".join(
         [
-            MATCH_PARENT_ASSIGNED_NOTIFICATION_MESSAGE,
-            "親: <@84100>",
-            "勝敗報告開始: 2026-03-20T12:00:00+00:00",
-            "勝敗報告締切: 2026-03-20T12:20:00+00:00",
+            "<@84100>が親になりました。",
+            (
+                "<@84100> はフレンドパークを作成し、"
+                "パークIDをこのプライベートスレッドに共有してください。"
+            ),
         ]
     )
     expected_phase_started_message = "\n".join(
         [
             MATCH_APPROVAL_STARTED_NOTIFICATION_MESSAGE,
             "仮決定結果: チーム A の勝ち",
-            "承認締切: 2026-03-20T12:34:56+00:00",
+            "承認締切: 2026/03/20 21:34:56 JST",
+        ]
+    )
+    expected_thread_initial_message = "\n".join(
+        [
+            MATCH_CREATED_NOTIFICATION_MESSAGE,
+            "試合形式: 3v3",
+            "試合階級: expert",
+            "Team A",
+            "    <@84100>",
+            "    <@84101>",
+            "    <@84102>",
+            "Team B",
+            "    <@84103>",
+            "    <@84104>",
+            "    <@84105>",
+            MATCH_OPERATION_THREAD_VOID_COMMAND_GUIDE_MESSAGE,
         ]
     )
     expected_finalized_message = "\n".join(
@@ -3275,17 +3518,16 @@ def test_discord_outbox_publisher_routes_match_notifications_to_existing_thread(
             "結果: チーム A の勝ち",
         ]
     )
-    expected_auto_penalty_message = "\n".join(
+    expected_auto_penalty_body = "\n".join(
         [
-            f"<@84105> {MATCH_AUTO_PENALTY_APPLIED_NOTIFICATION_MESSAGE}",
+            MATCH_AUTO_PENALTY_APPLIED_NOTIFICATION_MESSAGE,
             "結果: チーム A の勝ち",
             "ペナルティ: 未報告",
             "現在の累積: 2",
         ]
     )
-    expected_admin_review_message = "\n".join(
+    expected_admin_review_body = "\n".join(
         [
-            "<@89004>",
             MATCH_ADMIN_REVIEW_REQUIRED_NOTIFICATION_MESSAGE,
             "結果: チーム A の勝ち",
             "理由: 同票が解消できませんでした",
@@ -3435,15 +3677,48 @@ def test_discord_outbox_publisher_routes_match_notifications_to_existing_thread(
     asyncio.run(scenario())
 
     assert announcement_channel.sent_messages == [expected_announcement_message]
+    assert_body_only_public_embed(announcement_channel, 0, expected_announcement_message)
     assert match_channel.sent_messages == []
     assert len(matchmaking_channel.created_threads) == 1
-    assert matchmaking_channel.created_threads[0].sent_messages[3:] == [
-        expected_parent_message,
+    assert matchmaking_channel.created_threads[0].sent_messages[4:] == [
         expected_phase_started_message,
         expected_finalized_message,
-        expected_auto_penalty_message,
-        expected_admin_review_message,
+        "<@84105>",
+        "<@89004>",
     ]
+    assert_body_only_public_embed(
+        matchmaking_channel.created_threads[0],
+        0,
+        expected_thread_initial_message,
+    )
+    assert_public_embed_with_notification_content(
+        matchmaking_channel.created_threads[0],
+        3,
+        expected_content="<@84100>",
+        expected_body=expected_parent_embed_message,
+    )
+    assert_body_only_public_embed(
+        matchmaking_channel.created_threads[0],
+        4,
+        expected_phase_started_message,
+    )
+    assert_body_only_public_embed(
+        matchmaking_channel.created_threads[0],
+        5,
+        expected_finalized_message,
+    )
+    assert_public_embed_with_notification_content(
+        matchmaking_channel.created_threads[0],
+        6,
+        expected_content="<@84105>",
+        expected_body=expected_auto_penalty_body,
+    )
+    assert_public_embed_with_notification_content(
+        matchmaking_channel.created_threads[0],
+        7,
+        expected_content="<@89004>",
+        expected_body=expected_admin_review_body,
+    )
 
 
 def test_discord_outbox_publisher_renders_match_approval_phase_started_message() -> None:
@@ -3458,7 +3733,7 @@ def test_discord_outbox_publisher_renders_match_approval_phase_started_message()
         [
             MATCH_APPROVAL_STARTED_NOTIFICATION_MESSAGE,
             "仮決定結果: チーム A の勝ち",
-            "承認締切: 2026-03-20T12:34:56+00:00",
+            "承認締切: 2026/03/20 21:34:56 JST",
         ]
     )
 
@@ -3486,6 +3761,7 @@ def test_discord_outbox_publisher_renders_match_approval_phase_started_message()
     asyncio.run(scenario())
 
     assert channel.sent_messages == [expected_message]
+    assert_body_only_public_embed(channel, 0, expected_message)
 
 
 def test_discord_outbox_publisher_renders_match_approval_request_message() -> None:
@@ -3496,11 +3772,11 @@ def test_discord_outbox_publisher_renders_match_approval_request_message() -> No
     client = FakeDiscordClient(channels={channel.id: channel})
     publisher = DiscordOutboxEventPublisher(client=client)
 
-    expected_message = "\n".join(
+    expected_body = "\n".join(
         [
-            f"<@80021> {MATCH_APPROVAL_REQUESTED_NOTIFICATION_MESSAGE}",
+            MATCH_APPROVAL_REQUESTED_NOTIFICATION_MESSAGE,
             "仮決定結果: チーム B の勝ち",
-            "承認締切: 2026-03-20T12:44:56+00:00",
+            "承認締切: 2026/03/20 21:44:56 JST",
             "承認できない場合は証拠を提示したうえで admin へ連絡してください。",
         ]
     )
@@ -3529,7 +3805,13 @@ def test_discord_outbox_publisher_renders_match_approval_request_message() -> No
 
     asyncio.run(scenario())
 
-    assert channel.sent_messages == [expected_message]
+    assert channel.sent_messages == ["<@80021>"]
+    assert_public_embed_with_notification_content(
+        channel,
+        0,
+        expected_content="<@80021>",
+        expected_body=expected_body,
+    )
 
 
 def test_discord_outbox_publisher_renders_match_auto_penalty_message() -> None:
@@ -3540,9 +3822,9 @@ def test_discord_outbox_publisher_renders_match_auto_penalty_message() -> None:
     client = FakeDiscordClient(channels={channel.id: channel})
     publisher = DiscordOutboxEventPublisher(client=client)
 
-    expected_message = "\n".join(
+    expected_body = "\n".join(
         [
-            f"<@80022> {MATCH_AUTO_PENALTY_APPLIED_NOTIFICATION_MESSAGE}",
+            MATCH_AUTO_PENALTY_APPLIED_NOTIFICATION_MESSAGE,
             "結果: チーム A の勝ち",
             "ペナルティ: 誤報告",
             "現在の累積: 2",
@@ -3576,7 +3858,61 @@ def test_discord_outbox_publisher_renders_match_auto_penalty_message() -> None:
 
     asyncio.run(scenario())
 
-    assert channel.sent_messages == [expected_message]
+    assert channel.sent_messages == ["<@80022>"]
+    assert_public_embed_with_notification_content(
+        channel,
+        0,
+        expected_content="<@80022>",
+        expected_body=expected_body,
+    )
+
+
+def test_discord_outbox_publisher_renders_match_admin_review_required_message() -> None:
+    channel = FakeDiscordChannel(
+        id=900_022_1,
+        guild=FakeDiscordGuild(id=910_022_1),
+    )
+    client = FakeDiscordClient(channels={channel.id: channel})
+    publisher = DiscordOutboxEventPublisher(client=client)
+
+    expected_body = "\n".join(
+        [
+            MATCH_ADMIN_REVIEW_REQUIRED_NOTIFICATION_MESSAGE,
+            "結果: チーム B の勝ち",
+            "理由: 同票が解消できませんでした",
+        ]
+    )
+
+    async def scenario() -> None:
+        await publish_with_bound_loop(
+            publisher,
+            PendingOutboxEvent(
+                id=7_1,
+                event_type=OutboxEventType.MATCH_ADMIN_REVIEW_REQUIRED,
+                dedupe_key="match_admin_review_required:15:9000221",
+                payload={
+                    "match_id": 15,
+                    "final_result": "team_b_win",
+                    "admin_review_reasons": ["unresolved_tie"],
+                    "admin_discord_user_ids": [80_023],
+                    "destination": {
+                        "channel_id": channel.id,
+                        "guild_id": channel.guild.id,
+                    },
+                },
+                created_at=datetime.now(timezone.utc),
+            ),
+        )
+
+    asyncio.run(scenario())
+
+    assert channel.sent_messages == ["<@80023>"]
+    assert_public_embed_with_notification_content(
+        channel,
+        0,
+        expected_content="<@80023>",
+        expected_body=expected_body,
+    )
 
 
 def test_discord_outbox_publisher_renders_match_finalized_message_with_ratings() -> None:
@@ -3637,6 +3973,7 @@ def test_discord_outbox_publisher_renders_match_finalized_message_with_ratings()
     asyncio.run(scenario())
 
     assert channel.sent_messages == [expected_message]
+    assert_body_only_public_embed(channel, 0, expected_message)
 
 
 def test_discord_outbox_publisher_renders_daily_worker_started_admin_notification() -> None:
@@ -3650,7 +3987,7 @@ def test_discord_outbox_publisher_renders_daily_worker_started_admin_notificatio
     expected_message = "\n".join(
         [
             "daily worker が起動しました。",
-            "開始時刻: 2026-04-05 09:00 JST",
+            "開始時刻: 2026/04/05 09:00:00 JST",
         ]
     )
 
@@ -3678,6 +4015,7 @@ def test_discord_outbox_publisher_renders_daily_worker_started_admin_notificatio
     asyncio.run(scenario())
 
     assert channel.sent_messages == [expected_message]
+    assert_body_only_public_embed(channel, 0, expected_message)
 
 
 def test_discord_outbox_publisher_renders_season_completed_notification() -> None:
@@ -3693,7 +4031,7 @@ def test_discord_outbox_publisher_renders_season_completed_notification() -> Non
             "シーズンの全試合が完了しました。",
             "season_id: 12",
             "season_name: 202603delta",
-            "完了時刻: 2026-04-05 09:00 JST",
+            "完了時刻: 2026/04/05 09:00:00 JST",
         ]
     )
 
@@ -3721,6 +4059,7 @@ def test_discord_outbox_publisher_renders_season_completed_notification() -> Non
     asyncio.run(scenario())
 
     assert channel.sent_messages == [expected_message]
+    assert_body_only_public_embed(channel, 0, expected_message)
 
 
 def test_discord_outbox_publisher_renders_season_top_rankings_notification() -> None:

@@ -1,22 +1,35 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 
 import discord
 
-MATCHMAKING_PRESENCE_THREAD_PRESENT_BUTTON_LABEL = "在席"
-MATCHMAKING_PRESENCE_THREAD_LEAVE_BUTTON_LABEL = "マッチングキャンセル"
+from dxd_rating.platform.discord.copy.matchmaking import (
+    MATCHMAKING_PRESENCE_THREAD_FALLBACK_ERROR_MESSAGE,
+    MATCHMAKING_PRESENCE_THREAD_LEAVE_BUTTON_LABEL,
+    MATCHMAKING_PRESENCE_THREAD_PRESENT_BUTTON_LABEL,
+)
+
 MATCHMAKING_PRESENCE_THREAD_PRESENT_BUTTON_CUSTOM_ID = "dxd_rating:matchmaking_presence:present"
 MATCHMAKING_PRESENCE_THREAD_LEAVE_BUTTON_CUSTOM_ID = "dxd_rating:matchmaking_presence:leave"
-MATCHMAKING_PRESENCE_THREAD_FALLBACK_ERROR_MESSAGE = (
-    "操作に失敗しました。管理者に確認してください。"
-)
 
 logger = logging.getLogger(__name__)
 
 
-class MatchmakingPresenceThreadInteractionHandler(Protocol):
+class _ComponentInteractionHandler(Protocol):
+    async def run_component_interaction(
+        self,
+        interaction: discord.Interaction[Any],
+        interaction_name: str,
+        callback: Callable[[], Awaitable[None]],
+        *,
+        fallback_message: str,
+    ) -> None: ...
+
+
+class MatchmakingPresenceThreadInteractionHandler(_ComponentInteractionHandler, Protocol):
     async def present_from_matchmaking_presence_thread(
         self, interaction: discord.Interaction[Any]
     ) -> None: ...
@@ -41,7 +54,12 @@ class MatchmakingPresenceThreadView(discord.ui.View):
         interaction: discord.Interaction[Any],
         _: discord.ui.Button[discord.ui.View],
     ) -> None:
-        await self._interaction_handler.present_from_matchmaking_presence_thread(interaction)
+        await self._interaction_handler.run_component_interaction(
+            interaction,
+            "matchmaking_presence:present",
+            lambda: self._interaction_handler.present_from_matchmaking_presence_thread(interaction),
+            fallback_message=MATCHMAKING_PRESENCE_THREAD_FALLBACK_ERROR_MESSAGE,
+        )
 
     @discord.ui.button(
         label=MATCHMAKING_PRESENCE_THREAD_LEAVE_BUTTON_LABEL,
@@ -53,7 +71,12 @@ class MatchmakingPresenceThreadView(discord.ui.View):
         interaction: discord.Interaction[Any],
         _: discord.ui.Button[discord.ui.View],
     ) -> None:
-        await self._interaction_handler.leave_from_matchmaking_presence_thread(interaction)
+        await self._interaction_handler.run_component_interaction(
+            interaction,
+            "matchmaking_presence:leave",
+            lambda: self._interaction_handler.leave_from_matchmaking_presence_thread(interaction),
+            fallback_message=MATCHMAKING_PRESENCE_THREAD_FALLBACK_ERROR_MESSAGE,
+        )
 
     async def on_error(
         self,

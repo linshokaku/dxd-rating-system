@@ -4,12 +4,36 @@
 
 - ダミーユーザーとして扱う `discord_user_id` は `1` 以上 `1000` 以下とする。
 - `dev_register` では、この範囲外の `discord_user_id` は不正として扱う。
-- `/dev_register`、`/dev_join`、`/dev_present`、`/dev_leave` のレスポンスは、通常のテキストメッセージとして返す。
+- `/dev_present`、`/dev_leave` のレスポンスは、通常のテキストメッセージとして返す。
 - `/dev_join` 成功時は、`レート戦マッチング` チャンネル配下に在席確認用の private thread を作成する。
 - `/dev_join` と `/dev_present` を起点に発生する在席確認リマインドと期限切れ通知は、その private thread 内で行う。
 - 対象ユーザーが実ユーザーなら、在席確認 thread には対象ユーザー、admin、Bot を参加させる。
 - 対象ユーザーがダミーユーザーなら、在席確認 thread には admin と Bot のみを参加させる。
 - これらのレスポンス方式は、対象ユーザーが実ユーザーかダミーユーザーかで分岐しない。
+
+## 情報確認系開発者コマンド共通ルール
+
+- 対象コマンド:
+  - `/dev_info_thread`
+  - `/dev_player_info`
+  - `/dev_player_info_season`
+  - `/dev_leaderboard`
+  - `/dev_leaderboard_season`
+- いずれも `admin` 権限を持つユーザーのみ実行できる。
+- `discord_user_id` を受け取るコマンドでは、`discord_user_id` は末尾引数とする。
+- いずれも通常の `/info_thread` と同じ情報確認 thread binding を共有し、対象ユーザーごとに最新 1 件の `thread_id` だけを保持する。
+- `/dev_info_thread` は、指定した `discord_user_id` を紐づけ対象ユーザーとして新しい private thread を作成し、そのユーザーの最新 binding を上書きする。
+- `/dev_player_info`、`/dev_player_info_season`、`/dev_leaderboard`、`/dev_leaderboard_season` は、新しい thread を作成せず、指定した `discord_user_id` に現在紐づいている latest binding を表示先として使う。
+- 本文データは対象ユーザーの情報確認 thread に投稿し、実行者には成否だけを ephemeral な短いテキストメッセージで返す。
+- 対象ユーザーが実ユーザーなら、情報確認 thread には対象ユーザー本人、admin、Bot を参加させる。
+- 対象ユーザーがダミーユーザーなら、情報確認 thread には admin と Bot のみを参加させる。
+- `command_name` ごとの別 thread 管理や、通常 `/info_thread` と dev 系コマンド用の別 binding 管理は行わない。
+- `/dev_info_thread` で作成した thread 内 button / pulldown は対象ユーザー本人向け UI として扱い、管理者の代理実行には使わない。
+- 管理者が対象ユーザーの情報確認操作を代理で行う場合は、thread 内 UI ではなく `dev_*` slash command を使う。
+- binding が存在しない場合の誘導文言は以下で共通とする。
+  - `先に /info_thread または /dev_info_thread を実行してください。`
+- binding 先の thread が存在しない、または利用できない場合の誘導文言は以下で共通とする。
+  - `情報確認用スレッドが見つかりません。先に /info_thread または /dev_info_thread を実行してください。`
 
 ## `/dev_register`
 
@@ -25,7 +49,7 @@
 ### 正常時の挙動
 - 指定した `discord_user_id` のプレイヤーをマッチングシステムに登録する。
 - `discord_user_id` はダミーユーザー用の ID として `1` 以上 `1000` 以下のみを受け付ける。
-- レスポンスは通常のテキストメッセージで返す。
+- レスポンスは interaction 宛ての実行ユーザー限定メッセージで返す。
 - レスポンスを返す
   - `ダミーユーザーを登録しました。`
 
@@ -50,7 +74,7 @@
 - 同じ `discord_user_id` の重複登録は行わない。
 - 作成されるデータ形式は `/register` で作成されるプレイヤーと同一とする。
 - ダミーユーザーとして登録できる `discord_user_id` は `1` 以上 `1000` 以下に限定する。
-- `/register` と異なり、`/dev_register` は interaction 宛てのユーザー限定レスポンスにはしない。
+- `/dev_register` の全レスポンスは interaction 宛ての実行ユーザー限定メッセージで返す。
 
 ## `/dev_join`
 
@@ -89,7 +113,7 @@
 - 参加条件がある場合は、指定した `match_format` の稼働中シーズンのレーティングで参加可否を判定する。
 - そのレート行が carryover 未確定なら、判定前に carryover を確定する。
 - 同時に参加できるキューは、全フォーマット全階級を通して 1 つだけとする。
-- レスポンスは通常のテキストメッセージで返す。
+- レスポンスは interaction 宛ての実行ユーザー限定メッセージで返す。
 - レスポンスを返す
   - `指定したユーザーをキューに参加させました。`
 - `join` をきっかけにマッチ成立した場合でも、まずは `dev_join` のレスポンスを返し、その後の別通知で `マッチ成立` を伝える。
@@ -122,6 +146,7 @@
 - 対象ユーザーが実ユーザーなら、そのユーザーと admin と Bot を thread に参加させる。
 - 対象ユーザーがダミーユーザーなら、admin と Bot のみを thread に参加させる。
 - 在席確認リマインドと期限切れ通知は、対象ユーザーが実ユーザーかダミーユーザーかを問わず、その private thread 内に送る。
+- `/dev_join` の全レスポンスは interaction 宛ての実行ユーザー限定メッセージで返す。
 - 参加条件の判定は `dev_join` 実行時にのみ行い、待機中の再判定は行わない。
 - シーズン切替時にも既存の待機行はそのまま残り、参加条件は再判定しない。
 - 詳細仕様は `docs/matching/common.md` と `docs/matching/queue_classes.md` を参照する。
@@ -204,6 +229,266 @@
 - 開発・検証用途専用コマンドとして扱う。
 - 成功時はローカルで保持している在席確認リマインドタスクと期限切れタスクを cancel する想定。
 - `match_format` や `queue_name` の入力は取らず、現在参加中のキューへ暗黙適用する。
+
+## `/dev_info_thread`
+
+### 目的
+`/info_thread` の動作確認用に、開発者が任意の Discord user ID に紐づく情報確認用 private thread を作成する。
+
+### 実行者
+- `admin` 権限を持つユーザーのみ。
+
+### 入力
+- `command_name` (必須): 作成したい情報確認 thread の用途。
+- `discord_user_id` (必須): 情報確認 thread を紐づけたい Discord user ID。
+
+現在の `command_name` の選択肢:
+
+- `leaderboard`
+- `leaderboard_season`
+- `player_info`
+- `player_info_season`
+
+### 正常時の挙動
+- `レート戦情報` チャンネル配下に、指定した `discord_user_id` を紐づけ対象ユーザーとする情報確認用 private thread を 1 つ作成する。
+- private thread の親チャンネルは、このコマンドをどのチャンネルで実行したかには依存しない。
+- 対象ユーザーが実ユーザーなら、作成した thread には対象ユーザー本人、admin、Bot を参加させる。
+- 対象ユーザーがダミーユーザーなら、作成した thread には admin と Bot のみを参加させる。
+- `command_name` は、作成直後の案内文と、その thread に表示する操作 UI の種類を決める。
+- `/dev_info_thread` 実行直後には、指定した `command_name` 相当の本文データを自動では表示しない。
+- Bot は、作成した `thread_id` を指定した `discord_user_id` の最新の情報確認 thread として一時的に紐づける。
+- 指定した `discord_user_id` に既存の紐づけがあっても、新しい thread を作成して最新紐づけを上書きする。
+- `command_name` ごとの別管理は行わず、指定した `discord_user_id` ごとに最新 1 件だけを保持する。
+- この binding は通常 `/info_thread` と共有し、対象ユーザー本人が後から通常の `/player_info` 系コマンドを実行した場合も同じ最新 thread を表示先として使う。
+- レスポンスは interaction 宛てに、実行ユーザーにだけ見えるプレーンテキストで返す。
+- 成功時のレスポンス:
+  - `指定したユーザーの情報確認用スレッドを作成しました。`
+
+### エラー時の挙動
+- 実行者に `admin` 権限がない場合:
+  - `このコマンドは管理者のみ実行できます。`
+- `discord_user_id` の形式が不正な場合:
+  - `discord_user_id が不正です。`
+- 指定した `discord_user_id` が未登録の場合:
+  - `指定したユーザーは未登録です。`
+- 情報確認用チャンネルが見つからない:
+  - `情報確認用チャンネルが見つかりません。管理者に確認してください。`
+- 内部エラー:
+  - `指定したユーザーの情報確認用スレッドの作成に失敗しました。管理者に確認してください。`
+
+### 権限
+- `admin` 限定。
+
+### 備考
+- 開発・検証用途専用コマンドとして扱う。
+- thread 作成直後の案内文と private thread 側 UI の詳細は [../ui/info_thread.md](../ui/info_thread.md) を参照する。
+- `レート戦情報` チャンネルに設置する公開 button UI は通常ユーザー向け `/info_thread` 導線のままとし、`/dev_info_thread` 用の公開 UI は追加しない。
+
+## `/dev_player_info`
+
+### 目的
+`/player_info` の動作確認用に、開発者が任意の Discord user ID の現在シーズンのプレイヤー情報を表示する。
+
+### 実行者
+- `admin` 権限を持つユーザーのみ。
+
+### 入力
+- `discord_user_id` (必須): 表示したい Discord user ID。
+
+### 正常時の挙動
+- 指定した `discord_user_id` の現在シーズンの成績をプレーンテキストで、そのユーザーに現在紐づいている情報確認用 private thread に送る。
+- thread に投稿する本文形式は `/player_info` と同じにする。
+- レスポンスは interaction 宛てに、実行ユーザーにだけ見えるプレーンテキストで返す。
+- 実行ユーザーには本文全体ではなく、成否だけを返す。
+- 成功時のレスポンス:
+  - `指定したユーザーのプレイヤー情報を表示しました。`
+
+### エラー時の挙動
+- 実行者に `admin` 権限がない場合:
+  - `このコマンドは管理者のみ実行できます。`
+- `discord_user_id` の形式が不正な場合:
+  - `discord_user_id が不正です。`
+- 指定した `discord_user_id` が未登録の場合:
+  - `指定したユーザーは未登録です。`
+- 指定した `discord_user_id` に紐づく情報確認用 thread が存在しない:
+  - `先に /info_thread または /dev_info_thread を実行してください。`
+- 紐づけ先の thread が存在しない、または利用できない:
+  - `情報確認用スレッドが見つかりません。先に /info_thread または /dev_info_thread を実行してください。`
+- 内部エラー:
+  - `指定したユーザーのプレイヤー情報の取得に失敗しました。管理者に確認してください。`
+
+### 権限
+- `admin` 限定。
+
+### 備考
+- 開発・検証用途専用コマンドとして扱う。
+- 本文フォーマット自体は `/player_info` と同一とする。
+- thread への表示形式は [../ui/info_thread.md](../ui/info_thread.md) を参照する。
+
+## `/dev_player_info_season`
+
+### 目的
+`/player_info_season` の動作確認用に、開発者が任意の Discord user ID の指定シーズンのプレイヤー情報を表示する。
+
+### 実行者
+- `admin` 権限を持つユーザーのみ。
+
+### 入力
+- `season_id` (必須): 表示したいシーズンの ID。
+- `discord_user_id` (必須): 表示したい Discord user ID。
+
+### 正常時の挙動
+- 指定した `season_id` における、指定した `discord_user_id` の成績をプレーンテキストで、そのユーザーに現在紐づいている情報確認用 private thread に送る。
+- thread に投稿する本文形式は `/player_info_season` と同じにする。
+- レスポンスは interaction 宛てに、実行ユーザーにだけ見えるプレーンテキストで返す。
+- 実行ユーザーには本文全体ではなく、成否だけを返す。
+- 成功時のレスポンス:
+  - `指定したユーザーのシーズン別プレイヤー情報を表示しました。`
+
+### エラー時の挙動
+- 実行者に `admin` 権限がない場合:
+  - `このコマンドは管理者のみ実行できます。`
+- `discord_user_id` の形式が不正な場合:
+  - `discord_user_id が不正です。`
+- 指定した `discord_user_id` が未登録の場合:
+  - `指定したユーザーは未登録です。`
+- `season_id` に対応するシーズンが存在しない:
+  - `指定したシーズンが見つかりません。`
+- そのシーズンのプレイヤー情報が存在しない:
+  - `指定したシーズンのプレイヤー情報はありません。`
+- 指定した `discord_user_id` に紐づく情報確認用 thread が存在しない:
+  - `先に /info_thread または /dev_info_thread を実行してください。`
+- 紐づけ先の thread が存在しない、または利用できない:
+  - `情報確認用スレッドが見つかりません。先に /info_thread または /dev_info_thread を実行してください。`
+- 内部エラー:
+  - `指定したユーザーのシーズン別プレイヤー情報の取得に失敗しました。管理者に確認してください。`
+
+### 権限
+- `admin` 限定。
+
+### 備考
+- 開発・検証用途専用コマンドとして扱う。
+- 本文フォーマット自体は `/player_info_season` と同一とする。
+- thread への表示形式は [../ui/info_thread.md](../ui/info_thread.md) を参照する。
+
+## `/dev_leaderboard`
+
+### 目的
+`/leaderboard` の動作確認用に、開発者が任意の Discord user ID の情報確認用 thread に現在シーズンのランキングを表示する。
+
+### 実行者
+- `admin` 権限を持つユーザーのみ。
+
+### 入力
+- `match_format` (必須): 表示したいフォーマット。
+- `page` (必須): 表示したいページ番号。
+- `discord_user_id` (必須): 表示先として使いたい Discord user ID。
+
+現在の `match_format` の選択肢:
+
+- `1v1`
+- `2v2`
+- `3v3`
+
+### 正常時の挙動
+- 現在のシーズンにおける、指定 `match_format` のランキングを取得する。
+- 1 ページあたり 20 件ずつ取得する。
+- 表示内容は、指定した `discord_user_id` に現在紐づいている情報確認用 private thread に送る。
+- thread に投稿するランキング本文、`次のページ` button、ページング規則は `/leaderboard` と同じにする。
+- レスポンスは interaction 宛てに、実行ユーザーにだけ見えるプレーンテキストで返す。
+- 実行ユーザーには本文全体ではなく、成否だけを返す。
+- 成功時のレスポンス:
+  - `指定したユーザーの情報確認用スレッドにランキングを表示しました。`
+
+### エラー時の挙動
+- 実行者に `admin` 権限がない場合:
+  - `このコマンドは管理者のみ実行できます。`
+- `discord_user_id` の形式が不正な場合:
+  - `discord_user_id が不正です。`
+- 指定した `discord_user_id` が未登録の場合:
+  - `指定したユーザーは未登録です。`
+- `match_format` が不正:
+  - `指定したフォーマットは存在しません。`
+- `page` が `1` 未満:
+  - `page は 1 以上で指定してください。`
+- 指定した `discord_user_id` に紐づく情報確認用 thread が存在しない:
+  - `先に /info_thread または /dev_info_thread を実行してください。`
+- 紐づけ先の thread が存在しない、または利用できない:
+  - `情報確認用スレッドが見つかりません。先に /info_thread または /dev_info_thread を実行してください。`
+- 指定したページに表示対象が存在しない:
+  - `指定したページにはランキングがありません。`
+- 内部エラー:
+  - `指定したユーザーのランキングの取得に失敗しました。管理者に確認してください。`
+
+### 権限
+- `admin` 限定。
+
+### 備考
+- 開発・検証用途専用コマンドとして扱う。
+- 本文フォーマット、順位差分、ページング規則は `/leaderboard` と同一とする。
+- thread への表示形式は [../ui/info_thread.md](../ui/info_thread.md) を参照する。
+
+## `/dev_leaderboard_season`
+
+### 目的
+`/leaderboard_season` の動作確認用に、開発者が任意の Discord user ID の情報確認用 thread に指定シーズンのランキングを表示する。
+
+### 実行者
+- `admin` 権限を持つユーザーのみ。
+
+### 入力
+- `season_id` (必須): 表示したいシーズンの ID。
+- `match_format` (必須): 表示したいフォーマット。
+- `page` (必須): 表示したいページ番号。
+- `discord_user_id` (必須): 表示先として使いたい Discord user ID。
+
+現在の `match_format` の選択肢:
+
+- `1v1`
+- `2v2`
+- `3v3`
+
+### 正常時の挙動
+- `start_at <= now()` を満たす、開始済みの指定シーズンにおける、指定 `match_format` のランキングを取得する。
+- 1 ページあたり 20 件ずつ取得する。
+- 表示内容は、指定した `discord_user_id` に現在紐づいている情報確認用 private thread に送る。
+- thread に投稿するランキング本文、`次のページ` button、ページング規則は `/leaderboard_season` と同じにする。
+- レスポンスは interaction 宛てに、実行ユーザーにだけ見えるプレーンテキストで返す。
+- 実行ユーザーには本文全体ではなく、成否だけを返す。
+- 成功時のレスポンス:
+  - `指定したユーザーの情報確認用スレッドにシーズン別ランキングを表示しました。`
+
+### エラー時の挙動
+- 実行者に `admin` 権限がない場合:
+  - `このコマンドは管理者のみ実行できます。`
+- `discord_user_id` の形式が不正な場合:
+  - `discord_user_id が不正です。`
+- 指定した `discord_user_id` が未登録の場合:
+  - `指定したユーザーは未登録です。`
+- `season_id` に対応するシーズンが存在しない:
+  - `指定したシーズンが見つかりません。`
+- 指定したシーズンがまだ開始していない:
+  - `指定したシーズンはまだ開始していません。`
+- `match_format` が不正:
+  - `指定したフォーマットは存在しません。`
+- `page` が `1` 未満:
+  - `page は 1 以上で指定してください。`
+- 指定した `discord_user_id` に紐づく情報確認用 thread が存在しない:
+  - `先に /info_thread または /dev_info_thread を実行してください。`
+- 紐づけ先の thread が存在しない、または利用できない:
+  - `情報確認用スレッドが見つかりません。先に /info_thread または /dev_info_thread を実行してください。`
+- 指定したページに表示対象が存在しない:
+  - `指定したページにはランキングがありません。`
+- 内部エラー:
+  - `指定したユーザーのシーズン別ランキングの取得に失敗しました。管理者に確認してください。`
+
+### 権限
+- `admin` 限定。
+
+### 備考
+- 開発・検証用途専用コマンドとして扱う。
+- 本文フォーマット、シーズン別参照ルール、ページング規則は `/leaderboard_season` と同一とする。
+- thread への表示形式は [../ui/info_thread.md](../ui/info_thread.md) を参照する。
 
 ## `/dev_is_admin`
 

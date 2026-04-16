@@ -2,28 +2,38 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Awaitable, Callable
 from typing import Any, ClassVar, Protocol
 
 import discord
 
-MATCHMAKING_NEWS_MATCH_ANNOUNCEMENT_SPECTATE_BUTTON_LABEL = "観戦する"
+from dxd_rating.platform.discord.copy.match import (
+    MATCHMAKING_NEWS_MATCH_ANNOUNCEMENT_FALLBACK_ERROR_MESSAGE,
+    MATCHMAKING_NEWS_MATCH_ANNOUNCEMENT_SPECTATE_BUTTON_LABEL,
+)
+
 MATCHMAKING_NEWS_MATCH_ANNOUNCEMENT_SPECTATE_BUTTON_CUSTOM_ID_PREFIX = (
     "dxd_rating:matchmaking_news:spectate"
 )
 MATCHMAKING_NEWS_MATCH_ANNOUNCEMENT_SPECTATE_BUTTON_TEMPLATE = (
     r"^dxd_rating:matchmaking_news:spectate:(?P<match_id>\d+)$"
 )
-MATCHMAKING_NEWS_MATCH_ANNOUNCEMENT_SPECTATE_GUIDE_MESSAGE = (
-    "観戦希望者は下の「観戦する」ボタンから応募してください。"
-)
-MATCHMAKING_NEWS_MATCH_ANNOUNCEMENT_FALLBACK_ERROR_MESSAGE = (
-    "観戦応募に失敗しました。管理者に確認してください。"
-)
 
 logger = logging.getLogger(__name__)
 
 
-class MatchmakingNewsMatchAnnouncementInteractionHandler(Protocol):
+class _ComponentInteractionHandler(Protocol):
+    async def run_component_interaction(
+        self,
+        interaction: discord.Interaction[Any],
+        interaction_name: str,
+        callback: Callable[[], Awaitable[None]],
+        *,
+        fallback_message: str,
+    ) -> None: ...
+
+
+class MatchmakingNewsMatchAnnouncementInteractionHandler(_ComponentInteractionHandler, Protocol):
     async def spectate_from_matchmaking_news_match_announcement(
         self,
         interaction: discord.Interaction[Any],
@@ -73,16 +83,23 @@ class MatchmakingNewsMatchAnnouncementSpectateButton(
         return cls(match_id=int(match.group("match_id")))
 
     async def callback(self, interaction: discord.Interaction[Any]) -> None:
-        if self._interaction_handler is None:
+        interaction_handler = self._interaction_handler
+        if interaction_handler is None:
             logger.error(
                 "Matchmaking news match announcement interaction handler is not configured"
             )
+            await interaction.response.defer(ephemeral=True, thinking=True)
             await _send_fallback_error_message(interaction)
             return
 
-        await self._interaction_handler.spectate_from_matchmaking_news_match_announcement(
+        await interaction_handler.run_component_interaction(
             interaction,
-            self.match_id,
+            "matchmaking_news:spectate",
+            lambda: interaction_handler.spectate_from_matchmaking_news_match_announcement(
+                interaction,
+                self.match_id,
+            ),
+            fallback_message=MATCHMAKING_NEWS_MATCH_ANNOUNCEMENT_FALLBACK_ERROR_MESSAGE,
         )
 
     @property

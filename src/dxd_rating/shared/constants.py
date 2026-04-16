@@ -30,6 +30,14 @@ class MatchQueueClassDefinition:
     maximum_rating: float | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class MatchTimingWindows:
+    parent_selection_window: timedelta
+    report_open_delay: timedelta
+    report_deadline_delay: timedelta
+    approval_window: timedelta
+
+
 MATCH_FORMAT_DEFINITIONS = (
     MatchFormatDefinition(
         match_format=MatchFormat.ONE_VS_ONE,
@@ -156,14 +164,24 @@ _MATCH_QUEUE_CLASS_DEFINITIONS_BY_NORMALIZED_KEY = {
 
 MATCH_QUEUE_TTL = timedelta(minutes=5)
 PRESENCE_REMINDER_LEAD_TIME = timedelta(minutes=1)
-# MATCH_PARENT_SELECTION_WINDOW = timedelta(minutes=5)
-# MATCH_REPORT_OPEN_DELAY = timedelta(minutes=7)
-# MATCH_REPORT_DEADLINE_DELAY = timedelta(minutes=27)
-# MATCH_APPROVAL_WINDOW = timedelta(minutes=5)
-MATCH_PARENT_SELECTION_WINDOW = timedelta(minutes=1)
-MATCH_REPORT_OPEN_DELAY = timedelta(minutes=0)
-MATCH_REPORT_DEADLINE_DELAY = timedelta(minutes=4)
-MATCH_APPROVAL_WINDOW = timedelta(minutes=1)
+PRODUCTION_MATCH_TIMING_WINDOWS = MatchTimingWindows(
+    parent_selection_window=timedelta(minutes=5),
+    report_open_delay=timedelta(minutes=7),
+    report_deadline_delay=timedelta(minutes=27),
+    approval_window=timedelta(minutes=5),
+)
+DEVELOPMENT_MATCH_TIMING_WINDOWS = MatchTimingWindows(
+    parent_selection_window=timedelta(minutes=1),
+    report_open_delay=timedelta(minutes=0),
+    report_deadline_delay=timedelta(minutes=4),
+    approval_window=timedelta(minutes=1),
+)
+
+
+def resolve_match_timing_windows(development_mode: bool) -> MatchTimingWindows:
+    if development_mode:
+        return DEVELOPMENT_MATCH_TIMING_WINDOWS
+    return PRODUCTION_MATCH_TIMING_WINDOWS
 
 
 def is_dummy_discord_user_id(discord_user_id: int) -> bool:

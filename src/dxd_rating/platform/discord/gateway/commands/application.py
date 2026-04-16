@@ -185,6 +185,8 @@ from dxd_rating.platform.discord.copy.admin import (
     build_admin_restriction_public_message,
     build_admin_unrestriction_executor_message,
     build_admin_unrestriction_public_message,
+    build_managed_ui_category_ambiguous_message,
+    build_managed_ui_category_channel_conflict_message,
     build_managed_ui_permission_message,
 )
 from dxd_rating.platform.discord.copy.dev import (
@@ -399,6 +401,7 @@ from dxd_rating.shared.constants import (
 
 ADMIN_CLEANUP_CONFIRM_VALUE = "cleanup"
 ADMIN_TEARDOWN_CONFIRM_VALUE = "teardown"
+MANAGED_UI_CATEGORY_NAME = "レート戦"
 MAX_DISCORD_THREAD_NAME_LENGTH = 100
 DUMMY_USER_REFERENCE_PATTERN = re.compile(r"<dummy_(\d+)>")
 
@@ -421,6 +424,13 @@ class ManagedUiProvisioningError(Exception):
     def __init__(self, provisioned_channel: ProvisionedManagedUiChannel) -> None:
         super().__init__(provisioned_channel.definition.ui_type.value)
         self.provisioned_channel = provisioned_channel
+
+
+class ManagedUiCategoryConflictError(RuntimeError):
+    def __init__(self, *, category_name: str, reason: str) -> None:
+        super().__init__(f"{category_name}: {reason}")
+        self.category_name = category_name
+        self.reason = reason
 
 
 class RequiredManagedUiChannelUnavailableError(RuntimeError):
@@ -1776,8 +1786,35 @@ class BotCommandHandlers:
                 return
 
             try:
+                managed_ui_category = await self._resolve_or_create_managed_ui_category(guild)
+            except ManagedUiCategoryConflictError as exc:
+                await self._send_message(
+                    interaction,
+                    self._format_managed_ui_category_conflict_message(exc),
+                    ephemeral=True,
+                )
+                return
+            except discord.Forbidden as exc:
+                self._log_managed_ui_forbidden(
+                    action="admin_setup_custom_ui_channel",
+                    executor_discord_user_id=interaction.user.id,
+                    ui_type=definition.ui_type.value,
+                    exc=exc,
+                )
+                await self._send_message(
+                    interaction,
+                    self._format_managed_ui_permission_message(
+                        self._find_missing_managed_ui_setup_permissions(guild, [definition]),
+                        forbidden_error=exc,
+                    ),
+                    ephemeral=True,
+                )
+                return
+
+            try:
                 await self._provision_managed_ui_channel(
                     guild=guild,
+                    category=managed_ui_category,
                     definition=definition,
                     channel_name=channel_name,
                     created_by_discord_user_id=interaction.user.id,
@@ -1916,6 +1953,34 @@ class BotCommandHandlers:
                 )
                 return
 
+            try:
+                managed_ui_category = await self._resolve_or_create_managed_ui_category(guild)
+            except ManagedUiCategoryConflictError as exc:
+                await self._send_message(
+                    interaction,
+                    self._format_managed_ui_category_conflict_message(exc),
+                    ephemeral=True,
+                )
+                return
+            except discord.Forbidden as exc:
+                self._log_managed_ui_forbidden(
+                    action="admin_setup_ui_channels",
+                    executor_discord_user_id=interaction.user.id,
+                    exc=exc,
+                )
+                await self._send_message(
+                    interaction,
+                    self._format_managed_ui_permission_message(
+                        self._find_missing_managed_ui_setup_permissions(
+                            guild,
+                            missing_definitions,
+                        ),
+                        forbidden_error=exc,
+                    ),
+                    ephemeral=True,
+                )
+                return
+
             provisioned_channels: list[ProvisionedManagedUiChannel] = []
             for definition in missing_definitions:
                 private_channel = self.settings.development_mode
@@ -1931,6 +1996,7 @@ class BotCommandHandlers:
                 try:
                     provisioned_channel = await self._provision_managed_ui_channel(
                         guild=guild,
+                        category=managed_ui_category,
                         definition=definition,
                         channel_name=definition.recommended_channel_name,
                         created_by_discord_user_id=interaction.user.id,
@@ -4119,10 +4185,41 @@ class BotCommandHandlers:
             raise ValueError("interaction.guild is required")
         return guild
 
+    def _iter_guild_channels(
+        self,
+        guild: discord.Guild,
+    ) -> Iterable[discord.abc.GuildChannel]:
+        seen_channel_ids: set[int] = set()
+        for attribute_name in ("channels", "categories"):
+            channels = getattr(guild, attribute_name, ())
+            if not isinstance(channels, list | tuple):
+                continue
+            for channel in channels:
+                channel_id = getattr(channel, "id", None)
+                if isinstance(channel_id, int):
+                    if channel_id in seen_channel_ids:
+                        continue
+                    seen_channel_ids.add(channel_id)
+                yield cast(discord.abc.GuildChannel, channel)
+
+    def _is_category_channel(self, channel: object) -> bool:
+        return getattr(channel, "type", None) is discord.ChannelType.category
+
+    def _find_guild_channels_by_name(
+        self,
+        guild: discord.Guild,
+        channel_name: str,
+    ) -> list[discord.abc.GuildChannel]:
+        return [
+            channel
+            for channel in self._iter_guild_channels(guild)
+            if getattr(channel, "name", None) == channel_name
+        ]
+
     def _guild_has_channel_named(self, guild: discord.Guild, channel_name: str) -> bool:
         return any(
-            getattr(channel, "name", None) == channel_name
-            for channel in getattr(guild, "channels", ())
+            not self._is_category_channel(channel)
+            for channel in self._find_guild_channels_by_name(guild, channel_name)
         )
 
     def _get_missing_required_managed_ui_definitions(
@@ -4160,6 +4257,8 @@ class BotCommandHandlers:
                 continue
             if channel_id in managed_channel_ids:
                 continue
+            if self._is_category_channel(channel):
+                continue
             if channel_name not in blocking_channel_names:
                 continue
 
@@ -4178,7 +4277,7 @@ class BotCommandHandlers:
             if channel is not None:
                 return cast(discord.abc.GuildChannel, channel)
 
-        for channel in getattr(guild, "channels", ()):
+        for channel in self._iter_guild_channels(guild):
             if getattr(channel, "id", None) == channel_id:
                 return cast(discord.abc.GuildChannel, channel)
         return None
@@ -4188,10 +4287,21 @@ class BotCommandHandlers:
         guild: discord.Guild,
         channel_name: str,
     ) -> discord.abc.GuildChannel | None:
-        for channel in getattr(guild, "channels", ()):
-            if getattr(channel, "name", None) == channel_name:
-                return cast(discord.abc.GuildChannel, channel)
-        return None
+        fallback_channel: discord.abc.GuildChannel | None = None
+        for channel in self._find_guild_channels_by_name(guild, channel_name):
+            if not self._is_category_channel(channel):
+                return channel
+            if fallback_channel is None:
+                fallback_channel = channel
+        return fallback_channel
+
+    def _format_managed_ui_category_conflict_message(
+        self,
+        exc: ManagedUiCategoryConflictError,
+    ) -> str:
+        if exc.reason == "multiple_categories":
+            return build_managed_ui_category_ambiguous_message(exc.category_name)
+        return build_managed_ui_category_channel_conflict_message(exc.category_name)
 
     def _find_guild_role_by_name(
         self,
@@ -4329,6 +4439,39 @@ class BotCommandHandlers:
             reason="Create registered player role for managed UI channels",
         )
         return cast(discord.Role, created_role)
+
+    async def _resolve_or_create_managed_ui_category(
+        self,
+        guild: discord.Guild,
+    ) -> discord.CategoryChannel:
+        matching_channels = self._find_guild_channels_by_name(guild, MANAGED_UI_CATEGORY_NAME)
+        matching_categories = [
+            cast(discord.CategoryChannel, channel)
+            for channel in matching_channels
+            if self._is_category_channel(channel)
+        ]
+        if any(not self._is_category_channel(channel) for channel in matching_channels):
+            raise ManagedUiCategoryConflictError(
+                category_name=MANAGED_UI_CATEGORY_NAME,
+                reason="non_category_channel_exists",
+            )
+        if len(matching_categories) > 1:
+            raise ManagedUiCategoryConflictError(
+                category_name=MANAGED_UI_CATEGORY_NAME,
+                reason="multiple_categories",
+            )
+        if matching_categories:
+            return matching_categories[0]
+
+        create_category = getattr(guild, "create_category", None)
+        if not callable(create_category):
+            raise TypeError("guild.create_category is unavailable")
+
+        category = await create_category(
+            MANAGED_UI_CATEGORY_NAME,
+            reason="Create managed UI category",
+        )
+        return cast(discord.CategoryChannel, category)
 
     async def _best_effort_assign_registered_player_role(
         self,
@@ -4891,6 +5034,7 @@ class BotCommandHandlers:
         self,
         *,
         guild: discord.Guild,
+        category: discord.CategoryChannel | None,
         definition: ManagedUiDefinition,
         channel_name: str,
         created_by_discord_user_id: int,
@@ -4903,6 +5047,7 @@ class BotCommandHandlers:
 
         channel = await guild.create_text_channel(
             channel_name,
+            category=category,
             overwrites=cast(
                 Any,
                 build_managed_ui_channel_overwrites(

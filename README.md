@@ -98,6 +98,7 @@ DEVELOPMENT_MODE=true uv run python -m dxd_rating.apps.bot.main
 
 開発モードでは `/admin_setup_ui_channels` が作成する UI チャンネルをすべて private channel として作成します。
 加えて、親募集・結果報告・承認の各タイマーも開発用の短い設定で動作します。
+setup 系コマンドが作成する managed UI channel は、固定カテゴリ `レート戦` 配下に自動で配置されます。カテゴリが存在しない場合は Bot が作成します。
 
 本番モードでは一般ユーザー向け slash command を公開せず、基本操作は Bot が管理するボタン UI 経由で行う想定です。
 本番運用前に、管理者が `/admin_setup_ui_channels` を実行して required UI channels を作成してください。

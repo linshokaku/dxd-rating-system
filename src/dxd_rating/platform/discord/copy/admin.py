@@ -177,3 +177,11 @@ def build_managed_ui_permission_message(
     if forbidden_detail is not None:
         parts.append(forbidden_detail)
     return " ".join(parts)
+
+
+def build_managed_ui_category_channel_conflict_message(category_name: str) -> str:
+    return f"固定カテゴリ名「{category_name}」の通常チャンネルがすでに存在します。"
+
+
+def build_managed_ui_category_ambiguous_message(category_name: str) -> str:
+    return f"固定カテゴリ名「{category_name}」のカテゴリが複数存在します。"

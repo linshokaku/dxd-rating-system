@@ -76,7 +76,7 @@ docker compose up -d db
 ```
 
 ```env
-DATABASE_URL=postgresql+psycopg://user:password@localhost:5432/dxd_rating
+DATABASE_URL=postgresql://user:password@localhost:5432/dxd_rating
 ```
 
 ## ローカル起動手順

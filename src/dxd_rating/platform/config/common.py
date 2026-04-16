@@ -3,8 +3,19 @@ from __future__ import annotations
 import logging
 from typing import Any, NoReturn
 
-from pydantic import Field, ValidationError
+from pydantic import Field, ValidationError, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+RAILWAY_DATABASE_URL_PREFIX = "postgresql://"
+DATABASE_URL_FORMAT_ERROR = (
+    "DATABASE_URL must start with 'postgresql://' to match Railway configuration"
+)
+
+
+def validate_database_url(value: str) -> str:
+    if not value.startswith(RAILWAY_DATABASE_URL_PREFIX):
+        raise ValueError(DATABASE_URL_FORMAT_ERROR)
+    return value
 
 
 class DatabaseSettings(BaseSettings):
@@ -12,6 +23,11 @@ class DatabaseSettings(BaseSettings):
 
     database_url: str = Field(alias="DATABASE_URL")
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
+
+    @field_validator("database_url")
+    @classmethod
+    def validate_database_url_value(cls, value: str) -> str:
+        return validate_database_url(value)
 
 
 def configure_logging(log_level: str) -> None:

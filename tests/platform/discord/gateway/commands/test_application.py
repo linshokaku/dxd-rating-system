@@ -773,7 +773,7 @@ def create_settings(
 ) -> BotSettings:
     return BotSettings.model_construct(
         discord_bot_token="discord-token",
-        database_url="postgresql+psycopg://user:password@localhost:5432/dxd_rating",
+        database_url="postgresql://user:password@localhost:5432/dxd_rating",
         log_level="INFO",
         matchmaking_guide_url=matchmaking_guide_url,
         development_mode=development_mode,

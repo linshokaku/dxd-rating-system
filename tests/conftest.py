@@ -2,11 +2,12 @@ import os
 from collections.abc import Generator
 
 import pytest
-from sqlalchemy import Engine, create_engine, text
+from sqlalchemy import Engine, text
 from sqlalchemy.engine import Connection
 from sqlalchemy.orm import Session, sessionmaker
 
 from dxd_rating.platform.config.common import DatabaseSettings
+from dxd_rating.platform.db.session import create_db_engine
 
 
 def get_database_url() -> str:
@@ -18,7 +19,7 @@ def get_database_url() -> str:
 @pytest.fixture(scope="session")
 def engine() -> Generator[Engine]:
     database_url = get_database_url()
-    engine = create_engine(database_url, pool_pre_ping=True)
+    engine = create_db_engine(database_url)
 
     try:
         yield engine

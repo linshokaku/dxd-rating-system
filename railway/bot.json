@@ -1,0 +1,25 @@
+{
+  "$schema": "https://railway.com/railway.schema.json",
+  "build": {
+    "builder": "RAILPACK",
+    "watchPatterns": [
+      "src/**",
+      "alembic/**",
+      "railway/**",
+      "pyproject.toml",
+      "uv.lock",
+      ".python-version",
+      "alembic.ini",
+      "README.md"
+    ]
+  },
+  "deploy": {
+    "startCommand": "uv run python -m dxd_rating.apps.bot.main",
+    "preDeployCommand": [
+      "uv run alembic upgrade head"
+    ],
+    "healthcheckPath": null,
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 10
+  }
+}

@@ -1,8 +1,8 @@
-"""recreate schema from current models with matchmaking status message persistence
+"""create initial schema
 
-Revision ID: 129c5d3ac194
+Revision ID: dd6414692355
 Revises: 
-Create Date: 2026-04-07 22:36:27.028021
+Create Date: 2026-04-17 01:15:59.809116
 """
 
 from collections.abc import Sequence
@@ -13,7 +13,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = '129c5d3ac194'
+revision: str = 'dd6414692355'
 down_revision: str | None = None
 branch_labels: Sequence[str] | None = None
 depends_on: Sequence[str] | None = None
@@ -25,12 +25,18 @@ def upgrade() -> None:
     sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
     sa.Column('ui_type', sa.Enum('register_panel', 'matchmaking_channel', 'matchmaking_news_channel', 'info_channel', 'system_announcements_channel', 'admin_contact_channel', 'admin_operations_channel', name='managed_ui_type', native_enum=False, create_constraint=True), nullable=False),
     sa.Column('channel_id', sa.BigInteger(), nullable=False),
-    sa.Column('message_id', sa.BigInteger(), nullable=False),
+    sa.Column('message_id', sa.BigInteger(), nullable=True),
     sa.Column('status_message_id', sa.BigInteger(), nullable=True),
+    sa.Column('matchmaking_one_v_one_message_id', sa.BigInteger(), nullable=True),
+    sa.Column('matchmaking_two_v_two_message_id', sa.BigInteger(), nullable=True),
+    sa.Column('matchmaking_three_v_three_message_id', sa.BigInteger(), nullable=True),
     sa.Column('created_by_discord_user_id', sa.BigInteger(), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('channel_id'),
+    sa.UniqueConstraint('matchmaking_one_v_one_message_id'),
+    sa.UniqueConstraint('matchmaking_three_v_three_message_id'),
+    sa.UniqueConstraint('matchmaking_two_v_two_message_id'),
     sa.UniqueConstraint('message_id'),
     sa.UniqueConstraint('status_message_id')
     )

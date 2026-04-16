@@ -71,11 +71,12 @@ class DiscordSendableChannel(Protocol):
 
     async def send(
         self,
-        content: str | None = None,
+        content: str | None = ...,
         *,
-        embed: discord.Embed | None = None,
-        allowed_mentions: discord.AllowedMentions,
-        view: discord.ui.View | None = None,
+        embed: discord.Embed | None = ...,
+        allowed_mentions: discord.AllowedMentions = ...,
+        view: discord.ui.View | None = ...,
+        suppress_embeds: bool = ...,
     ) -> object: ...
 
 

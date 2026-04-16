@@ -22,13 +22,13 @@ from dxd_rating.platform.db.models import (
 
 def test_load_settings_does_not_require_discord_token(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("DISCORD_BOT_TOKEN", raising=False)
-    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://example")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://example")
     monkeypatch.setenv("LOG_LEVEL", "DEBUG")
 
     settings = load_settings()
 
     assert isinstance(settings, JobSettings)
-    assert settings.database_url == "postgresql+psycopg://example"
+    assert settings.database_url == "postgresql://example"
     assert settings.log_level == "DEBUG"
 
 

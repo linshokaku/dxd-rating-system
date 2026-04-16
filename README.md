@@ -76,7 +76,7 @@ docker compose up -d db
 ```
 
 ```env
-DATABASE_URL=postgresql+psycopg://user:password@localhost:5432/dxd_rating
+DATABASE_URL=postgresql://user:password@localhost:5432/dxd_rating
 ```
 
 ## ローカル起動手順
@@ -123,6 +123,101 @@ uv run python -m dxd_rating.apps.worker.force_end_season
 
 このコマンドは DB を直接更新し、実行時点の active season の `end_at` と次 season の `start_at` を同じ時刻へ変更します。
 テスト用途専用であり、season completion 判定、次 season 作成、snapshot 更新、通知 enqueue は行いません。
+
+## Railway デプロイ
+本番は Railway 上で Bot service と daily worker service の 2 service 構成を前提とします。
+
+- Bot service は常駐プロセスとして `uv run python -m dxd_rating.apps.bot.main` を起動します。
+- daily worker service は Cron Job として `uv run python -m dxd_rating.apps.worker.daily` を実行します。
+- どちらも同じリポジトリを参照し、同じ Railway Postgres を利用します。
+
+### リポジトリ側で管理する Railway 設定
+このリポジトリには Railway Config as Code 用の設定ファイルを含めています。
+
+- Bot service: `/railway/bot.json`
+- daily worker service: `/railway/daily.json`
+- Python version pin: `/.python-version`
+
+`bot.json` では以下をコード管理します。
+
+- builder: `RAILPACK`
+- pre-deploy migration: `uv run alembic upgrade head`
+- start command: `uv run python -m dxd_rating.apps.bot.main`
+- restart policy: `ON_FAILURE`, max retries `10`
+
+`daily.json` では以下をコード管理します。
+
+- builder: `RAILPACK`
+- start command: `uv run python -m dxd_rating.apps.worker.daily`
+- cron schedule: `10 15 * * *` (UTC)
+- restart policy: `ON_FAILURE`, max retries `3`
+
+`10 15 * * *` は毎日 `00:10 JST` です。
+snapshot 生成仕様の「`JST 00:05` 以降の早い時刻」に合わせ、この時刻を初期値とします。
+
+### Railway 上で行う初期設定
+以下は Railway 側での手動設定が必要です。
+
+1. Railway project を作成する
+2. Railway Postgres を追加する
+3. GitHub repository と接続する
+4. Bot service を作成する
+5. daily worker service を作成する
+6. Bot service の Custom Config File に絶対パス `/railway/bot.json` を設定する
+7. daily worker service の Custom Config File に絶対パス `/railway/daily.json` を設定する
+8. 各 service に必要な環境変数を設定する
+
+環境変数の値そのものはこのリポジトリでは自動化しません。
+必要な変数名は README 先頭の「環境変数」セクションを参照してください。
+
+Bot service に最低限必要なもの:
+
+- `DISCORD_BOT_TOKEN`
+- `DATABASE_URL`
+- `MATCHMAKING_GUIDE_URL`
+- `LOG_LEVEL` (任意)
+- `SUPER_ADMIN_USER_IDS` (任意)
+- `DEVELOPMENT_MODE` は本番では未設定または `false`
+
+daily worker service に最低限必要なもの:
+
+- `DATABASE_URL`
+- `LOG_LEVEL` (任意)
+
+### デプロイ手順
+schema change を含む deploy では Bot service を先に deploy してください。
+Bot service の deploy では `preDeployCommand` により `uv run alembic upgrade head` が自動実行されます。
+
+推奨手順:
+
+1. Bot service を deploy する
+2. migration が成功し、deployment が `Active` になることを確認する
+3. daily worker service を deploy する
+4. daily worker service の手動実行または初回 cron 実行が成功することを確認する
+
+daily worker service には `preDeployCommand` を設定していません。
+migration の責務は Bot service に集約します。
+
+### 初回デプロイ後の確認
+初回 deploy 後は、Discord サーバー上で管理者が `/admin_setup_ui_channels` を実行して required UI channels を作成してください。
+
+その後、少なくとも以下を確認してください。
+
+- Bot logs で Discord 接続まで進んでいること
+- daily worker logs で DB connectivity check、season maintenance、leaderboard snapshot maintenance が出ること
+- daily worker 実行時に admin operations 通知が outbox 経由で送られること
+
+Bot に必要な Discord 権限は [docs/discord_permissions.md](docs/discord_permissions.md) を参照してください。
+
+### 自動化されない手順
+今回のリポジトリ変更だけでは、以下は自動化されません。
+
+- Railway 上での service 作成
+- Custom Config File の紐付け
+- 環境変数の設定
+- 初回 deploy 順序の判断
+
+つまり、このリポジトリは「deploy 時に使う service 設定の再現性」を高めますが、Railway project 自体の初期作成までは行いません。
 
 ## モデル更新
 ```bash

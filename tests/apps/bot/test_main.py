@@ -114,7 +114,7 @@ def test_load_settings_reads_matchmaking_guide_url(
     bot_settings_dir.mkdir()
     monkeypatch.chdir(bot_settings_dir)
     monkeypatch.setenv("DISCORD_BOT_TOKEN", "discord-token")
-    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://example")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://example")
     monkeypatch.setenv("MATCHMAKING_GUIDE_URL", DEFAULT_MATCHMAKING_GUIDE_URL)
 
     settings = load_settings()
@@ -131,7 +131,7 @@ def test_load_settings_requires_matchmaking_guide_url(
     bot_settings_dir.mkdir()
     monkeypatch.chdir(bot_settings_dir)
     monkeypatch.setenv("DISCORD_BOT_TOKEN", "discord-token")
-    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://example")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://example")
     monkeypatch.delenv("MATCHMAKING_GUIDE_URL", raising=False)
 
     with pytest.raises(
@@ -146,7 +146,7 @@ def test_main_passes_development_mode_to_match_runtime_create(
 ) -> None:
     settings = BotSettings.model_construct(
         discord_bot_token="discord-token",
-        database_url="postgresql+psycopg://user:password@localhost:5432/dxd_rating",
+        database_url="postgresql://user:password@localhost:5432/dxd_rating",
         log_level="INFO",
         matchmaking_guide_url=DEFAULT_MATCHMAKING_GUIDE_URL,
         development_mode=True,
@@ -190,7 +190,7 @@ def test_setup_hook_restores_persistent_register_panel_view(
     initialize_seasons(session_factory)
     settings = BotSettings.model_construct(
         discord_bot_token="discord-token",
-        database_url="postgresql+psycopg://user:password@localhost:5432/dxd_rating",
+        database_url="postgresql://user:password@localhost:5432/dxd_rating",
         log_level="INFO",
         matchmaking_guide_url=DEFAULT_MATCHMAKING_GUIDE_URL,
         development_mode=False,
@@ -254,7 +254,7 @@ def test_setup_hook_skips_managed_channels_without_persistent_view(
     initialize_seasons(session_factory)
     settings = BotSettings.model_construct(
         discord_bot_token="discord-token",
-        database_url="postgresql+psycopg://user:password@localhost:5432/dxd_rating",
+        database_url="postgresql://user:password@localhost:5432/dxd_rating",
         log_level="INFO",
         matchmaking_guide_url=DEFAULT_MATCHMAKING_GUIDE_URL,
         development_mode=False,
@@ -303,7 +303,7 @@ def test_setup_hook_restores_matchmaking_status_and_panel_views(
     initialize_seasons(session_factory)
     settings = BotSettings.model_construct(
         discord_bot_token="discord-token",
-        database_url="postgresql+psycopg://user:password@localhost:5432/dxd_rating",
+        database_url="postgresql://user:password@localhost:5432/dxd_rating",
         log_level="INFO",
         matchmaking_guide_url=DEFAULT_MATCHMAKING_GUIDE_URL,
         development_mode=False,
@@ -342,7 +342,7 @@ def test_setup_hook_skips_matchmaking_status_view_when_status_message_id_is_miss
     initialize_seasons(session_factory)
     settings = BotSettings.model_construct(
         discord_bot_token="discord-token",
-        database_url="postgresql+psycopg://user:password@localhost:5432/dxd_rating",
+        database_url="postgresql://user:password@localhost:5432/dxd_rating",
         log_level="INFO",
         matchmaking_guide_url=DEFAULT_MATCHMAKING_GUIDE_URL,
         development_mode=False,
@@ -381,7 +381,7 @@ def test_setup_hook_refreshes_outdated_matchmaking_panel_views(
     initialize_seasons(session_factory)
     settings = BotSettings.model_construct(
         discord_bot_token="discord-token",
-        database_url="postgresql+psycopg://user:password@localhost:5432/dxd_rating",
+        database_url="postgresql://user:password@localhost:5432/dxd_rating",
         log_level="INFO",
         matchmaking_guide_url=DEFAULT_MATCHMAKING_GUIDE_URL,
         development_mode=False,
@@ -454,7 +454,7 @@ def test_setup_hook_keeps_matchmaking_panel_views_when_already_current(
     initialize_seasons(session_factory)
     settings = BotSettings.model_construct(
         discord_bot_token="discord-token",
-        database_url="postgresql+psycopg://user:password@localhost:5432/dxd_rating",
+        database_url="postgresql://user:password@localhost:5432/dxd_rating",
         log_level="INFO",
         matchmaking_guide_url=DEFAULT_MATCHMAKING_GUIDE_URL,
         development_mode=False,

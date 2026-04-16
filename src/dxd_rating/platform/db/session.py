@@ -11,9 +11,8 @@ SQLALCHEMY_DATABASE_URL_PREFIX = "postgresql+psycopg://"
 
 def normalize_database_url_for_sqlalchemy(database_url: str) -> str:
     validated_database_url = validate_database_url(database_url)
-    return (
-        SQLALCHEMY_DATABASE_URL_PREFIX
-        + validated_database_url.removeprefix(RAILWAY_DATABASE_URL_PREFIX)
+    return SQLALCHEMY_DATABASE_URL_PREFIX + validated_database_url.removeprefix(
+        RAILWAY_DATABASE_URL_PREFIX
     )
 
 

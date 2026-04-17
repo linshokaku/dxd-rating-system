@@ -43,7 +43,7 @@ MATCH_FORMAT_DEFINITIONS = (
         match_format=MatchFormat.ONE_VS_ONE,
         description="1v1",
         team_size=1,
-        batch_size=2,
+        batch_size=1,
     ),
     MatchFormatDefinition(
         match_format=MatchFormat.TWO_VS_TWO,

@@ -36,10 +36,10 @@ INFO_THREAD_PLAYER_INFO_SEASON_SELECT_SEASON_MESSAGE = (
 INFO_THREAD_PLAYER_INFO_SEASON_FALLBACK_ERROR_MESSAGE = (
     "シーズン別プレイヤー情報の取得に失敗しました。管理者に確認してください。"
 )
-INFO_THREAD_LEADERBOARD_MATCH_FORMAT_PLACEHOLDER = "試合形式を選択"
+INFO_THREAD_LEADERBOARD_MATCH_FORMAT_PLACEHOLDER = "マッチ形式を選択"
 INFO_THREAD_LEADERBOARD_SHOW_BUTTON_LABEL = "ランキングを表示"
 INFO_THREAD_LEADERBOARD_SELECT_MATCH_FORMAT_MESSAGE = (
-    f"試合形式を選択してください。{INFO_THREAD_RETRY_INFO_THREAD_MESSAGE_SUFFIX}"
+    f"マッチ形式を選択してください。{INFO_THREAD_RETRY_INFO_THREAD_MESSAGE_SUFFIX}"
 )
 INFO_THREAD_LEADERBOARD_NEXT_PAGE_BUTTON_LABEL = "次のページ"
 INFO_THREAD_LEADERBOARD_FALLBACK_ERROR_MESSAGE = (
@@ -50,7 +50,7 @@ INFO_THREAD_LEADERBOARD_SEASON_SELECT_SEASON_MESSAGE = (
     f"シーズンを選択してください。{INFO_THREAD_RETRY_INFO_THREAD_MESSAGE_SUFFIX}"
 )
 INFO_THREAD_LEADERBOARD_SEASON_SELECT_BOTH_MESSAGE = (
-    f"シーズンと試合形式を選択してください。{INFO_THREAD_RETRY_INFO_THREAD_MESSAGE_SUFFIX}"
+    f"シーズンとマッチ形式を選択してください。{INFO_THREAD_RETRY_INFO_THREAD_MESSAGE_SUFFIX}"
 )
 
 # slash command の説明文言
@@ -121,13 +121,13 @@ INFO_THREAD_INITIAL_MESSAGES = {
     InfoThreadCommandName.LEADERBOARD: "\n".join(
         [
             "このスレッドは現在シーズンのランキング確認用です。",
-            "試合形式を選んで「ランキングを表示」を押してください。",
+            "マッチ形式を選んで「ランキングを表示」を押してください。",
         ]
     ),
     InfoThreadCommandName.LEADERBOARD_SEASON: "\n".join(
         [
             "このスレッドはシーズン別ランキング確認用です。",
-            "シーズンと試合形式を選んで「ランキングを表示」を押してください。",
+            "シーズンとマッチ形式を選んで「ランキングを表示」を押してください。",
         ]
     ),
 }

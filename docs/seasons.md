@@ -15,7 +15,7 @@
 - シーズン名の管理
 - シーズン単位の `player_format_stats`
 - 次シーズン初期レートへの carryover
-- 試合とシーズンの紐付け
+- マッチとシーズンの紐付け
 - シーズン完了フラグ
 
 本仕様では、以下は扱わない。
@@ -28,9 +28,9 @@
 - シーズンは全フォーマット共通で切り替える
 - レートと戦績は `season_id` と `match_format` の組み合わせごとに独立して持つ
 - シーズン切替時にマッチングキューはリセットしない
-- 試合の所属シーズンは、その試合の開始時刻で決める
+- マッチの所属シーズンは、そのマッチの開始時刻で決める
 - 次シーズンの carryover は厳密性よりも実装の単純さを優先する
-- 一度確定した carryover は、その後の旧シーズン試合結果修正では更新しない
+- 一度確定した carryover は、その後の旧シーズンマッチ結果修正では更新しない
 
 ## シーズン期間
 
@@ -99,7 +99,7 @@
 
 - これは事前作成であり、切替自体は `start_at` 到達で自動的に起こる
 - 次シーズンがすでに存在する場合は no-op とする
-- `completed` 判定は、試合確定時の即時判定に加えて、日次 worker による補完判定も行う
+- `completed` 判定は、マッチ確定時の即時判定に加えて、日次 worker による補完判定も行う
 
 ## シーズン名 rename
 
@@ -176,7 +176,7 @@
 ### 基本方針
 
 - carryover は、そのシーズン行のレートが初めて必要になった時点で遅延確定する
-- 一度 `pending` 以外になった行は、その後の旧シーズン試合結果修正では再計算しない
+- 一度 `pending` 以外になった行は、その後の旧シーズンマッチ結果修正では再計算しない
 - carryover 判定は `match_format` ごとに独立して行う
 
 ### 確定トリガ
@@ -185,7 +185,7 @@
 
 - `/join` の参加条件判定
 - マッチ作成時のチーム分け
-- 試合結果確定時のレート更新
+- マッチ結果確定時のレート更新
 - admin による結果修正時の再計算
 
 ### 判定元
@@ -221,16 +221,16 @@ carryover を適用しない場合:
 - `carryover_source_season_id = NULL`
 - `carryover_source_rating = NULL`
 
-## 試合とシーズンの関係
+## マッチとシーズンの関係
 
-### 試合開始時刻
+### マッチ開始時刻
 
 - `started_at` は `matches.created_at` とみなす
-- 試合の所属シーズンは、`started_at` を含むシーズンで決める
+- マッチの所属シーズンは、`started_at` を含むシーズンで決める
 
 ### `matches`
 
-試合本体には少なくとも以下を持たせる。
+マッチ本体には少なくとも以下を持たせる。
 
 - `id`
 - `match_format`
@@ -240,7 +240,7 @@ carryover を適用しない場合:
 
 補足:
 
-- `started_season_id` は `created_at` から毎回逆算せず、試合作成時に保存する
+- `started_season_id` は `created_at` から毎回逆算せず、マッチ作成時に保存する
 - これにより、後続処理は常に同じシーズンへ更新できる
 
 ### シーズン跨ぎキュー
@@ -259,9 +259,9 @@ carryover を適用しない場合:
 
 ### 結果確定時
 
-- 試合結果確定時のレート更新先は、稼働中シーズンではなく `started_season_id` の `player_format_stats` とする
-- したがって、前シーズン開始の試合が次シーズン開始後に finalize されても、前シーズンのレートが更新される
-- 各試合の finalize 処理のたびに、その `started_season_id` について `completed` を立てられる状態かどうかを再判定する
+- マッチ結果確定時のレート更新先は、稼働中シーズンではなく `started_season_id` の `player_format_stats` とする
+- したがって、前シーズン開始のマッチが次シーズン開始後に finalize されても、前シーズンのレートが更新される
+- 各マッチの finalize 処理のたびに、その `started_season_id` について `completed` を立てられる状態かどうかを再判定する
 - `update_season_completion` によって `completed = true` へ遷移した場合は、後続で `season_completed` を 1 件 enqueue し、その後に `season_top_rankings` を `1v1`、`2v2`、`3v3` で各 1 件 enqueue する
 - これらの通知は `system_announcements_channel` (`レート戦アナウンス`) への公開アナウンスとする
 - 投稿順は固定で、最初に `season_completed` の summary メッセージを 1 通、その後に `season_top_rankings` の形式別 Top 12 ランキングメッセージを 1 通ずつ送る
@@ -269,22 +269,22 @@ carryover を適用しない場合:
 
 ### admin 結果修正時
 
-- admin による結果修正の再計算対象も、対象試合の `started_season_id` に限定する
+- admin による結果修正の再計算対象も、対象マッチの `started_season_id` に限定する
 - 旧シーズンの結果修正は、その旧シーズンの `player_format_stats` を更新する
 - ただし、すでに確定済みの次シーズン carryover は更新しない
 
 ## 完了フラグ
 
-- `completed` は、終了済みシーズンについて「そのシーズン所属の全試合が一度は finalized された」ことを表す
+- `completed` は、終了済みシーズンについて「そのシーズン所属の全マッチが一度は finalized された」ことを表す
 - `completed` を `true` にできるのは `end_at <= now()` のシーズンだけとする
-- `completed` を立てるかどうかの判定は、試合確定時に毎回行う
+- `completed` を立てるかどうかの判定は、マッチ確定時に毎回行う
 - さらに、日次で動く cron worker 側からも `completed` を立てられる状態かどうかを判定する
-- 具体的には、各試合の finalize 後に、その `started_season_id` に属する未確定試合が残っているかを確認する
-- 日次 worker では、`end_at <= now()` かつ `completed = false` のシーズンについて、同様に未確定試合の有無を確認する
-- 未確定試合が 0 件であり、かつ `end_at <= now()` を満たす場合に `completed = true` とする
+- 具体的には、各マッチの finalize 後に、その `started_season_id` に属する未確定マッチが残っているかを確認する
+- 日次 worker では、`end_at <= now()` かつ `completed = false` のシーズンについて、同様に未確定マッチの有無を確認する
+- 未確定マッチが 0 件であり、かつ `end_at <= now()` を満たす場合に `completed = true` とする
 - `completed_at` は `completed = true` にした時刻を保存する
-- `update_season_completion` が `true` を返したときだけ、該当シーズンの全試合完了を表す `season_completed` を 1 回だけ enqueue する
-- 通知発火条件は caller に依存せず、試合 finalize 経由でも日次 worker 経由でも同じ規則を使う
+- `update_season_completion` が `true` を返したときだけ、該当シーズンの全マッチ完了を表す `season_completed` を 1 回だけ enqueue する
+- 通知発火条件は caller に依存せず、マッチ finalize 経由でも日次 worker 経由でも同じ規則を使う
 - `season_completed` は `season_id` ごとに 1 回だけ送る
 - `season_top_rankings` は `season_id + match_format` ごとに 1 回だけ enqueue し、`1v1`、`2v2`、`3v3` の 3 件で構成する
 - `season_top_rankings` は、完了したその `season_id` の `player_format_stats` を参照し、各形式の上位 12 人までを公開送信する

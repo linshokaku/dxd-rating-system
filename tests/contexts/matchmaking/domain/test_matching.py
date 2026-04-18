@@ -82,10 +82,13 @@ def test_prepare_matches_for_batch_pairs_ranked_entries_for_one_vs_one(
     )
 
     assert len(prepared_matches) == format_definition.batch_size
-    assert tuple(
-        (prepared_match.team_a_entry_ids, prepared_match.team_b_entry_ids)
-        for prepared_match in prepared_matches
-    ) == expected_match_entry_ids
+    assert (
+        tuple(
+            (prepared_match.team_a_entry_ids, prepared_match.team_b_entry_ids)
+            for prepared_match in prepared_matches
+        )
+        == expected_match_entry_ids
+    )
 
 
 def test_is_queue_join_allowed_respects_minimum_and_maximum_ratings() -> None:

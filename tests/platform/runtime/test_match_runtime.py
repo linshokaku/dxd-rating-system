@@ -2476,8 +2476,8 @@ def test_discord_outbox_publisher_renders_matchmaking_news_match_announcement() 
     expected_message = "\n".join(
         [
             MATCH_CREATED_NOTIFICATION_MESSAGE,
-            "試合形式: 3v3",
-            "試合階級: beginner",
+            "マッチ形式: 3v3",
+            "マッチ階級: beginner",
             "Team A",
             "    Player A: 1512",
             "    Player B: 1499",
@@ -2549,8 +2549,8 @@ def test_discord_outbox_publisher_renders_queue_joined_matchmaking_news_notifica
     expected_message = "\n".join(
         [
             "<@80301> がキューに参加しました。",
-            "試合形式: 3v3",
-            "試合階級: regular",
+            "マッチ形式: 3v3",
+            "マッチ階級: regular",
         ]
     )
 
@@ -2602,8 +2602,8 @@ def test_discord_outbox_publisher_adds_matchmaking_news_spectate_button_for_matc
     expected_message = "\n".join(
         [
             MATCH_CREATED_NOTIFICATION_MESSAGE,
-            "試合形式: 3v3",
-            "試合階級: beginner",
+            "マッチ形式: 3v3",
+            "マッチ階級: beginner",
             "Team A",
             "    Player A",
             "    Player B",
@@ -2695,8 +2695,8 @@ def test_discord_outbox_publisher_creates_match_operation_thread_for_match_creat
     expected_announcement_message = "\n".join(
         [
             MATCH_CREATED_NOTIFICATION_MESSAGE,
-            "試合形式: 3v3",
-            "試合階級: regular",
+            "マッチ形式: 3v3",
+            "マッチ階級: regular",
             "Team A",
             "    Player A: 1512",
             "    Player B: 1499",
@@ -2711,8 +2711,8 @@ def test_discord_outbox_publisher_creates_match_operation_thread_for_match_creat
         "\n".join(
             [
                 MATCH_CREATED_NOTIFICATION_MESSAGE,
-                "試合形式: 3v3",
-                "試合階級: regular",
+                "マッチ形式: 3v3",
+                "マッチ階級: regular",
                 "Team A",
                 "    <@81100>: 1512",
                 "    <@81101>: 1499",
@@ -2726,14 +2726,14 @@ def test_discord_outbox_publisher_creates_match_operation_thread_for_match_creat
         ),
         "\n".join(
             [
-                "まず初めに、部屋立てと試合の進行を行う親を募集します。",
+                "まず初めに、部屋立てとマッチの進行を行う親を募集します。",
                 "親募集期間は5分です。",
                 "5分以内に立候補がない場合は Bot が参加メンバーからランダムに決定します。",
             ]
         ),
         "\n".join(
             [
-                "試合参加者はゲーム内のプレイヤー名を報告してください。",
+                "マッチ参加者はゲーム内のプレイヤー名を報告してください。",
             ]
         ),
     ]
@@ -2781,7 +2781,7 @@ def test_discord_outbox_publisher_creates_match_operation_thread_for_match_creat
     assert len(matchmaking_channel.created_threads) == 1
 
     created_thread = matchmaking_channel.created_threads[0]
-    assert created_thread.name == "試合-2"
+    assert created_thread.name == "マッチ-2"
     assert created_thread.added_user_ids == [
         81_100,
         81_101,
@@ -2850,15 +2850,15 @@ def test_discord_outbox_publisher_links_presence_thread_to_match_operation_threa
     expected_presence_body = "\n".join(
         [
             "マッチ成立です。",
-            "試合運営は <#9001131001> で行ってください。",
+            "マッチ運営は <#9001131001> で行ってください。",
         ]
     )
     expected_thread_messages = [
         "\n".join(
             [
                 MATCH_CREATED_NOTIFICATION_MESSAGE,
-                "試合形式: 3v3",
-                "試合階級: regular",
+                "マッチ形式: 3v3",
+                "マッチ階級: regular",
                 "Team A",
                 "    <@81110>: 1512",
                 "    <@81111>: 1499",
@@ -2872,14 +2872,14 @@ def test_discord_outbox_publisher_links_presence_thread_to_match_operation_threa
         ),
         "\n".join(
             [
-                "まず初めに、部屋立てと試合の進行を行う親を募集します。",
+                "まず初めに、部屋立てとマッチの進行を行う親を募集します。",
                 "親募集期間は5分です。",
                 "5分以内に立候補がない場合は Bot が参加メンバーからランダムに決定します。",
             ]
         ),
         "\n".join(
             [
-                "試合参加者はゲーム内のプレイヤー名を報告してください。",
+                "マッチ参加者はゲーム内のプレイヤー名を報告してください。",
             ]
         ),
     ]
@@ -2931,7 +2931,7 @@ def test_discord_outbox_publisher_links_presence_thread_to_match_operation_threa
     assert presence_thread.sent_views == [None]
     assert len(matchmaking_channel.created_threads) == 1
     created_thread = matchmaking_channel.created_threads[0]
-    assert created_thread.name == "試合-12"
+    assert created_thread.name == "マッチ-12"
     assert created_thread.added_user_ids == [
         81_110,
         81_111,
@@ -3006,8 +3006,8 @@ def test_discord_outbox_publisher_reuses_existing_match_operation_thread_for_sam
         "\n".join(
             [
                 MATCH_CREATED_NOTIFICATION_MESSAGE,
-                "試合形式: 3v3",
-                "試合階級: master",
+                "マッチ形式: 3v3",
+                "マッチ階級: master",
                 "Team A",
                 "    <@82100>",
                 "    <@82101>",
@@ -3021,14 +3021,14 @@ def test_discord_outbox_publisher_reuses_existing_match_operation_thread_for_sam
         ),
         "\n".join(
             [
-                "まず初めに、部屋立てと試合の進行を行う親を募集します。",
+                "まず初めに、部屋立てとマッチの進行を行う親を募集します。",
                 "親募集期間は5分です。",
                 "5分以内に立候補がない場合は Bot が参加メンバーからランダムに決定します。",
             ]
         ),
         "\n".join(
             [
-                "試合参加者はゲーム内のプレイヤー名を報告してください。",
+                "マッチ参加者はゲーム内のプレイヤー名を報告してください。",
             ]
         ),
     ]
@@ -3302,7 +3302,7 @@ def test_discord_outbox_publisher_routes_report_opened_to_match_operation_thread
         [
             MATCH_REPORT_OPENED_NOTIFICATION_MESSAGE,
             "自分視点で「勝ち」「引き分け」「負け」を選んでください。",
-            "無効試合にすべき場合は「無効試合申請」を押してください。",
+            "無効マッチにすべき場合は「無効マッチ申請」を押してください。",
             "勝敗報告締切: 2026/03/20 21:20:00 JST",
         ]
     )
@@ -3359,8 +3359,8 @@ def test_discord_outbox_publisher_routes_report_opened_to_match_operation_thread
         "\n".join(
             [
                 MATCH_CREATED_NOTIFICATION_MESSAGE,
-                "試合形式: 3v3",
-                "試合階級: regular",
+                "マッチ形式: 3v3",
+                "マッチ階級: regular",
                 "Team A",
                 "    A",
                 "    B",
@@ -3413,7 +3413,7 @@ def test_discord_outbox_publisher_reuses_existing_thread_for_report_opened_after
     )
     existing_thread = FakeDiscordThread(
         id=900_115_2001,
-        name="試合-31",
+        name="マッチ-31",
         guild=guild,
         parent=matchmaking_channel,
     )
@@ -3461,7 +3461,7 @@ def test_discord_outbox_publisher_reuses_existing_thread_for_report_opened_after
             [
                 MATCH_REPORT_OPENED_NOTIFICATION_MESSAGE,
                 "自分視点で「勝ち」「引き分け」「負け」を選んでください。",
-                "無効試合にすべき場合は「無効試合申請」を押してください。",
+                "無効マッチにすべき場合は「無効マッチ申請」を押してください。",
                 "勝敗報告締切: 2026/03/20 21:45:00 JST",
             ]
         )
@@ -3515,8 +3515,8 @@ def test_discord_outbox_publisher_routes_match_notifications_to_existing_thread(
     expected_announcement_message = "\n".join(
         [
             MATCH_CREATED_NOTIFICATION_MESSAGE,
-            "試合形式: 3v3",
-            "試合階級: expert",
+            "マッチ形式: 3v3",
+            "マッチ階級: expert",
             "Team A",
             "    Player A",
             "    Player B",
@@ -3546,8 +3546,8 @@ def test_discord_outbox_publisher_routes_match_notifications_to_existing_thread(
     expected_thread_initial_message = "\n".join(
         [
             MATCH_CREATED_NOTIFICATION_MESSAGE,
-            "試合形式: 3v3",
-            "試合階級: expert",
+            "マッチ形式: 3v3",
+            "マッチ階級: expert",
             "Team A",
             "    <@84100>",
             "    <@84101>",
@@ -4075,7 +4075,7 @@ def test_discord_outbox_publisher_renders_season_completed_notification() -> Non
 
     expected_message = "\n".join(
         [
-            "シーズンの全試合が完了しました。",
+            "シーズンの全マッチが完了しました。",
             "season_id: 12",
             "season_name: 202603delta",
             "完了時刻: 2026/04/05 09:00:00 JST",

@@ -1385,7 +1385,7 @@ class MatchFlowService:
         target_finalized_result: FinalizedMatchResult,
     ) -> None:
         if target_finalized_result.rated_at is None:
-            raise MatchFlowError("試合結果の補正に必要な rated_at が見つかりません。")
+            raise MatchFlowError("マッチ結果の補正に必要な rated_at が見つかりません。")
 
         affected_match_ids = tuple(
             session.scalars(
@@ -1629,7 +1629,7 @@ class MatchFlowService:
             format_stats = player_format_stats_by_player_id[participant.player_id]
             if format_stats.match_format != match_format:
                 raise MatchFlowError(
-                    "試合フォーマットと更新対象のプレイヤー統計が一致していません。"
+                    "マッチフォーマットと更新対象のプレイヤー統計が一致していません。"
                 )
             format_stats.rating = rating_update.rating_after
             format_stats.games_played = rating_update.games_played_after
@@ -1924,7 +1924,7 @@ class MatchFlowService:
     ) -> dict[str, Any]:
         matchmaking_channel = self._require_matchmaking_channel(session)
         if not participants:
-            raise MatchFlowError("試合参加者が見つかりません。")
+            raise MatchFlowError("マッチ参加者が見つかりません。")
 
         team_a_discord_user_ids = [
             participant.notification_mention_discord_user_id or participant.player.discord_user_id
@@ -2163,7 +2163,7 @@ class MatchFlowService:
             or player_result.losses_before is None
             or player_result.draws_before is None
         ):
-            raise MatchFlowError("試合結果の補正に必要な開始時点状態が不足しています。")
+            raise MatchFlowError("マッチ結果の補正に必要な開始時点状態が不足しています。")
 
         return HistoricalMatchPlayerSnapshot(
             player_id=player_result.player_id,

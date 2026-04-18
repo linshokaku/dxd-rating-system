@@ -14,7 +14,7 @@
   - [matchmaking_channel.md](matchmaking_channel.md)
 - `/present` と `/leave` の slash command 入出力仕様。
   - [../commands/user-commands.md](../commands/user-commands.md)
-- マッチ成立後に作成される試合連絡 thread の仕様。
+- マッチ成立後に作成されるマッチ連絡 thread の仕様。
 
 ## 前提
 
@@ -134,8 +134,8 @@
 - メッセージには、少なくとも以下を含める。
   - 対象参加者への mention
   - マッチが成立したこと
-  - 対応する試合運営 private thread へのリンク
-- 基本文面は、`<@discord_user_id> マッチ成立です。` と `試合運営は <#thread_id> で行ってください。` の 2 行とする。
+  - 対応するマッチ運営 private thread へのリンク
+- 基本文面は、`<@discord_user_id> マッチ成立です。` と `マッチ運営は <#thread_id> で行ってください。` の 2 行とする。
 - この通知に button UI は付けない。
 
 ## 可視性と操作権限

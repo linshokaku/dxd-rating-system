@@ -21,17 +21,17 @@
 - [matching/3v3.md](matching/3v3.md)
   - 3v3 のチーム分けとマッチ構築
 - [matches/common.md](matches/common.md)
-  - 試合進行、勝敗報告、承認、ペナルティの共通仕様
+  - マッチ進行、勝敗報告、承認、ペナルティの共通仕様
 - [matches/1v1.md](matches/1v1.md)
-  - 1v1 試合進行時の読み替え
+  - 1v1 マッチ進行時の読み替え
 - [matches/2v2.md](matches/2v2.md)
-  - 2v2 試合進行時の読み替え
+  - 2v2 マッチ進行時の読み替え
 - [matches/3v3.md](matches/3v3.md)
-  - 3v3 試合進行時の読み替え
+  - 3v3 マッチ進行時の読み替え
 - [matches/spectating.md](matches/spectating.md)
   - 観戦応募と観戦枠管理
 - [matches/result_correction.md](matches/result_correction.md)
-  - 確定済み試合結果の修正とレーティング再計算
+  - 確定済みマッチ結果の修正とレーティング再計算
 - [rating/common.md](rating/common.md)
   - レーティング共通方針、保持値、K 設計
 - [rating/1v1.md](rating/1v1.md)
@@ -47,7 +47,7 @@
 - [outbox.md](outbox.md)
   - 非同期通知配送
 - [commands/user-commands.md](commands/user-commands.md)
-  - ユーザー向け slash command。プレイヤー操作コマンドと試合操作コマンドを含む
+  - ユーザー向け slash command。プレイヤー操作コマンドとマッチ操作コマンドを含む
 - [commands/dev-commands.md](commands/dev-commands.md)
   - 開発者向け slash command
 - [discord_permissions.md](discord_permissions.md)
@@ -65,13 +65,13 @@
 - [ui/matchmaking_presence_thread.md](ui/matchmaking_presence_thread.md)
   - キュー参加後に作成する在席確認 private thread UI
 - [ui/match_operation_thread.md](ui/match_operation_thread.md)
-  - マッチ成立後に作成する試合運営 private thread UI
+  - マッチ成立後に作成するマッチ運営 private thread UI
 - [ui/info_channel.md](ui/info_channel.md)
   - `レート戦情報` チャンネルに設置する公開 button UI
 - [ui/info_thread.md](ui/info_thread.md)
   - 情報確認用 private thread UI
 - [ui/matchmaking_news_match_announcement.md](ui/matchmaking_news_match_announcement.md)
-  - `レート戦マッチ速報` に投稿する試合成立アナウンス UI
+  - `レート戦マッチ速報` に投稿するマッチ成立アナウンス UI
 - [ui/setup_channel.md](ui/setup_channel.md)
   - UI 設置チャンネルの作成・撤収コマンド
 

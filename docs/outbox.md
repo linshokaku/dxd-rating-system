@@ -163,7 +163,7 @@
 ### `match_created`
 
 - `match_created` は 1 件の `match_id` ごとに 1 回のマッチ成立通知を表す
-- `1v1` の 1 バッチ 2 試合は、2 件の `match_created` 通知として扱う
+- `1v1` の 1 バッチ 2 マッチは、2 件の `match_created` 通知として扱う
 - service 層は、参加した各 `queue_entry` の通知先コンテキストをもとに配送先を集約する
 - 実際の Discord 送信 1 件ごとに 1 outbox event を作成する
 - 各 event の payload には、送信先スナップショット、`match_format`、表示用チーム情報を含める
@@ -204,7 +204,7 @@ Team B
 
 - `season_completed` は、1 シーズンの完了時に送る summary 通知 1 件を表す。
 - `season_completed` は、`update_season_completion` が実際に `True` を返したときだけ作成する。
-- 試合 finalize 経由でも日次 worker 経由でも、発火条件は `update_season_completion` の完了遷移に統一する。
+- マッチ finalize 経由でも日次 worker 経由でも、発火条件は `update_season_completion` の完了遷移に統一する。
 - 同一 `season_id` の `season_completed` は 1 回だけ送る前提とし、重複 enqueue を避ける。
 - service 層または worker は、通知先の `system_announcements_channel` が解決できた場合だけ event を作成する。
 - 通知先チャンネルが解決できない場合でも、シーズン完了処理自体は成功扱いのまま継続し、通知だけを warning ログでスキップしてよい。
@@ -216,7 +216,7 @@ Team B
   - `season_name`
   - `completed_at`
   - `destination`
-- 本文は、該当シーズンの全試合が完了したことが分かる簡潔なプレーンテキストとする。
+- 本文は、該当シーズンの全マッチが完了したことが分かる簡潔なプレーンテキストとする。
 - メッセージには、少なくとも `season_name` と `season_id` を含める。
 - `completed_at` を簡潔に表示してよい。
 - mention や button は付けない。
@@ -227,7 +227,7 @@ Team B
 - `season_top_rankings` は、`season_completed` と別 event type とする。
 - `admin_operations_notification` のような同一責務内の subtype 分岐とは異なり、season 系は summary 通知と順位表通知で payload、dedupe 単位、renderer の関心事が異なるため event type を分ける。
 - `season_top_rankings` は、`update_season_completion` が実際に `True` を返したときだけ作成する。
-- 試合 finalize 経由でも日次 worker 経由でも、発火条件は `update_season_completion` の完了遷移に統一する。
+- マッチ finalize 経由でも日次 worker 経由でも、発火条件は `update_season_completion` の完了遷移に統一する。
 - 1 シーズン完了あたり、`season_completed` を 1 件 enqueue した後に、`season_top_rankings` を `1v1`、`2v2`、`3v3` で各 1 件 enqueue する。
 - 投稿順は `season_completed` -> `1v1` -> `2v2` -> `3v3` の固定順とし、形式順は `MATCH_FORMAT_DEFINITIONS` に従う。
 - 同一 `season_id` と `match_format` の組み合わせに対する `season_top_rankings` は 1 回だけ送る前提とし、重複 enqueue を避ける。
@@ -290,8 +290,8 @@ Team B
   - `team_a_discord_user_ids`
   - `team_b_discord_user_ids`
   - `mention_discord_user_id` (在席確認 thread 向け payload のみ)
-  - `match_operation_thread_parent_channel_id` (試合運営 thread 導線を解決する payload)
-  - `create_match_operation_thread` (必要なら試合運営 thread を先に作成できる payload)
+  - `match_operation_thread_parent_channel_id` (マッチ運営 thread 導線を解決する payload)
+  - `create_match_operation_thread` (必要ならマッチ運営 thread を先に作成できる payload)
 - `season_completed`
   - `season_id`
   - `season_name`

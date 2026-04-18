@@ -5988,7 +5988,7 @@ def test_match_spectate_command_invites_requesting_player_to_match_operation_thr
     setup_matchmaking_managed_ui_channel(handlers, matchmaking_channel.id)
     match_operation_thread = cast(
         FakeThread,
-        asyncio.run(matchmaking_channel.create_thread(name=f"試合-{match_id}")),
+        asyncio.run(matchmaking_channel.create_thread(name=f"マッチ-{match_id}")),
     )
     interaction = FakeInteraction(
         user=FakeUser(id=spectator_discord_user_id),
@@ -6009,7 +6009,7 @@ def test_match_spectate_command_invites_requesting_player_to_match_operation_thr
     expected_message = "\n".join(
         [
             "観戦応募を受け付けました。現在 1 / 6 人です。",
-            f"運営用プライベートスレッド: <#{match_operation_thread.id}>",
+            f"マッチスレッド: <#{match_operation_thread.id}>",
         ]
     )
     assert_response(
@@ -6107,7 +6107,7 @@ def test_matchmaking_news_match_announcement_spectate_button_responds_ephemerall
     setup_matchmaking_managed_ui_channel(handlers, matchmaking_channel.id)
     match_operation_thread = cast(
         FakeThread,
-        asyncio.run(matchmaking_channel.create_thread(name=f"試合-{match_id}")),
+        asyncio.run(matchmaking_channel.create_thread(name=f"マッチ-{match_id}")),
     )
     interaction = FakeInteraction(
         user=FakeUser(id=spectator_discord_user_id),
@@ -6133,7 +6133,7 @@ def test_matchmaking_news_match_announcement_spectate_button_responds_ephemerall
     expected_message = "\n".join(
         [
             "観戦応募を受け付けました。現在 1 / 6 人です。",
-            f"運営用プライベートスレッド: <#{match_operation_thread.id}>",
+            f"マッチスレッド: <#{match_operation_thread.id}>",
         ]
     )
     assert_response(
@@ -6177,7 +6177,7 @@ def test_matchmaking_news_match_announcement_spectate_button_defers_and_replies_
     setup_matchmaking_managed_ui_channel(handlers, matchmaking_channel.id)
     match_operation_thread = cast(
         FakeThread,
-        asyncio.run(matchmaking_channel.create_thread(name=f"試合-{match_id}")),
+        asyncio.run(matchmaking_channel.create_thread(name=f"マッチ-{match_id}")),
     )
     button = MatchmakingNewsMatchAnnouncementSpectateButton(
         match_id,
@@ -6202,7 +6202,7 @@ def test_matchmaking_news_match_announcement_spectate_button_defers_and_replies_
     expected_message = "\n".join(
         [
             "観戦応募を受け付けました。現在 1 / 6 人です。",
-            f"運営用プライベートスレッド: <#{match_operation_thread.id}>",
+            f"マッチスレッド: <#{match_operation_thread.id}>",
         ]
     )
     assert_response(
@@ -6536,7 +6536,7 @@ def test_match_approve_actions_return_business_error_ephemerally(
 
     assert_response(
         interaction,
-        ["この試合は承認期間中ではありません。"],
+        ["このマッチは承認期間中ではありません。"],
         ephemeral=True,
     )
 
@@ -8171,17 +8171,17 @@ def test_admin_match_result_responds_ephemerally_and_posts_public_followup(
     assert_response_sequence(
         interaction,
         [
-            "試合結果を上書きしました。",
-            f"match_id: {match_id} の試合結果が管理者操作により「引き分け」に上書きされました。",
+            "マッチ結果を上書きしました。",
+            f"match_id: {match_id} のマッチ結果が管理者操作により「引き分け」に上書きされました。",
         ],
         [True, False],
     )
-    assert interaction.response.raw_messages == ["試合結果を上書きしました。", None]
+    assert interaction.response.raw_messages == ["マッチ結果を上書きしました。", None]
     assert interaction.response.embeds[0] is None
     assert interaction.response.embeds[1] is not None
     assert (
         interaction.response.embeds[1].description
-        == f"match_id: {match_id} の試合結果が管理者操作により「引き分け」に上書きされました。"
+        == f"match_id: {match_id} のマッチ結果が管理者操作により「引き分け」に上書きされました。"
     )
 
 

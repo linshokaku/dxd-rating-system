@@ -3266,7 +3266,7 @@ class BotCommandHandlers:
             await self._send_message(interaction, failure_message, ephemeral=ephemeral)
             return
 
-        await self._best_effort_invite_match_operation_thread_user(
+        thread_mention = await self._best_effort_invite_match_operation_thread_user(
             interaction,
             match_id=result.match_id,
             target_discord_user_id=executor_discord_user_id,
@@ -3281,6 +3281,7 @@ class BotCommandHandlers:
             build_match_spectate_success_message(
                 result.active_spectator_count,
                 result.max_spectators,
+                thread_mention=thread_mention,
             ),
             ephemeral=ephemeral,
         )
@@ -4686,9 +4687,9 @@ class BotCommandHandlers:
         *,
         match_id: int,
         target_discord_user_id: int,
-    ) -> None:
+    ) -> str | None:
         if is_dummy_discord_user_id(target_discord_user_id):
-            return
+            return None
 
         try:
             target_user = await self._resolve_presence_thread_target_user(
@@ -4696,20 +4697,24 @@ class BotCommandHandlers:
                 target_discord_user_id,
             )
             if target_user is None:
-                return
+                return None
 
             thread = await self._resolve_match_operation_thread(
                 interaction,
                 match_id=match_id,
             )
             if thread is None:
-                return
+                return None
 
             add_user = getattr(thread, "add_user", None)
             if not callable(add_user):
-                return
+                return None
 
             await add_user(target_user)
+            thread_id = getattr(thread, "id", None)
+            if isinstance(thread_id, int):
+                return f"<#{thread_id}>"
+            return None
         except Exception:
             self.logger.exception(
                 "Failed to invite user to match operation thread "
@@ -4718,6 +4723,7 @@ class BotCommandHandlers:
                 match_id,
                 interaction.guild_id,
             )
+            return None
 
     async def _resolve_match_operation_thread(
         self,

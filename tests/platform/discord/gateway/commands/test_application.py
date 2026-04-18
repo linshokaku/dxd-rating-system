@@ -6006,13 +6006,73 @@ def test_match_spectate_command_invites_requesting_player_to_match_operation_thr
         )
     )
 
+    expected_message = "\n".join(
+        [
+            "観戦応募を受け付けました。現在 1 / 6 人です。",
+            f"運営用プライベートスレッド: <#{match_operation_thread.id}>",
+        ]
+    )
+    assert_response(
+        interaction,
+        [expected_message],
+        ephemeral=True,
+    )
+    assert persisted_spectator is not None
+    assert match_operation_thread.added_user_ids == [spectator_discord_user_id]
+
+
+def test_match_spectate_command_falls_back_to_base_message_when_operation_thread_is_missing(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    match_id, _ = create_match(
+        session,
+        session_factory,
+        start_discord_user_id=123_456_789_012_345_710_0,
+        channel_id=13_009,
+        guild_id=14_009,
+    )
+    spectator_discord_user_id = 123_456_789_012_345_715
+    spectator = create_player(session, spectator_discord_user_id)
+    handlers = create_handlers(
+        session_factory,
+        matching_queue_service=MatchingQueueService(session_factory),
+    )
+    guild = FakeGuild(id=14_009)
+    matchmaking_channel = FakeTextChannel(
+        id=13_009,
+        name="レート戦マッチング",
+        guild=guild,
+    )
+    command_channel = FakeTextChannel(
+        id=13_019,
+        name="雑談",
+        guild=guild,
+    )
+    guild.channels.extend([matchmaking_channel, command_channel])
+    setup_matchmaking_managed_ui_channel(handlers, matchmaking_channel.id)
+    interaction = FakeInteraction(
+        user=FakeUser(id=spectator_discord_user_id),
+        channel_id=command_channel.id,
+        guild_id=guild.id,
+        guild=guild,
+    )
+
+    asyncio.run(handlers.match_spectate(as_interaction(interaction), match_id))
+
+    persisted_spectator = session.scalar(
+        select(MatchSpectator).where(
+            MatchSpectator.match_id == match_id,
+            MatchSpectator.player_id == spectator.id,
+        )
+    )
+
     assert_response(
         interaction,
         ["観戦応募を受け付けました。現在 1 / 6 人です。"],
         ephemeral=True,
     )
     assert persisted_spectator is not None
-    assert match_operation_thread.added_user_ids == [spectator_discord_user_id]
 
 
 def test_matchmaking_news_match_announcement_spectate_button_responds_ephemerally(
@@ -6070,9 +6130,15 @@ def test_matchmaking_news_match_announcement_spectate_button_responds_ephemerall
         )
     )
 
+    expected_message = "\n".join(
+        [
+            "観戦応募を受け付けました。現在 1 / 6 人です。",
+            f"運営用プライベートスレッド: <#{match_operation_thread.id}>",
+        ]
+    )
     assert_response(
         interaction,
-        ["観戦応募を受け付けました。現在 1 / 6 人です。"],
+        [expected_message],
         ephemeral=True,
     )
     assert persisted_spectator is not None
@@ -6133,9 +6199,15 @@ def test_matchmaking_news_match_announcement_spectate_button_defers_and_replies_
         )
     )
 
+    expected_message = "\n".join(
+        [
+            "観戦応募を受け付けました。現在 1 / 6 人です。",
+            f"運営用プライベートスレッド: <#{match_operation_thread.id}>",
+        ]
+    )
     assert_response(
         interaction,
-        ["観戦応募を受け付けました。現在 1 / 6 人です。"],
+        [expected_message],
         ephemeral=True,
     )
     assert_deferred_followup_response(interaction)

@@ -124,8 +124,14 @@ def build_match_operation_thread_name(match_id: int) -> str:
 def build_match_spectate_success_message(
     active_spectator_count: int,
     max_spectators: int,
+    thread_mention: str | None = None,
 ) -> str:
-    return f"観戦応募を受け付けました。現在 {active_spectator_count} / {max_spectators} 人です。"
+    base_message = (
+        f"観戦応募を受け付けました。現在 {active_spectator_count} / {max_spectators} 人です。"
+    )
+    if thread_mention is None:
+        return base_message
+    return "\n".join([base_message, f"運営用プライベートスレッド: {thread_mention}"])
 
 
 def build_match_operation_thread_initial_content(

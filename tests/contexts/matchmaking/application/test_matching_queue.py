@@ -433,6 +433,61 @@ def test_join_queue_stores_notification_context(
     assert entry.notification_recorded_at == entry.joined_at
 
 
+def test_join_queue_enqueues_queue_joined_for_matchmaking_news_channel(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    player = create_player(session, 10_001_3)
+    matchmaking_news_channel = create_managed_ui_channel(
+        session,
+        ui_type=ManagedUiType.MATCHMAKING_NEWS_CHANNEL,
+        channel_id=333_100,
+        message_id=444_100,
+    )
+    service = create_matching_queue_service(session_factory)
+
+    result = service.join_queue(
+        player.id,
+        DEFAULT_MATCH_FORMAT,
+        DEFAULT_QUEUE_NAME,
+        notification_context=MatchingQueueNotificationContext(
+            channel_id=333_101,
+            guild_id=444_101,
+            mention_discord_user_id=555_101,
+        ),
+    )
+
+    outbox_events = get_outbox_events(session)
+
+    assert len(outbox_events) == 1
+    assert outbox_events[0].event_type == OutboxEventType.QUEUE_JOINED
+    assert outbox_events[0].dedupe_key == f"queue_joined:{result.queue_entry_id}:333100"
+    assert outbox_events[0].payload == {
+        "queue_entry_id": result.queue_entry_id,
+        "player_id": player.id,
+        "match_format": DEFAULT_MATCH_FORMAT.value,
+        "queue_name": DEFAULT_QUEUE_NAME,
+        "destination": {
+            "kind": "channel",
+            "channel_id": matchmaking_news_channel.channel_id,
+            "guild_id": 444_101,
+        },
+        "mention_discord_user_id": 555_101,
+    }
+
+
+def test_join_queue_skips_queue_joined_when_matchmaking_news_channel_is_not_configured(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    player = create_player(session, 10_001_4)
+    service = create_matching_queue_service(session_factory)
+
+    service.join_queue(player.id, DEFAULT_MATCH_FORMAT, DEFAULT_QUEUE_NAME)
+
+    assert get_outbox_events(session) == []
+
+
 def test_update_waiting_notification_context_overwrites_waiting_entry_destination(
     session: Session,
     session_factory: sessionmaker[Session],
@@ -1638,7 +1693,7 @@ def test_matched_entries_make_reminder_and_expire_tasks_noop(
     assert all(event.event_type == OutboxEventType.MATCH_CREATED for event in outbox_events)
 
 
-# `presence_reminder`、`queue_expired`、`match_created` の
+# `presence_reminder`、`queue_expired`、`match_created`、`queue_joined` の
 # イベント種別が正しく生成されること
 def test_matching_queue_outbox_event_types_are_generated_for_supported_flows(
     session: Session,
@@ -1663,20 +1718,28 @@ def test_matching_queue_outbox_event_types_are_generated_for_supported_flows(
         match_players,
         base_joined_at=now + timedelta(seconds=1),
     )
+    create_managed_ui_channel(
+        session,
+        ui_type=ManagedUiType.MATCHMAKING_NEWS_CHANNEL,
+        channel_id=880_500,
+        message_id=880_600,
+    )
     service = create_matching_queue_service(session_factory)
 
     service.process_presence_reminder(reminder_entry.id, expected_revision=1)
     service.process_expire(expired_entry.id, expected_revision=1)
     service.try_create_matches()
+    queue_join_player = create_player(session, 50_250)
+    service.join_queue(queue_join_player.id, DEFAULT_MATCH_FORMAT, DEFAULT_QUEUE_NAME)
 
     event_types = [event.event_type for event in get_outbox_events(session)]
 
-    expected_match_created_event_count = 0
-    assert event_types[:2] == [
+    assert event_types[:3] == [
         OutboxEventType.PRESENCE_REMINDER,
         OutboxEventType.QUEUE_EXPIRED,
+        OutboxEventType.MATCH_CREATED,
     ]
-    assert event_types[2:] == [OutboxEventType.MATCH_CREATED] * expected_match_created_event_count
+    assert event_types[3:] == [OutboxEventType.QUEUE_JOINED]
 
 
 def test_try_create_matches_prefers_presence_thread_for_match_created_destination(

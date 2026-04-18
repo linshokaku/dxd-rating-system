@@ -1380,10 +1380,17 @@ def test_join_command_routes_match_created_to_presence_threads_without_parent_fa
     )
 
     queue_entry = get_queue_entry(session, joining_player.id)
-    match_created_events = [
+    outbox_events = get_outbox_events(session)
+    queue_joined_events = [
+        event for event in outbox_events if event.event_type == OutboxEventType.QUEUE_JOINED
+    ]
+    joining_player_queue_joined_events = [
         event
-        for event in get_outbox_events(session)
-        if event.event_type == OutboxEventType.MATCH_CREATED
+        for event in queue_joined_events
+        if event.payload["mention_discord_user_id"] == joining_discord_user_id
+    ]
+    match_created_events = [
+        event for event in outbox_events if event.event_type == OutboxEventType.MATCH_CREATED
     ]
     destination_channel_ids = {
         event.payload["destination"]["channel_id"] for event in match_created_events
@@ -1395,6 +1402,15 @@ def test_join_command_routes_match_created_to_presence_threads_without_parent_fa
     ]
 
     assert queue_entry.status == MatchQueueEntryStatus.MATCHED
+    assert len(joining_player_queue_joined_events) == 1
+    assert (
+        joining_player_queue_joined_events[0].payload["destination"]["channel_id"]
+        == matchmaking_news_channel.id
+    )
+    assert (
+        joining_player_queue_joined_events[0].payload["mention_discord_user_id"]
+        == joining_discord_user_id
+    )
     assert len(match_created_events) == 7
     assert matchmaking_channel.id not in destination_channel_ids
     assert matchmaking_news_channel.id in destination_channel_ids
@@ -7066,10 +7082,17 @@ def test_dev_join_routes_match_created_to_presence_threads_without_parent_fallba
     )
 
     queue_entry = get_queue_entry(session, target_player.id)
-    match_created_events = [
+    outbox_events = get_outbox_events(session)
+    queue_joined_events = [
+        event for event in outbox_events if event.event_type == OutboxEventType.QUEUE_JOINED
+    ]
+    target_player_queue_joined_events = [
         event
-        for event in get_outbox_events(session)
-        if event.event_type == OutboxEventType.MATCH_CREATED
+        for event in queue_joined_events
+        if event.payload["mention_discord_user_id"] == target_discord_user_id
+    ]
+    match_created_events = [
+        event for event in outbox_events if event.event_type == OutboxEventType.MATCH_CREATED
     ]
     destination_channel_ids = {
         event.payload["destination"]["channel_id"] for event in match_created_events
@@ -7081,6 +7104,15 @@ def test_dev_join_routes_match_created_to_presence_threads_without_parent_fallba
     ]
 
     assert queue_entry.status == MatchQueueEntryStatus.MATCHED
+    assert len(target_player_queue_joined_events) == 1
+    assert (
+        target_player_queue_joined_events[0].payload["destination"]["channel_id"]
+        == matchmaking_news_channel.id
+    )
+    assert (
+        target_player_queue_joined_events[0].payload["mention_discord_user_id"]
+        == target_discord_user_id
+    )
     assert len(match_created_events) == 7
     assert matchmaking_channel.id not in destination_channel_ids
     assert matchmaking_news_channel.id in destination_channel_ids

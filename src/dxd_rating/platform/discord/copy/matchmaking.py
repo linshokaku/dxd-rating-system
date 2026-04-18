@@ -66,7 +66,23 @@ MATCHMAKING_PRESENCE_THREAD_FALLBACK_ERROR_MESSAGE = (
     "操作に失敗しました。管理者に確認してください。"
 )
 
+
 # キュー関連の通知文言
+def build_queue_joined_notification_message(
+    *,
+    player_mention: str,
+    match_format: str,
+    queue_name: str,
+) -> str:
+    return "\n".join(
+        [
+            f"{player_mention} がキューに参加しました。",
+            f"試合形式: {match_format}",
+            f"試合階級: {queue_name}",
+        ]
+    )
+
+
 PRESENCE_REMINDER_NOTIFICATION_MESSAGE = (
     "在席確認です。1分以内に在席更新がない場合はマッチングキューから外れます。"
 )

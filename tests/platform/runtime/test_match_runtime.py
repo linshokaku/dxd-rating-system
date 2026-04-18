@@ -2538,6 +2538,53 @@ def test_discord_outbox_publisher_renders_matchmaking_news_match_announcement() 
     assert channel.sent_views == [None]
 
 
+def test_discord_outbox_publisher_renders_queue_joined_matchmaking_news_notification() -> None:
+    channel = FakeDiscordChannel(
+        id=900_012_2,
+        guild=FakeDiscordGuild(id=910_012_2),
+    )
+    client = FakeDiscordClient(channels={channel.id: channel})
+    publisher = DiscordOutboxEventPublisher(client=client)
+
+    expected_message = "\n".join(
+        [
+            "<@80301> がキューに参加しました。",
+            "試合形式: 3v3",
+            "試合階級: regular",
+        ]
+    )
+
+    async def scenario() -> None:
+        await publish_with_bound_loop(
+            publisher,
+            PendingOutboxEvent(
+                id=5_1,
+                event_type=OutboxEventType.QUEUE_JOINED,
+                dedupe_key="queue_joined:1:9000122",
+                payload={
+                    "queue_entry_id": 1,
+                    "player_id": 10_301,
+                    "match_format": "3v3",
+                    "queue_name": "regular",
+                    "destination": {
+                        "kind": "channel",
+                        "channel_id": channel.id,
+                        "guild_id": channel.guild.id,
+                    },
+                    "mention_discord_user_id": 80_301,
+                },
+                created_at=datetime.now(timezone.utc),
+            ),
+        )
+
+    asyncio.run(scenario())
+
+    assert channel.raw_contents == [None]
+    assert channel.sent_messages == [expected_message]
+    assert_body_only_public_embed(channel, 0, expected_message)
+    assert channel.sent_views == [None]
+
+
 def test_discord_outbox_publisher_adds_matchmaking_news_spectate_button_for_match_created() -> None:
     guild = FakeDiscordGuild(id=910_012_1)
     channel = FakeDiscordChannel(

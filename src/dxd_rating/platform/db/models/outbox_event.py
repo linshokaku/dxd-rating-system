@@ -14,6 +14,7 @@ from dxd_rating.platform.db.models.enum_utils import enum_values
 
 
 class OutboxEventType(StrEnum):
+    QUEUE_JOINED = "queue_joined"
     PRESENCE_REMINDER = "presence_reminder"
     QUEUE_EXPIRED = "queue_expired"
     MATCH_CREATED = "match_created"

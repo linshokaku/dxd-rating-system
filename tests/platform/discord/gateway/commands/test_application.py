@@ -392,6 +392,7 @@ class FakeTextChannel:
     name: str
     guild: FakeGuild
     category: FakeCategoryChannel | None = None
+    default_auto_archive_duration: int | None = None
     overwrites: dict[object, discord.PermissionOverwrite] = field(default_factory=dict)
     sent_messages: list[FakeMessage] = field(default_factory=list)
     created_threads: list[FakeThread] = field(default_factory=list)
@@ -514,6 +515,7 @@ class FakeGuild:
         name: str,
         *,
         category: FakeCategoryChannel | None = None,
+        default_auto_archive_duration: int | None = None,
         overwrites: dict[object, discord.PermissionOverwrite] | None = None,
         **_: Any,
     ) -> discord.TextChannel:
@@ -525,6 +527,7 @@ class FakeGuild:
             name=name,
             guild=self,
             category=category,
+            default_auto_archive_duration=default_auto_archive_duration,
             overwrites={} if overwrites is None else dict(overwrites),
             fail_send_with=self.next_channel_fail_send_with,
             fail_send_call_errors=dict(self.next_channel_fail_send_call_errors),
@@ -8246,6 +8249,7 @@ def test_admin_setup_custom_ui_channel_creates_info_channel_buttons(
     assert persisted_channel.overwrites[guild.default_role].send_messages is False
     assert persisted_channel.overwrites[registered_role].view_channel is True
     assert persisted_channel.overwrites[registered_role].send_messages is False
+    assert persisted_channel.default_auto_archive_duration == 60
     assert_body_only_embed_message(persisted_message, INFO_CHANNEL_MESSAGE)
     assert persisted_message.view is not None
     info_buttons = [
@@ -8326,6 +8330,7 @@ def test_admin_setup_custom_ui_channel_creates_matchmaking_channel_with_placehol
     assert persisted_channel.overwrites[guild.default_role].send_messages is False
     assert persisted_channel.overwrites[registered_role].view_channel is True
     assert persisted_channel.overwrites[registered_role].send_messages is False
+    assert persisted_channel.default_auto_archive_duration == 60
     assert len(persisted_channel.sent_messages) == 5
     assert_body_only_embed_message(
         persisted_channel.sent_messages[0],
@@ -8909,6 +8914,10 @@ def test_admin_setup_ui_channels_creates_registered_channel_set(
         "運営専用",
     ]
     assert all(channel.category is managed_ui_category for channel in guild.channels)
+    assert find_channel_by_name(guild, "レート戦マッチング").default_auto_archive_duration == 60
+    assert find_channel_by_name(guild, "レート戦情報").default_auto_archive_duration == 60
+    assert find_channel_by_name(guild, "レート戦はこちらから").default_auto_archive_duration is None
+    assert find_channel_by_name(guild, "レート戦マッチ速報").default_auto_archive_duration is None
 
     registered_role = find_role_by_name(guild, REGISTERED_PLAYER_ROLE_NAME)
     assert registered_role is not None

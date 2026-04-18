@@ -402,6 +402,13 @@ from dxd_rating.shared.constants import (
 ADMIN_CLEANUP_CONFIRM_VALUE = "cleanup"
 ADMIN_TEARDOWN_CONFIRM_VALUE = "teardown"
 MANAGED_UI_CATEGORY_NAME = "レート戦"
+MANAGED_UI_THREAD_AUTO_ARCHIVE_DURATION_MINUTES = 60
+MANAGED_UI_TYPES_WITH_ONE_HOUR_THREAD_AUTO_ARCHIVE = frozenset(
+    {
+        ManagedUiType.MATCHMAKING_CHANNEL,
+        ManagedUiType.INFO_CHANNEL,
+    }
+)
 MAX_DISCORD_THREAD_NAME_LENGTH = 100
 DUMMY_USER_REFERENCE_PATTERN = re.compile(r"<dummy_(\d+)>")
 
@@ -5030,6 +5037,14 @@ class BotCommandHandlers:
             raise TypeError(f"Discord channel id is unavailable: {channel!r}")
         return channel_id
 
+    def _get_managed_ui_default_auto_archive_duration(
+        self,
+        ui_type: ManagedUiType,
+    ) -> int | None:
+        if ui_type in MANAGED_UI_TYPES_WITH_ONE_HOUR_THREAD_AUTO_ARCHIVE:
+            return MANAGED_UI_THREAD_AUTO_ARCHIVE_DURATION_MINUTES
+        return None
+
     async def _provision_managed_ui_channel(
         self,
         *,
@@ -5045,10 +5060,9 @@ class BotCommandHandlers:
         if definition.requires_registered_player_role:
             registered_player_role = await self._ensure_registered_player_role(guild)
 
-        channel = await guild.create_text_channel(
-            channel_name,
-            category=category,
-            overwrites=cast(
+        create_channel_kwargs: dict[str, Any] = {
+            "category": category,
+            "overwrites": cast(
                 Any,
                 build_managed_ui_channel_overwrites(
                     guild,
@@ -5058,7 +5072,17 @@ class BotCommandHandlers:
                     visible_members=visible_members,
                 ),
             ),
-            reason=f"Create managed UI channel for {definition.ui_type.value}",
+            "reason": f"Create managed UI channel for {definition.ui_type.value}",
+        }
+        default_auto_archive_duration = self._get_managed_ui_default_auto_archive_duration(
+            definition.ui_type
+        )
+        if default_auto_archive_duration is not None:
+            create_channel_kwargs["default_auto_archive_duration"] = default_auto_archive_duration
+
+        channel = await guild.create_text_channel(
+            channel_name,
+            **create_channel_kwargs,
         )
         provisioned_channel = ProvisionedManagedUiChannel(
             definition=definition,

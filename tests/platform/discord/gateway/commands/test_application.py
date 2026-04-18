@@ -8881,13 +8881,33 @@ def test_admin_setup_ui_channels_creates_registered_channel_set(
     assert interaction.response.defer_ephemeral is True
     assert interaction.response.defer_thinking is True
     assert [definition.ui_type for definition in get_required_managed_ui_definitions()] == [
-        managed_ui_channel.ui_type for managed_ui_channel in managed_ui_channels
+        ManagedUiType.REGISTER_PANEL,
+        ManagedUiType.MATCHMAKING_NEWS_CHANNEL,
+        ManagedUiType.MATCHMAKING_CHANNEL,
+        ManagedUiType.INFO_CHANNEL,
+        ManagedUiType.SYSTEM_ANNOUNCEMENTS_CHANNEL,
+        ManagedUiType.ADMIN_CONTACT_CHANNEL,
+        ManagedUiType.ADMIN_OPERATIONS_CHANNEL,
+    ]
+    assert [managed_ui_channel.ui_type for managed_ui_channel in managed_ui_channels] == [
+        ManagedUiType.REGISTER_PANEL,
+        ManagedUiType.MATCHMAKING_NEWS_CHANNEL,
+        ManagedUiType.MATCHMAKING_CHANNEL,
+        ManagedUiType.INFO_CHANNEL,
+        ManagedUiType.SYSTEM_ANNOUNCEMENTS_CHANNEL,
+        ManagedUiType.ADMIN_CONTACT_CHANNEL,
+        ManagedUiType.ADMIN_OPERATIONS_CHANNEL,
     ]
     managed_ui_category = find_category_by_name(guild, "レート戦")
-    expected_channel_names = [
-        definition.recommended_channel_name for definition in get_required_managed_ui_definitions()
+    assert [channel.name for channel in guild.channels] == [
+        "レート戦はこちらから",
+        "レート戦マッチ速報",
+        "レート戦マッチング",
+        "レート戦情報",
+        "レート戦アナウンス",
+        "運営連絡・フィードバック",
+        "運営専用",
     ]
-    assert expected_channel_names == [channel.name for channel in guild.channels]
     assert all(channel.category is managed_ui_category for channel in guild.channels)
 
     registered_role = find_role_by_name(guild, REGISTERED_PLAYER_ROLE_NAME)

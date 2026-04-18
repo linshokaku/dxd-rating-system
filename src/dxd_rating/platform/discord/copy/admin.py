@@ -9,8 +9,8 @@ from dxd_rating.platform.db.models import PlayerAccessRestrictionType
 ADMIN_ONLY_MESSAGE = "このコマンドは管理者のみ実行できます。"
 INVALID_ADMIN_TARGET_USER_MESSAGE = "対象ユーザーの指定が不正です。"
 INVALID_MATCH_RESULT_MESSAGE = "result が不正です。"
-ADMIN_MATCH_RESULT_SUCCESS_MESSAGE = "試合結果を上書きしました。"
-ADMIN_MATCH_RESULT_FAILED_MESSAGE = "試合結果の上書きに失敗しました。管理者に確認してください。"
+ADMIN_MATCH_RESULT_SUCCESS_MESSAGE = "マッチ結果を上書きしました。"
+ADMIN_MATCH_RESULT_FAILED_MESSAGE = "マッチ結果の上書きに失敗しました。管理者に確認してください。"
 ADMIN_TARGET_NOT_REGISTERED_MESSAGE = "指定したユーザーは未登録です。"
 ADMIN_RESTRICTION_FAILED_MESSAGE = "利用制限の設定に失敗しました。管理者に確認してください。"
 ADMIN_UNRESTRICTION_FAILED_MESSAGE = "利用制限の解除に失敗しました。管理者に確認してください。"
@@ -76,12 +76,12 @@ PLAYER_ACCESS_RESTRICTION_DURATION_LABELS = {
 ADMIN_INCORRECT_REPORT_PENALTY_DESCRIPTION = "勝敗誤報告ペナルティ"
 ADMIN_NO_REPORT_PENALTY_DESCRIPTION = "勝敗無報告ペナルティ"
 ADMIN_ROOM_SETUP_DELAY_PENALTY_DESCRIPTION = "部屋立て遅延ペナルティ"
-ADMIN_MATCH_MISTAKE_PENALTY_DESCRIPTION = "試合ミスペナルティ"
+ADMIN_MATCH_MISTAKE_PENALTY_DESCRIPTION = "マッチ進行ミスペナルティ"
 ADMIN_LATE_PENALTY_DESCRIPTION = "遅刻ペナルティ"
 ADMIN_DISCONNECT_PENALTY_DESCRIPTION = "切断ペナルティ"
 
 # 管理者向け slash command の説明文言
-ADMIN_MATCH_RESULT_COMMAND_DESCRIPTION = "試合結果を上書きします"
+ADMIN_MATCH_RESULT_COMMAND_DESCRIPTION = "マッチ結果を上書きします"
 ADMIN_MATCH_RESULT_MATCH_ID_DESCRIPTION = "対象の match_id"
 ADMIN_MATCH_RESULT_RESULT_DESCRIPTION = "上書きする結果"
 ADMIN_RENAME_SEASON_COMMAND_DESCRIPTION = "シーズン名を変更します"
@@ -112,7 +112,7 @@ ADMIN_PENALTY_DUMMY_USER_DESCRIPTION = "対象のダミーユーザー。<dummy_
 # 管理者向け文言の組み立て関数
 def build_admin_match_result_public_message(match_id: int, result_label: str) -> str:
     return (
-        f"match_id: {match_id} の試合結果が管理者操作により「{result_label}」に上書きされました。"
+        f"match_id: {match_id} のマッチ結果が管理者操作により「{result_label}」に上書きされました。"
     )
 
 

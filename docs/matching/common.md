@@ -370,7 +370,7 @@
 
 1. 候補プレイヤーをロックして取得する
 2. 対象 `match_format` に応じて、対応するフォーマット別仕様でマッチ構築する
-3. 作成したすべての試合について `matches`、`match_participants`、必要な active state を作成する
+3. 作成したすべてのマッチについて `matches`、`match_participants`、必要な active state を作成する
 4. 対応するキュー行を `matched` に更新する
 5. commit する
 6. commit 後に、作成された各 `match_id` ごとに `match_created` 通知を送る

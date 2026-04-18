@@ -36,6 +36,7 @@ from dxd_rating.platform.discord.copy.match import (
 from dxd_rating.platform.discord.copy.matchmaking import (
     PRESENCE_REMINDER_NOTIFICATION_MESSAGE,
     QUEUE_EXPIRED_NOTIFICATION_MESSAGE,
+    build_queue_joined_notification_message,
 )
 from dxd_rating.platform.discord.copy.system import (
     build_admin_operations_daily_worker_started_message,
@@ -765,6 +766,9 @@ class DiscordOutboxEventPublisher:
         if event_type == OutboxEventType.PRESENCE_REMINDER:
             return self._render_presence_reminder_content(payload)
 
+        if event_type == OutboxEventType.QUEUE_JOINED:
+            return self._render_queue_joined_content(payload)
+
         if event_type == OutboxEventType.QUEUE_EXPIRED:
             return self._render_queue_expired_content(payload)
 
@@ -801,6 +805,18 @@ class DiscordOutboxEventPublisher:
         return self._render_channel_targeted_text_notification(
             payload,
             PRESENCE_REMINDER_NOTIFICATION_MESSAGE,
+        )
+
+    def _render_queue_joined_content(self, payload: dict[str, object]) -> str:
+        self._require_payload_int(payload, "queue_entry_id")
+        self._require_payload_int(payload, "player_id")
+        mention_discord_user_id = self._require_payload_int(payload, "mention_discord_user_id")
+        match_format = self._require_payload_str(payload, "match_format")
+        queue_name = self._require_payload_str(payload, "queue_name")
+        return build_queue_joined_notification_message(
+            player_mention=format_discord_user_mention(mention_discord_user_id),
+            match_format=match_format,
+            queue_name=queue_name,
         )
 
     def _render_queue_expired_content(self, payload: dict[str, object]) -> str:
@@ -1095,6 +1111,7 @@ class DiscordOutboxEventPublisher:
             )
 
         return event.event_type in {
+            OutboxEventType.QUEUE_JOINED,
             OutboxEventType.SEASON_COMPLETED,
             OutboxEventType.SEASON_TOP_RANKINGS,
             OutboxEventType.ADMIN_OPERATIONS_NOTIFICATION,

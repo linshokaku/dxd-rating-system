@@ -297,6 +297,21 @@ class MatchingQueueService:
             )
             session.add(new_entry)
             session.flush()
+            matchmaking_news_channel = self._get_managed_ui_channel(
+                session,
+                ManagedUiType.MATCHMAKING_NEWS_CHANNEL,
+            )
+            if matchmaking_news_channel is not None:
+                self._enqueue_outbox_event(
+                    session,
+                    event_type=OutboxEventType.QUEUE_JOINED,
+                    dedupe_key=f"queue_joined:{new_entry.id}:{matchmaking_news_channel.channel_id}",
+                    payload=self._build_matchmaking_news_queue_joined_payload(
+                        entry=new_entry,
+                        queue_class_definition=queue_class_definition,
+                        matchmaking_news_channel=matchmaking_news_channel,
+                    ),
+                )
 
             result = JoinQueueResult(
                 queue_entry_id=new_entry.id,
@@ -959,6 +974,26 @@ class MatchingQueueService:
             create_match_operation_thread=True,
         )
         return payload
+
+    def _build_matchmaking_news_queue_joined_payload(
+        self,
+        *,
+        entry: MatchQueueEntry,
+        queue_class_definition: MatchQueueClassDefinition,
+        matchmaking_news_channel: ManagedUiChannel,
+    ) -> dict[str, Any]:
+        return {
+            "queue_entry_id": entry.id,
+            "player_id": entry.player_id,
+            "match_format": entry.match_format.value,
+            "queue_name": queue_class_definition.queue_name,
+            "destination": {
+                "kind": "channel",
+                "channel_id": matchmaking_news_channel.channel_id,
+                "guild_id": entry.notification_guild_id,
+            },
+            "mention_discord_user_id": entry.notification_mention_discord_user_id,
+        }
 
     def _build_participant_match_created_payloads(
         self,

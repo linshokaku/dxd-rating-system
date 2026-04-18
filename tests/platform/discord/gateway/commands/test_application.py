@@ -392,6 +392,7 @@ class FakeTextChannel:
     name: str
     guild: FakeGuild
     category: FakeCategoryChannel | None = None
+    default_auto_archive_duration: int | None = None
     overwrites: dict[object, discord.PermissionOverwrite] = field(default_factory=dict)
     sent_messages: list[FakeMessage] = field(default_factory=list)
     created_threads: list[FakeThread] = field(default_factory=list)
@@ -514,6 +515,7 @@ class FakeGuild:
         name: str,
         *,
         category: FakeCategoryChannel | None = None,
+        default_auto_archive_duration: int | None = None,
         overwrites: dict[object, discord.PermissionOverwrite] | None = None,
         **_: Any,
     ) -> discord.TextChannel:
@@ -525,6 +527,7 @@ class FakeGuild:
             name=name,
             guild=self,
             category=category,
+            default_auto_archive_duration=default_auto_archive_duration,
             overwrites={} if overwrites is None else dict(overwrites),
             fail_send_with=self.next_channel_fail_send_with,
             fail_send_call_errors=dict(self.next_channel_fail_send_call_errors),
@@ -1380,10 +1383,17 @@ def test_join_command_routes_match_created_to_presence_threads_without_parent_fa
     )
 
     queue_entry = get_queue_entry(session, joining_player.id)
-    match_created_events = [
+    outbox_events = get_outbox_events(session)
+    queue_joined_events = [
+        event for event in outbox_events if event.event_type == OutboxEventType.QUEUE_JOINED
+    ]
+    joining_player_queue_joined_events = [
         event
-        for event in get_outbox_events(session)
-        if event.event_type == OutboxEventType.MATCH_CREATED
+        for event in queue_joined_events
+        if event.payload["mention_discord_user_id"] == joining_discord_user_id
+    ]
+    match_created_events = [
+        event for event in outbox_events if event.event_type == OutboxEventType.MATCH_CREATED
     ]
     destination_channel_ids = {
         event.payload["destination"]["channel_id"] for event in match_created_events
@@ -1395,6 +1405,15 @@ def test_join_command_routes_match_created_to_presence_threads_without_parent_fa
     ]
 
     assert queue_entry.status == MatchQueueEntryStatus.MATCHED
+    assert len(joining_player_queue_joined_events) == 1
+    assert (
+        joining_player_queue_joined_events[0].payload["destination"]["channel_id"]
+        == matchmaking_news_channel.id
+    )
+    assert (
+        joining_player_queue_joined_events[0].payload["mention_discord_user_id"]
+        == joining_discord_user_id
+    )
     assert len(match_created_events) == 7
     assert matchmaking_channel.id not in destination_channel_ids
     assert matchmaking_news_channel.id in destination_channel_ids
@@ -5969,8 +5988,69 @@ def test_match_spectate_command_invites_requesting_player_to_match_operation_thr
     setup_matchmaking_managed_ui_channel(handlers, matchmaking_channel.id)
     match_operation_thread = cast(
         FakeThread,
-        asyncio.run(matchmaking_channel.create_thread(name=f"試合-{match_id}")),
+        asyncio.run(matchmaking_channel.create_thread(name=f"マッチ-{match_id}")),
     )
+    interaction = FakeInteraction(
+        user=FakeUser(id=spectator_discord_user_id),
+        channel_id=command_channel.id,
+        guild_id=guild.id,
+        guild=guild,
+    )
+
+    asyncio.run(handlers.match_spectate(as_interaction(interaction), match_id))
+
+    persisted_spectator = session.scalar(
+        select(MatchSpectator).where(
+            MatchSpectator.match_id == match_id,
+            MatchSpectator.player_id == spectator.id,
+        )
+    )
+
+    expected_message = "\n".join(
+        [
+            "観戦応募を受け付けました。現在 1 / 6 人です。",
+            f"マッチスレッド: <#{match_operation_thread.id}>",
+        ]
+    )
+    assert_response(
+        interaction,
+        [expected_message],
+        ephemeral=True,
+    )
+    assert persisted_spectator is not None
+    assert match_operation_thread.added_user_ids == [spectator_discord_user_id]
+
+
+def test_match_spectate_command_falls_back_to_base_message_when_operation_thread_is_missing(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    match_id, _ = create_match(
+        session,
+        session_factory,
+        start_discord_user_id=123_456_789_012_345_710_0,
+        channel_id=13_009,
+        guild_id=14_009,
+    )
+    spectator_discord_user_id = 123_456_789_012_345_715
+    spectator = create_player(session, spectator_discord_user_id)
+    handlers = create_handlers(
+        session_factory,
+        matching_queue_service=MatchingQueueService(session_factory),
+    )
+    guild = FakeGuild(id=14_009)
+    matchmaking_channel = FakeTextChannel(
+        id=13_009,
+        name="レート戦マッチング",
+        guild=guild,
+    )
+    command_channel = FakeTextChannel(
+        id=13_019,
+        name="雑談",
+        guild=guild,
+    )
+    guild.channels.extend([matchmaking_channel, command_channel])
+    setup_matchmaking_managed_ui_channel(handlers, matchmaking_channel.id)
     interaction = FakeInteraction(
         user=FakeUser(id=spectator_discord_user_id),
         channel_id=command_channel.id,
@@ -5993,7 +6073,6 @@ def test_match_spectate_command_invites_requesting_player_to_match_operation_thr
         ephemeral=True,
     )
     assert persisted_spectator is not None
-    assert match_operation_thread.added_user_ids == [spectator_discord_user_id]
 
 
 def test_matchmaking_news_match_announcement_spectate_button_responds_ephemerally(
@@ -6028,7 +6107,7 @@ def test_matchmaking_news_match_announcement_spectate_button_responds_ephemerall
     setup_matchmaking_managed_ui_channel(handlers, matchmaking_channel.id)
     match_operation_thread = cast(
         FakeThread,
-        asyncio.run(matchmaking_channel.create_thread(name=f"試合-{match_id}")),
+        asyncio.run(matchmaking_channel.create_thread(name=f"マッチ-{match_id}")),
     )
     interaction = FakeInteraction(
         user=FakeUser(id=spectator_discord_user_id),
@@ -6051,9 +6130,15 @@ def test_matchmaking_news_match_announcement_spectate_button_responds_ephemerall
         )
     )
 
+    expected_message = "\n".join(
+        [
+            "観戦応募を受け付けました。現在 1 / 6 人です。",
+            f"マッチスレッド: <#{match_operation_thread.id}>",
+        ]
+    )
     assert_response(
         interaction,
-        ["観戦応募を受け付けました。現在 1 / 6 人です。"],
+        [expected_message],
         ephemeral=True,
     )
     assert persisted_spectator is not None
@@ -6092,7 +6177,7 @@ def test_matchmaking_news_match_announcement_spectate_button_defers_and_replies_
     setup_matchmaking_managed_ui_channel(handlers, matchmaking_channel.id)
     match_operation_thread = cast(
         FakeThread,
-        asyncio.run(matchmaking_channel.create_thread(name=f"試合-{match_id}")),
+        asyncio.run(matchmaking_channel.create_thread(name=f"マッチ-{match_id}")),
     )
     button = MatchmakingNewsMatchAnnouncementSpectateButton(
         match_id,
@@ -6114,9 +6199,15 @@ def test_matchmaking_news_match_announcement_spectate_button_defers_and_replies_
         )
     )
 
+    expected_message = "\n".join(
+        [
+            "観戦応募を受け付けました。現在 1 / 6 人です。",
+            f"マッチスレッド: <#{match_operation_thread.id}>",
+        ]
+    )
     assert_response(
         interaction,
-        ["観戦応募を受け付けました。現在 1 / 6 人です。"],
+        [expected_message],
         ephemeral=True,
     )
     assert_deferred_followup_response(interaction)
@@ -6445,7 +6536,7 @@ def test_match_approve_actions_return_business_error_ephemerally(
 
     assert_response(
         interaction,
-        ["この試合は承認期間中ではありません。"],
+        ["このマッチは承認期間中ではありません。"],
         ephemeral=True,
     )
 
@@ -7066,10 +7157,17 @@ def test_dev_join_routes_match_created_to_presence_threads_without_parent_fallba
     )
 
     queue_entry = get_queue_entry(session, target_player.id)
-    match_created_events = [
+    outbox_events = get_outbox_events(session)
+    queue_joined_events = [
+        event for event in outbox_events if event.event_type == OutboxEventType.QUEUE_JOINED
+    ]
+    target_player_queue_joined_events = [
         event
-        for event in get_outbox_events(session)
-        if event.event_type == OutboxEventType.MATCH_CREATED
+        for event in queue_joined_events
+        if event.payload["mention_discord_user_id"] == target_discord_user_id
+    ]
+    match_created_events = [
+        event for event in outbox_events if event.event_type == OutboxEventType.MATCH_CREATED
     ]
     destination_channel_ids = {
         event.payload["destination"]["channel_id"] for event in match_created_events
@@ -7081,6 +7179,15 @@ def test_dev_join_routes_match_created_to_presence_threads_without_parent_fallba
     ]
 
     assert queue_entry.status == MatchQueueEntryStatus.MATCHED
+    assert len(target_player_queue_joined_events) == 1
+    assert (
+        target_player_queue_joined_events[0].payload["destination"]["channel_id"]
+        == matchmaking_news_channel.id
+    )
+    assert (
+        target_player_queue_joined_events[0].payload["mention_discord_user_id"]
+        == target_discord_user_id
+    )
     assert len(match_created_events) == 7
     assert matchmaking_channel.id not in destination_channel_ids
     assert matchmaking_news_channel.id in destination_channel_ids
@@ -8064,17 +8171,17 @@ def test_admin_match_result_responds_ephemerally_and_posts_public_followup(
     assert_response_sequence(
         interaction,
         [
-            "試合結果を上書きしました。",
-            f"match_id: {match_id} の試合結果が管理者操作により「引き分け」に上書きされました。",
+            "マッチ結果を上書きしました。",
+            f"match_id: {match_id} のマッチ結果が管理者操作により「引き分け」に上書きされました。",
         ],
         [True, False],
     )
-    assert interaction.response.raw_messages == ["試合結果を上書きしました。", None]
+    assert interaction.response.raw_messages == ["マッチ結果を上書きしました。", None]
     assert interaction.response.embeds[0] is None
     assert interaction.response.embeds[1] is not None
     assert (
         interaction.response.embeds[1].description
-        == f"match_id: {match_id} の試合結果が管理者操作により「引き分け」に上書きされました。"
+        == f"match_id: {match_id} のマッチ結果が管理者操作により「引き分け」に上書きされました。"
     )
 
 
@@ -8214,6 +8321,7 @@ def test_admin_setup_custom_ui_channel_creates_info_channel_buttons(
     assert persisted_channel.overwrites[guild.default_role].send_messages is False
     assert persisted_channel.overwrites[registered_role].view_channel is True
     assert persisted_channel.overwrites[registered_role].send_messages is False
+    assert persisted_channel.default_auto_archive_duration == 60
     assert_body_only_embed_message(persisted_message, INFO_CHANNEL_MESSAGE)
     assert persisted_message.view is not None
     info_buttons = [
@@ -8294,6 +8402,7 @@ def test_admin_setup_custom_ui_channel_creates_matchmaking_channel_with_placehol
     assert persisted_channel.overwrites[guild.default_role].send_messages is False
     assert persisted_channel.overwrites[registered_role].view_channel is True
     assert persisted_channel.overwrites[registered_role].send_messages is False
+    assert persisted_channel.default_auto_archive_duration == 60
     assert len(persisted_channel.sent_messages) == 5
     assert_body_only_embed_message(
         persisted_channel.sent_messages[0],
@@ -8849,14 +8958,38 @@ def test_admin_setup_ui_channels_creates_registered_channel_set(
     assert interaction.response.defer_ephemeral is True
     assert interaction.response.defer_thinking is True
     assert [definition.ui_type for definition in get_required_managed_ui_definitions()] == [
-        managed_ui_channel.ui_type for managed_ui_channel in managed_ui_channels
+        ManagedUiType.REGISTER_PANEL,
+        ManagedUiType.MATCHMAKING_NEWS_CHANNEL,
+        ManagedUiType.MATCHMAKING_CHANNEL,
+        ManagedUiType.INFO_CHANNEL,
+        ManagedUiType.SYSTEM_ANNOUNCEMENTS_CHANNEL,
+        ManagedUiType.ADMIN_CONTACT_CHANNEL,
+        ManagedUiType.ADMIN_OPERATIONS_CHANNEL,
+    ]
+    assert [managed_ui_channel.ui_type for managed_ui_channel in managed_ui_channels] == [
+        ManagedUiType.REGISTER_PANEL,
+        ManagedUiType.MATCHMAKING_NEWS_CHANNEL,
+        ManagedUiType.MATCHMAKING_CHANNEL,
+        ManagedUiType.INFO_CHANNEL,
+        ManagedUiType.SYSTEM_ANNOUNCEMENTS_CHANNEL,
+        ManagedUiType.ADMIN_CONTACT_CHANNEL,
+        ManagedUiType.ADMIN_OPERATIONS_CHANNEL,
     ]
     managed_ui_category = find_category_by_name(guild, "レート戦")
-    expected_channel_names = [
-        definition.recommended_channel_name for definition in get_required_managed_ui_definitions()
+    assert [channel.name for channel in guild.channels] == [
+        "レート戦はこちらから",
+        "レート戦マッチ速報",
+        "レート戦マッチング",
+        "レート戦情報",
+        "レート戦アナウンス",
+        "運営連絡・フィードバック",
+        "運営専用",
     ]
-    assert expected_channel_names == [channel.name for channel in guild.channels]
     assert all(channel.category is managed_ui_category for channel in guild.channels)
+    assert find_channel_by_name(guild, "レート戦マッチング").default_auto_archive_duration == 60
+    assert find_channel_by_name(guild, "レート戦情報").default_auto_archive_duration == 60
+    assert find_channel_by_name(guild, "レート戦はこちらから").default_auto_archive_duration is None
+    assert find_channel_by_name(guild, "レート戦マッチ速報").default_auto_archive_duration is None
 
     registered_role = find_role_by_name(guild, REGISTERED_PLAYER_ROLE_NAME)
     assert registered_role is not None

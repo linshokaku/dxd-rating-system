@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import datetime, timezone
 
 import pytest
@@ -10,6 +11,7 @@ from dxd_rating.contexts.matchmaking.domain import (
 )
 from dxd_rating.platform.db.models import MatchFormat
 from dxd_rating.shared.constants import (
+    MatchFormatDefinition,
     MatchQueueClassDefinition,
     get_match_format_definition,
 )
@@ -25,49 +27,68 @@ class FakeRandom:
         return value
 
 
-def test_prepare_matches_for_batch_pairs_ranked_entries_for_one_vs_one() -> None:
+def _resolve_one_vs_one_format_definition(batch_size: int) -> MatchFormatDefinition:
     format_definition = get_match_format_definition(MatchFormat.ONE_VS_ONE)
     assert format_definition is not None
+    if batch_size == 1:
+        assert format_definition.batch_size == 1
+        return format_definition
+    return replace(format_definition, batch_size=batch_size)
 
-    prepared_matches = prepare_matches_for_batch(
-        (
-            QueueEntrySnapshot(
-                queue_entry_id=1,
-                player_id=101,
-                match_format=MatchFormat.ONE_VS_ONE,
-                rating=1700.0,
-                joined_at=datetime(2026, 3, 22, 10, 0, tzinfo=timezone.utc),
-            ),
-            QueueEntrySnapshot(
-                queue_entry_id=2,
-                player_id=102,
-                match_format=MatchFormat.ONE_VS_ONE,
-                rating=1650.0,
-                joined_at=datetime(2026, 3, 22, 10, 1, tzinfo=timezone.utc),
-            ),
-            QueueEntrySnapshot(
-                queue_entry_id=3,
-                player_id=103,
-                match_format=MatchFormat.ONE_VS_ONE,
-                rating=1400.0,
-                joined_at=datetime(2026, 3, 22, 10, 2, tzinfo=timezone.utc),
-            ),
-            QueueEntrySnapshot(
-                queue_entry_id=4,
-                player_id=104,
-                match_format=MatchFormat.ONE_VS_ONE,
-                rating=1300.0,
-                joined_at=datetime(2026, 3, 22, 10, 3, tzinfo=timezone.utc),
-            ),
-        ),
-        format_definition,
-        random_generator=FakeRandom([0, 0, 0, 0, 0, 0]),
+
+def _build_one_vs_one_queue_entries(
+    ratings: tuple[float, ...],
+) -> tuple[QueueEntrySnapshot, ...]:
+    return tuple(
+        QueueEntrySnapshot(
+            queue_entry_id=index,
+            player_id=100 + index,
+            match_format=MatchFormat.ONE_VS_ONE,
+            rating=rating,
+            joined_at=datetime(2026, 3, 22, 10, index - 1, tzinfo=timezone.utc),
+        )
+        for index, rating in enumerate(ratings, start=1)
     )
 
-    assert prepared_matches[0].team_a_entry_ids == (1,)
-    assert prepared_matches[0].team_b_entry_ids == (2,)
-    assert prepared_matches[1].team_a_entry_ids == (3,)
-    assert prepared_matches[1].team_b_entry_ids == (4,)
+
+@pytest.mark.parametrize(
+    ("batch_size", "ratings", "expected_match_entry_ids"),
+    [
+        pytest.param(
+            1,
+            (1700.0, 1650.0),
+            (((1,), (2,)),),
+            id="batch-size-1",
+        ),
+        pytest.param(
+            2,
+            (1700.0, 1650.0, 1400.0, 1300.0),
+            (((1,), (2,)), ((3,), (4,))),
+            id="batch-size-2",
+        ),
+    ],
+)
+def test_prepare_matches_for_batch_pairs_ranked_entries_for_one_vs_one(
+    batch_size: int,
+    ratings: tuple[float, ...],
+    expected_match_entry_ids: tuple[tuple[tuple[int, ...], tuple[int, ...]], ...],
+) -> None:
+    format_definition = _resolve_one_vs_one_format_definition(batch_size)
+
+    prepared_matches = prepare_matches_for_batch(
+        _build_one_vs_one_queue_entries(ratings),
+        format_definition,
+        random_generator=FakeRandom([0] * (len(ratings) + batch_size)),
+    )
+
+    assert len(prepared_matches) == format_definition.batch_size
+    assert (
+        tuple(
+            (prepared_match.team_a_entry_ids, prepared_match.team_b_entry_ids)
+            for prepared_match in prepared_matches
+        )
+        == expected_match_entry_ids
+    )
 
 
 def test_is_queue_join_allowed_respects_minimum_and_maximum_ratings() -> None:

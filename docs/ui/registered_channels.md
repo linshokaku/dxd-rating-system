@@ -32,7 +32,7 @@
 
 | 論理名 | 推奨チャンネル名 | 主な用途 |
 | --- | --- | --- |
-| `matchmaking_channel` | `レート戦マッチング` | マッチングキュー参加 UI の設置、`/join`・`/dev_join`・参加 UI 起点の在席確認 thread と試合連絡 thread の親チャンネル |
+| `matchmaking_channel` | `レート戦マッチング` | マッチングキュー参加 UI の設置、`/join`・`/dev_join`・参加 UI 起点の在席確認 thread とマッチ連絡 thread の親チャンネル |
 | `matchmaking_news_channel` | `レート戦マッチ速報` | マッチ成立アナウンスと観戦 button の設置 |
 | `info_channel` | `レート戦情報` | `/info_thread` で作成する情報確認 thread の親チャンネル |
 | `system_announcements_channel` | `レート戦アナウンス` | admin と Bot からのシステム告知 |
@@ -82,17 +82,17 @@
   3. 参加 UI メッセージ
 - 2 通目の参加状況メッセージでは、全形式・全階級の直近 30 分の参加状況を表示し、`/update_matchmaking_status` または `更新する` ボタンで同じメッセージを再描画できる。
 - `更新する` ボタンの挙動は `/update_matchmaking_status` の仕様に従う。
-- 登録済みユーザーは、3 通目の参加 UI で試合形式と階級を選び、参加ボタンからマッチングキューへ参加できる。
-- 現時点の参加 UI は、試合形式プルダウン、階級プルダウン、参加ボタンのみで構成する。
+- 登録済みユーザーは、3 通目の参加 UI でマッチ形式と階級を選び、参加ボタンからマッチングキューへ参加できる。
+- 現時点の参加 UI は、マッチ形式プルダウン、階級プルダウン、参加ボタンのみで構成する。
 - 在席更新とキュー退出は、このチャンネルの UI には含めない。
 - `/join`、`/dev_join`、またはこのチャンネルの参加 UI からキュー参加した場合、Bot は在席確認用の private thread をこのチャンネル配下に作成する。
 - 在席確認 thread は、対象ユーザーが実ユーザーなら対象ユーザー本人、admin、Bot だけが閲覧できる。
 - 対象ユーザーがダミーユーザーの `/dev_join` では、在席確認 thread は admin と Bot だけが閲覧できる。
 - 在席確認 thread では、在席確認、離席、在席確認リマインド、キュー期限切れに関する連絡を行える。
 - Bot は、マッチ成立時に参加者向けの private thread をこのチャンネル配下に作成し、観戦応募成功者を後から追加できるようにする。
-- 試合連絡 thread は、試合参加者、後から追加された観戦者、admin、Bot が閲覧できる。
-- 試合連絡 thread は、チーム分け通知、親募集、勝敗報告、承認、結果確定、観戦合流などの連絡用途を想定する。
-- 試合連絡 thread の button UI 詳細は [match_operation_thread.md](match_operation_thread.md) を参照する。
+- マッチ連絡 thread は、マッチ参加者、後から追加された観戦者、admin、Bot が閲覧できる。
+- マッチ連絡 thread は、チーム分け通知、親募集、勝敗報告、承認、結果確定、観戦合流などの連絡用途を想定する。
+- マッチ連絡 thread の button UI 詳細は [match_operation_thread.md](match_operation_thread.md) を参照する。
 
 補足:
 
@@ -102,15 +102,15 @@
 
 - 在席確認 thread:
   - `在席確認-<display_name>`
-- 試合連絡 thread:
-  - `試合-<match_id>`
+- マッチ連絡 thread:
+  - `マッチ-<match_id>`
 
 ### `matchmaking_news_channel`
 
 - 推奨チャンネル名は `レート戦マッチ速報` とする。
 - Bot は、マッチ成立ごとにアナウンスメッセージを 1 件投稿する。
-- 各アナウンスメッセージには、試合形式、試合階級、チーム分けを表示し、その試合への観戦 button を設置する。
-- このチャンネルのアナウンスでは、試合参加者への mention ではなく表示名テキストを使う。
+- 各アナウンスメッセージには、マッチ形式、マッチ階級、チーム分けを表示し、そのマッチへの観戦 button を設置する。
+- このチャンネルのアナウンスでは、マッチ参加者への mention ではなく表示名テキストを使う。
 - 一般ユーザーはこのチャンネルへ通常メッセージを送らない。
 - 一般ユーザーは thread を作成しない。
 - 動的なアナウンス UI の詳細は [matchmaking_news_match_announcement.md](matchmaking_news_match_announcement.md) を参照する。
@@ -137,7 +137,7 @@
 - 推奨チャンネル名は `レート戦アナウンス` とする。
 - admin がシステム告知を投稿できるチャンネルとする。
 - Bot は公開向けのシステムアナウンスを投稿してよい。
-- 初期スコープでは、`update_season_completion` によってシーズン完了が確定したとき、そのシーズンの全試合完了を知らせる通常メッセージを 1 通投稿してよい。
+- 初期スコープでは、`update_season_completion` によってシーズン完了が確定したとき、そのシーズンの全マッチ完了を知らせる通常メッセージを 1 通投稿してよい。
 - 同じタイミングで、`1v1`、`2v2`、`3v3` の各形式ごとの Top 12 ランキングを、形式ごとに分割した通常メッセージとして 1 通ずつ投稿してよい。
 - 形式別ランキングメッセージは、シーズン完了 summary メッセージとは分離し、各 `match_format` ごとにも別メッセージとして扱う。
 - シーズン完了 summary 通知と形式別ランキング通知は、いずれも公開チャンネルへの通常メッセージ投稿のみとし、button や thread は付けない。
@@ -173,7 +173,7 @@
 - 登録 UI の詳細は [register.md](register.md) を参照する。
 - マッチングチャンネル UI の詳細は [matchmaking_channel.md](matchmaking_channel.md) を参照する。
 - 在席確認 thread UI の詳細は [matchmaking_presence_thread.md](matchmaking_presence_thread.md) を参照する。
-- 試合運営 thread UI の詳細は [match_operation_thread.md](match_operation_thread.md) を参照する。
+- マッチ運営 thread UI の詳細は [match_operation_thread.md](match_operation_thread.md) を参照する。
 - `レート戦情報` の公開 button UI の詳細は [info_channel.md](info_channel.md) を参照する。
 - 情報確認 thread UI の詳細は [info_thread.md](info_thread.md) を参照する。
 - マッチ速報アナウンス UI の詳細は [matchmaking_news_match_announcement.md](matchmaking_news_match_announcement.md) を参照する。

@@ -162,8 +162,8 @@ _MATCH_QUEUE_CLASS_DEFINITIONS_BY_NORMALIZED_KEY = {
     for definition in MATCH_QUEUE_CLASS_DEFINITIONS
 }
 
-MATCH_QUEUE_TTL = timedelta(minutes=5)
-PRESENCE_REMINDER_LEAD_TIME = timedelta(minutes=1)
+MATCH_QUEUE_TTL = timedelta(minutes=30)
+PRESENCE_REMINDER_LEAD_TIME = timedelta(minutes=5)
 PRODUCTION_MATCH_TIMING_WINDOWS = MatchTimingWindows(
     parent_selection_window=timedelta(minutes=5),
     report_open_delay=timedelta(minutes=7),

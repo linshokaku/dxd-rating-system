@@ -552,7 +552,7 @@ def test_match_runtime_join_queue_calls_service_and_schedules_timers(
 ) -> None:
     service = Mock()
     notification_context = build_notification_context(60_001)
-    expire_at = datetime.now(timezone.utc) + timedelta(minutes=5)
+    expire_at = datetime.now(timezone.utc) + MATCH_QUEUE_TTL
     join_result = JoinQueueResult(
         queue_entry_id=101,
         revision=3,
@@ -772,7 +772,7 @@ def test_match_runtime_present_calls_service_and_replaces_timers(
 ) -> None:
     service = Mock()
     notification_context = build_notification_context(60_101)
-    expire_at = datetime.now(timezone.utc) + timedelta(minutes=5)
+    expire_at = datetime.now(timezone.utc) + MATCH_QUEUE_TTL
     present_result = PresentQueueResult(
         queue_entry_id=201,
         revision=4,
@@ -1171,7 +1171,7 @@ def test_match_runtime_run_startup_sync_calls_service_and_reschedules(
     future_entry = WaitingEntryTimerState(
         queue_entry_id=502,
         revision=3,
-        expire_at=snapshot_time + timedelta(minutes=3),
+        expire_at=snapshot_time + timedelta(minutes=6),
         last_reminded_revision=None,
     )
     reminded_entry = WaitingEntryTimerState(

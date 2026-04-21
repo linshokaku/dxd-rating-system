@@ -861,7 +861,7 @@ def test_get_matchmaking_status_snapshot_counts_join_leave_expired_and_clamps_to
     assert active_count_by_queue_class[SECOND_QUEUE_CLASS_ID] == 0
 
 
-# `expire_at - 1分` に達した `waiting` 行に対して在席確認リマインドが
+# `expire_at - 5分` に達した `waiting` 行に対して在席確認リマインドが
 # 1 回だけ送られること
 # 同じ `revision` に対して reminder タスクが複数回起きても、実際の通知は
 # 1 回だけであること
@@ -994,7 +994,7 @@ def test_process_presence_reminder_is_noop_for_non_waiting_entries(
     assert get_outbox_events(session) == []
 
 
-# `present` で `revision` が進んだあとは、新しい 5 分サイクルで再度
+# `present` で `revision` が進んだあとは、新しい 30 分サイクルで再度
 # 1 回だけリマインド可能になること
 def test_present_advances_revision_and_allows_reminder_in_next_cycle(
     session: Session,

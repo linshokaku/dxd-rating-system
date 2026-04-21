@@ -1296,7 +1296,7 @@ def test_join_command_joins_requesting_player_and_stores_notification_context(
 
     assert_response(
         interaction,
-        ["キューに参加しました。5分間マッチングします。\n在席確認は <#20001> で行ってください。"],
+        ["キューに参加しました。30分間マッチングします。\n在席確認は <#20001> で行ってください。"],
         ephemeral=True,
     )
     assert queue_entry.notification_channel_id == matchmaking_channel.id
@@ -1316,7 +1316,7 @@ def test_join_command_joins_requesting_player_and_stores_notification_context(
     assert matchmaking_channel.created_threads[0].added_user_ids == [discord_user_id]
     assert [
         message.content for message in matchmaking_channel.created_threads[0].sent_messages
-    ] == ["キューに参加しました。5分間マッチングします。"]
+    ] == ["キューに参加しました。30分間マッチングします。"]
     assert_presence_thread_controls(matchmaking_channel.created_threads[0].sent_messages[0].view)
 
 
@@ -1653,7 +1653,7 @@ def test_matchmaking_panel_join_button_uses_selected_values_for_join(
 
     assert_response(
         interaction,
-        ["キューに参加しました。5分間マッチングします。\n在席確認は <#20001> で行ってください。"],
+        ["キューに参加しました。30分間マッチングします。\n在席確認は <#20001> で行ってください。"],
         ephemeral=True,
     )
     assert_deferred_followup_response(interaction)
@@ -1670,7 +1670,7 @@ def test_matchmaking_panel_join_button_uses_selected_values_for_join(
         JOIN_SUCCESS_MESSAGE,
     )
     assert [message.content for message in channel.created_threads[0].sent_messages] == [
-        "キューに参加しました。5分間マッチングします。"
+        "キューに参加しました。30分間マッチングします。"
     ]
     assert_presence_thread_controls(channel.created_threads[0].sent_messages[0].view)
 
@@ -1738,7 +1738,7 @@ def test_matchmaking_presence_thread_present_button_updates_waiting_entry(
     assert queue_entry is not None
     assert_response(
         button_interaction,
-        ["在席を更新しました。次の期限は5分後です。"],
+        ["在席を更新しました。次の期限は30分後です。"],
         ephemeral=True,
     )
     assert_deferred_followup_response(button_interaction)
@@ -2008,7 +2008,7 @@ def test_present_command_updates_waiting_entry_without_overwriting_notification_
 
     assert_response(
         interaction,
-        ["在席を更新しました。次の期限は5分後です。"],
+        ["在席を更新しました。次の期限は30分後です。"],
         ephemeral=True,
     )
     assert queue_entry.notification_channel_id == 5_001

@@ -37,8 +37,8 @@ INVALID_QUEUE_NAME_MESSAGE = "指定したキューは存在しません。"
 QUEUE_JOIN_NOT_ALLOWED_MESSAGE = "現在のレーティングではそのキューに参加できません。"
 QUEUE_JOIN_RESTRICTED_MESSAGE = "現在キュー参加を制限されています。"
 JOIN_ALREADY_JOINED_MESSAGE = "すでにキュー参加中です。"
-JOIN_SUCCESS_MESSAGE = "キューに参加しました。5分間マッチングします。"
-PRESENT_SUCCESS_MESSAGE = "在席を更新しました。次の期限は5分後です。"
+JOIN_SUCCESS_MESSAGE = "キューに参加しました。30分間マッチングします。"
+PRESENT_SUCCESS_MESSAGE = "在席を更新しました。次の期限は30分後です。"
 PRESENT_NOT_JOINED_MESSAGE = "キューに参加していません。"
 PRESENT_EXPIRED_MESSAGE = "期限切れのためキューから外れました。"
 MATCHMAKING_PRESENCE_THREAD_NOT_JOINED_MESSAGE = (
@@ -84,7 +84,7 @@ def build_queue_joined_notification_message(
 
 
 PRESENCE_REMINDER_NOTIFICATION_MESSAGE = (
-    "在席確認です。1分以内に在席更新がない場合はマッチングキューから外れます。"
+    "在席確認です。5分以内に在席更新がない場合はマッチングキューから外れます。"
 )
 QUEUE_EXPIRED_NOTIFICATION_MESSAGE = "期限切れでマッチングキューから外れました。"
 

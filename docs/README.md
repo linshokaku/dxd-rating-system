@@ -50,6 +50,8 @@
   - ユーザー向け slash command。プレイヤー操作コマンドとマッチ操作コマンドを含む
 - [commands/dev-commands.md](commands/dev-commands.md)
   - 開発者向け slash command
+- [users/rulebook.md](users/rulebook.md)
+  - プレイヤー向けのレート戦ルールブック。参加前の注意、進行ルール、違反行為、ペナルティの考え方
 - [discord_permissions.md](discord_permissions.md)
   - Discord Bot の OAuth scope、Gateway Intents、必要権限
 - [ui/common.md](ui/common.md)
@@ -101,3 +103,5 @@
 22. [ui/info_channel.md](ui/info_channel.md)
 23. [ui/info_thread.md](ui/info_thread.md)
 24. [ui/matchmaking_news_match_announcement.md](ui/matchmaking_news_match_announcement.md)
+
+ユーザー向けの案内文面を確認したい場合は、[users/rulebook.md](users/rulebook.md) と [commands/user-commands.md](commands/user-commands.md) を参照する。

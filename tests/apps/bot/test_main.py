@@ -42,6 +42,7 @@ from dxd_rating.platform.discord.ui import (
 DEFAULT_MATCHMAKING_GUIDE_URL = (
     "https://github.com/linshokaku/dxd-rating-system/blob/main/docs/README.md"
 )
+DEFAULT_TERMS_URL = "https://github.com/linshokaku/dxd-rating-system/blob/main/docs/users/terms.md"
 bot_main_module = importlib.import_module("dxd_rating.apps.bot.main")
 
 
@@ -116,11 +117,13 @@ def test_load_settings_reads_matchmaking_guide_url(
     monkeypatch.setenv("DISCORD_BOT_TOKEN", "discord-token")
     monkeypatch.setenv("DATABASE_URL", "postgresql://example")
     monkeypatch.setenv("MATCHMAKING_GUIDE_URL", DEFAULT_MATCHMAKING_GUIDE_URL)
+    monkeypatch.setenv("TERMS_URL", DEFAULT_TERMS_URL)
 
     settings = load_settings()
 
     assert isinstance(settings, BotSettings)
     assert settings.matchmaking_guide_url == DEFAULT_MATCHMAKING_GUIDE_URL
+    assert settings.terms_url == DEFAULT_TERMS_URL
 
 
 def test_load_settings_requires_matchmaking_guide_url(
@@ -132,11 +135,31 @@ def test_load_settings_requires_matchmaking_guide_url(
     monkeypatch.chdir(bot_settings_dir)
     monkeypatch.setenv("DISCORD_BOT_TOKEN", "discord-token")
     monkeypatch.setenv("DATABASE_URL", "postgresql://example")
+    monkeypatch.setenv("TERMS_URL", DEFAULT_TERMS_URL)
     monkeypatch.delenv("MATCHMAKING_GUIDE_URL", raising=False)
 
     with pytest.raises(
         SystemExit,
         match="Missing required environment variables: MATCHMAKING_GUIDE_URL",
+    ):
+        load_settings()
+
+
+def test_load_settings_requires_terms_url(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    bot_settings_dir = tmp_path / "bot-settings-missing-terms-url"
+    bot_settings_dir.mkdir()
+    monkeypatch.chdir(bot_settings_dir)
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "discord-token")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://example")
+    monkeypatch.setenv("MATCHMAKING_GUIDE_URL", DEFAULT_MATCHMAKING_GUIDE_URL)
+    monkeypatch.delenv("TERMS_URL", raising=False)
+
+    with pytest.raises(
+        SystemExit,
+        match="Missing required environment variables: TERMS_URL",
     ):
         load_settings()
 
@@ -149,6 +172,7 @@ def test_main_passes_development_mode_to_match_runtime_create(
         database_url="postgresql://user:password@localhost:5432/dxd_rating",
         log_level="INFO",
         matchmaking_guide_url=DEFAULT_MATCHMAKING_GUIDE_URL,
+        terms_url=DEFAULT_TERMS_URL,
         development_mode=True,
         super_admin_user_ids=frozenset({123}),
     )
@@ -193,6 +217,7 @@ def test_setup_hook_restores_persistent_register_panel_view(
         database_url="postgresql://user:password@localhost:5432/dxd_rating",
         log_level="INFO",
         matchmaking_guide_url=DEFAULT_MATCHMAKING_GUIDE_URL,
+        terms_url=DEFAULT_TERMS_URL,
         development_mode=False,
         super_admin_user_ids=frozenset(),
     )
@@ -257,6 +282,7 @@ def test_setup_hook_skips_managed_channels_without_persistent_view(
         database_url="postgresql://user:password@localhost:5432/dxd_rating",
         log_level="INFO",
         matchmaking_guide_url=DEFAULT_MATCHMAKING_GUIDE_URL,
+        terms_url=DEFAULT_TERMS_URL,
         development_mode=False,
         super_admin_user_ids=frozenset(),
     )
@@ -306,6 +332,7 @@ def test_setup_hook_restores_matchmaking_status_and_panel_views(
         database_url="postgresql://user:password@localhost:5432/dxd_rating",
         log_level="INFO",
         matchmaking_guide_url=DEFAULT_MATCHMAKING_GUIDE_URL,
+        terms_url=DEFAULT_TERMS_URL,
         development_mode=False,
         super_admin_user_ids=frozenset(),
     )
@@ -345,6 +372,7 @@ def test_setup_hook_skips_matchmaking_status_view_when_status_message_id_is_miss
         database_url="postgresql://user:password@localhost:5432/dxd_rating",
         log_level="INFO",
         matchmaking_guide_url=DEFAULT_MATCHMAKING_GUIDE_URL,
+        terms_url=DEFAULT_TERMS_URL,
         development_mode=False,
         super_admin_user_ids=frozenset(),
     )
@@ -384,6 +412,7 @@ def test_setup_hook_refreshes_outdated_matchmaking_panel_views(
         database_url="postgresql://user:password@localhost:5432/dxd_rating",
         log_level="INFO",
         matchmaking_guide_url=DEFAULT_MATCHMAKING_GUIDE_URL,
+        terms_url=DEFAULT_TERMS_URL,
         development_mode=False,
         super_admin_user_ids=frozenset(),
     )
@@ -457,6 +486,7 @@ def test_setup_hook_keeps_matchmaking_panel_views_when_already_current(
         database_url="postgresql://user:password@localhost:5432/dxd_rating",
         log_level="INFO",
         matchmaking_guide_url=DEFAULT_MATCHMAKING_GUIDE_URL,
+        terms_url=DEFAULT_TERMS_URL,
         development_mode=False,
         super_admin_user_ids=frozenset(),
     )

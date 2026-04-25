@@ -36,7 +36,7 @@ from dxd_rating.platform.discord.copy.matchmaking import (
 from dxd_rating.platform.discord.copy.registration import (
     REGISTER_PANEL_BUTTON_LABEL,
     REGISTER_PANEL_FALLBACK_ERROR_MESSAGE,
-    REGISTER_PANEL_MESSAGE,
+    build_register_panel_message,
 )
 from dxd_rating.platform.discord.copy.system import (
     ADMIN_CONTACT_CHANNEL_MESSAGE,
@@ -717,13 +717,15 @@ async def send_initial_managed_ui_message(
     ui_type: ManagedUiType,
     interaction_handler: ManagedUiInteractionHandler,
     matchmaking_guide_url: str,
+    terms_url: str,
 ) -> InitialManagedUiMessages:
     if ui_type is ManagedUiType.REGISTER_PANEL:
         return InitialManagedUiMessages(
             primary_message=await channel.send(
                 **build_body_only_public_message_send_kwargs(
-                    REGISTER_PANEL_MESSAGE,
+                    build_register_panel_message(terms_url),
                     view=RegisterPanelView(interaction_handler),
+                    suppress_embeds_for_fallback=True,
                 )
             )
         )

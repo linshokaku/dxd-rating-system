@@ -1,14 +1,17 @@
 from __future__ import annotations
 
-# 登録パネルの表示文言
-REGISTER_PANEL_MESSAGE = "\n".join(
-    [
-        "プレイヤー登録はこちらから行えます。",
-        "ボタンを押すと利用規約に同意したものとして扱います。",
-        "登録後は Bot の各種機能を利用できます。",
-        "登録後はマッチング関連チャンネルとシステムアナウンスを閲覧できます。",
-    ]
-)
+
+def build_register_panel_message(terms_url: str) -> str:
+    return "\n".join(
+        [
+            "プレイヤー登録はこちらから行えます。",
+            f"ボタンを押すと[利用規約]({terms_url})に同意したものとして扱います。",
+            "登録後は Bot の各種機能を利用できます。",
+            "登録後はマッチング関連チャンネルとシステムアナウンスを閲覧できます。",
+        ]
+    )
+
+
 REGISTER_PANEL_BUTTON_LABEL = "利用規約に同意して登録"
 
 # slash command の説明文言

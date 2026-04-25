@@ -2,18 +2,19 @@
 
 ## 目的
 
-管理者が、UI を設置するための専用チャンネルを個別または一括で作成し、必要に応じてそれらをまとめて撤収できるようにする。
+管理者が、UI を設置するための専用チャンネルを個別または一括で作成し、必要に応じて既存 managed UI チャンネルの再セットアップや一括撤収を行えるようにする。
 
 ## 対象
 
 - UI の運用開始時に必要となる、専用チャンネルの個別作成、一括作成、初期 UI 配置。
+- 既存 managed UI チャンネル 1 件の再セットアップ。
 - `/admin_setup_ui_channels` の実行を妨げる重複名チャンネルの cleanup。
 - `/admin_setup_custom_ui_channel` または `/admin_setup_ui_channels` で作成した UI 設置チャンネルの一括撤収。
 
 ## 対象外
 
-- 既存 UI チャンネルの再配置。
-- 既存 UI メッセージの再生成。
+- 既存 UI チャンネルの再配置やカテゴリ移動だけを行う操作。
+- 既存 UI メッセージだけを個別に再生成する操作。
 - 利用中 UI の更新や差し替え。
 - 個別 UI だけを選んで部分撤収する操作。
 - Bot UI を設置しない運用チャンネルの作成や削除。
@@ -22,7 +23,7 @@
 
 - この Bot は 1 つの Discord サーバーでのみ運用する前提とする。
 - この仕様でいうチャンネル作成、重複判定、削除対象判定は、その運用サーバー内だけを対象とする。
-- 作成コマンドと撤収コマンドの実行結果は、成功時も失敗時も実行者にだけ見えるテキストメッセージで返す。
+- 作成、再セットアップ、cleanup、撤収コマンドの実行結果は、成功時も失敗時も実行者にだけ見えるテキストメッセージで返す。
 - UI の管理対象は、Bot が保持する UI 管理情報で判定する。
 - チャンネル名だけを根拠に削除対象を決めない。
 - 登録済みユーザー向けチャンネル全体の用途と権限は [registered_channels.md](registered_channels.md) を参照する。
@@ -34,10 +35,15 @@
   - `ui_type`
   - `channel_id`
   - `message_id`
+  - `status_message_id`
+  - `matchmaking_one_v_one_message_id`
+  - `matchmaking_two_v_two_message_id`
+  - `matchmaking_three_v_three_message_id`
   - `created_by_discord_user_id`
   - `created_at`
-- `ui_type=matchmaking_channel` のように初期メッセージが複数ある UI では、`message_id` は主たる操作 UI を持つメッセージを指してよい。
-- `matchmaking_channel` では、3 通目の参加 UI メッセージの `message_id` を管理対象として扱う。
+- `message_id` は、初期メッセージが 1 通だけの UI に対して使う。
+- `register_panel`、`matchmaking_news_channel`、`info_channel`、`system_announcements_channel`、`admin_contact_channel`、`admin_operations_channel` では `message_id` に初期メッセージ ID を保存する。
+- `matchmaking_channel` では `message_id` は使わず、`status_message_id` と 3 つの形式別 panel message ID で初期 UI を管理する。
 
 ## `/admin_setup_custom_ui_channel`
 
@@ -93,13 +99,16 @@
 - 一般ユーザーには、新規メッセージ送信を許可しない。
 - 一般ユーザーには、public thread 作成を許可しない。
 - 一般ユーザーには、private thread 作成を許可しない。
-- チャンネル内には、以下の 3 通の初期メッセージを順に設置する。
+- チャンネル内には、以下の 5 通の初期メッセージを順に設置する。
   1. 遊び方メッセージ
   2. 参加状況メッセージ
-  3. マッチングキュー参加用の初期 UI
+  3. `1v1` 用の参加 panel
+  4. `2v2` 用の参加 panel
+  5. `3v3` 用の参加 panel
 - 2 通目の参加状況メッセージには `更新する` ボタンを設置する。
-- 3 通目の参加 UI は、マッチ形式プルダウン、階級プルダウン、参加ボタンのみで構成する。
-- UI 管理情報の `message_id` は、3 通目の参加 UI メッセージを指す。
+- 3 通目から 5 通目の参加 panel は、それぞれ対応する形式専用の queue 選択 UI と参加ボタンで構成する。
+- `matchmaking_channel` の UI 管理情報は、`status_message_id` に 2 通目の message ID を保存し、3 通目から 5 通目の message ID は `matchmaking_one_v_one_message_id`、`matchmaking_two_v_two_message_id`、`matchmaking_three_v_three_message_id` に保存する。
+- `matchmaking_channel` では `message_id` を使わない。
 - Bot は、運用上必要な private thread 作成とメッセージ送信を行える前提とする。
 
 ### `matchmaking_news_channel` のチャンネル作成ルール
@@ -268,6 +277,97 @@
 - 一括作成中にチャンネル作成または UI 設置で失敗した場合、Bot はその実行で新規に作成したチャンネルだけを削除することを試みる。
 - ロールバックに成功した場合、失敗した実行で新規に保存した UI 管理情報も削除する。
 - ロールバックにも失敗した場合は、内部ログに残したうえで `必要な UI 設置チャンネルの作成に失敗しました。管理者に確認してください。` を返す。
+
+## `/admin_resetup_ui_channel`
+
+### 目的
+
+すでに Bot が管理している UI チャンネル 1 件を選択し、その `ui_type` に対応する初期状態へ再セットアップする。
+
+### 実行者
+
+- `admin` 権限を持つユーザーのみ。
+
+### 入力
+
+- `ui_type` (必須): 再セットアップしたい UI の種別。
+- `confirm` (必須): 再セットアップ実行の確認入力。
+
+初期状態で受け付ける `ui_type` は以下とする。
+
+- `register_panel`
+- `matchmaking_channel`
+- `matchmaking_news_channel`
+- `info_channel`
+- `system_announcements_channel`
+- `admin_contact_channel`
+- `admin_operations_channel`
+
+`confirm` に受け付ける値は以下のみとする。
+
+- `resetup`
+
+### 正常時の挙動
+
+- Bot は `ui_type` から管理対象の UI 管理情報を 1 件解決する。
+- 管理対象の元チャンネルが運用サーバー内に実在することを必須とする。
+- Bot は元チャンネルの現在名を引き継いだ replacement channel を、新規 setup 時と同じ `ui_type` 別ルール、権限設定、固定カテゴリ運用で作成する。
+- replacement channel には、その `ui_type` に対応する初期メッセージまたは初期 UI を新規に配置する。
+- replacement channel の準備が完了してから、UI 管理情報を新しい `channel_id` と message id 群へ差し替える。
+- UI 管理情報の差し替え後、Bot は旧チャンネルを削除する。
+- `matchmaking_channel` を再セットアップする場合は、旧チャンネルの 2 通目から 5 通目に相当する managed UI message は再利用せず、replacement channel 上で新しい `status_message_id` と形式別 panel message ID を採番し直す。
+- 成功時のレスポンス文言は以下とする。
+  - `指定した UI チャンネルを再セットアップしました。`
+
+### 再セットアップ時の削除ルール
+
+- このコマンドは destructive な操作として扱う。
+- 旧チャンネル配下の履歴、通常メッセージ、public/private thread、既存 UI message は旧チャンネル削除とともに失われる前提とする。
+- 旧チャンネル上のメッセージや thread を replacement channel に引き継がない。
+- 既存 UI message だけを残して新しい UI を追加投稿することは行わない。
+
+### エラー時の挙動
+
+- 実行者に `admin` 権限がない場合:
+  - `このコマンドは管理者のみ実行できます。`
+- `ui_type` が不正な場合:
+  - `指定した UI は存在しません。`
+- `confirm` が不正な場合:
+  - `confirm が不正です。`
+- 指定した `ui_type` が未設置の場合:
+  - `指定した UI は未設置です。`
+- 指定した `ui_type` の管理対象チャンネルが見つからない場合:
+  - `指定した UI の管理対象チャンネルが見つかりません。`
+- Bot にチャンネル作成、チャンネル削除、またはメッセージ送信権限が不足している場合:
+  - `Bot に必要な権限がありません。`
+  - 実装で判定できる場合は、`不足している権限: ...` を続けて表示してよい。
+  - Discord API が返した `403 Forbidden` の詳細を続けて表示してよい。
+- 内部エラーが発生した場合:
+  - `UI 設置チャンネルの再セットアップに失敗しました。管理者に確認してください。`
+  - 内部例外の詳細は Discord に出さない。
+
+### 可視性
+
+- 実行結果は、成功時も失敗時も実行者にだけ見えるテキストメッセージで返す。
+- replacement channel とそこに配置された初期 UI は、対象ユーザーに公開される。
+
+### 整合性
+
+- 再セットアップ対象は、Bot が UI 管理情報として保持している `ui_type` 1 件に限定する。
+- replacement channel の作成と初期 UI 配置が完了するまで、既存 UI 管理情報は差し替えない。
+- 同じ `ui_type` に対して管理対象チャンネルが複数存在する状態は、このコマンドの正常完了後に残さない。
+
+### 冪等性
+
+- 同じ `ui_type` に対して再実行した場合でも、最終的には指定した `ui_type` の managed UI channel が 1 件だけ残る状態へ収束させる。
+- ただし、このコマンドは毎回新しい replacement channel を作るため、Discord 上の `channel_id` と managed UI message ID は再実行のたびに変わってよい。
+- 再実行のたびに、その時点の旧チャンネル配下の履歴と thread は失われる。
+
+### ロールバック
+
+- replacement channel の作成、初期 UI 配置、または UI 管理情報の差し替えに失敗した場合、Bot は新規に作成した replacement channel の削除を試み、元チャンネルと元の UI 管理情報を維持する。
+- 旧チャンネルの削除に失敗した場合も、Bot は replacement channel の削除と UI 管理情報の復元を試みる。
+- ロールバックにも失敗した場合は、内部ログに残したうえで `UI 設置チャンネルの再セットアップに失敗しました。管理者に確認してください。` を返す。
 
 ## `/admin_cleanup_ui_channels`
 

@@ -5100,6 +5100,7 @@ class BotCommandHandlers:
                 ui_type=definition.ui_type,
                 interaction_handler=self,
                 matchmaking_guide_url=self.settings.matchmaking_guide_url,
+                terms_url=self.settings.terms_url,
             )
             await asyncio.to_thread(
                 self._create_managed_ui_channel_record,

@@ -97,7 +97,7 @@ from dxd_rating.platform.discord.copy.matchmaking import (
 from dxd_rating.platform.discord.copy.registration import (
     PLAYER_REGISTRATION_REQUIRED_MESSAGE,
     REGISTER_PANEL_BUTTON_LABEL,
-    REGISTER_PANEL_MESSAGE,
+    build_register_panel_message,
 )
 from dxd_rating.platform.discord.copy.system import (
     ADMIN_CONTACT_CHANNEL_MESSAGE,
@@ -126,6 +126,7 @@ DEFAULT_QUEUE_NAME = "beginner"
 DEFAULT_MATCHMAKING_GUIDE_URL = (
     "https://github.com/linshokaku/dxd-rating-system/blob/main/docs/README.md"
 )
+DEFAULT_TERMS_URL = "https://github.com/linshokaku/dxd-rating-system/blob/main/docs/users/terms.md"
 MATCHMAKING_STATUS_UPDATED_AT_PATTERN = re.compile(
     r"^最終更新: \d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2} JST$"
 )
@@ -773,12 +774,14 @@ def create_settings(
     super_admin_user_ids: frozenset[int] = frozenset(),
     development_mode: bool = False,
     matchmaking_guide_url: str = DEFAULT_MATCHMAKING_GUIDE_URL,
+    terms_url: str = DEFAULT_TERMS_URL,
 ) -> BotSettings:
     return BotSettings.model_construct(
         discord_bot_token="discord-token",
         database_url="postgresql://user:password@localhost:5432/dxd_rating",
         log_level="INFO",
         matchmaking_guide_url=matchmaking_guide_url,
+        terms_url=terms_url,
         development_mode=development_mode,
         super_admin_user_ids=super_admin_user_ids,
     )
@@ -790,6 +793,7 @@ def create_handlers(
     super_admin_user_ids: frozenset[int] = frozenset(),
     development_mode: bool = False,
     matchmaking_guide_url: str = DEFAULT_MATCHMAKING_GUIDE_URL,
+    terms_url: str = DEFAULT_TERMS_URL,
     matching_queue_service: MatchingQueueService | MatchRuntime | None = None,
 ) -> BotCommandHandlers:
     resolved_matching_queue_service = matching_queue_service
@@ -804,6 +808,7 @@ def create_handlers(
             super_admin_user_ids=super_admin_user_ids,
             development_mode=development_mode,
             matchmaking_guide_url=matchmaking_guide_url,
+            terms_url=terms_url,
         ),
         session_factory=session_factory,
         matching_queue_service=resolved_matching_queue_service,
@@ -8257,7 +8262,10 @@ def test_admin_setup_custom_ui_channel_creates_register_panel_and_button_registe
     assert persisted_channel.category is persisted_category
     assert persisted_channel.overwrites[guild.default_role].view_channel is True
     assert persisted_channel.overwrites[guild.default_role].send_messages is False
-    assert_body_only_embed_message(persisted_message, REGISTER_PANEL_MESSAGE)
+    assert_body_only_embed_message(
+        persisted_message,
+        build_register_panel_message(DEFAULT_TERMS_URL),
+    )
     assert persisted_message.view is not None
     button = cast(discord.ui.Button[Any], persisted_message.view.children[0])
     assert button.label == REGISTER_PANEL_BUTTON_LABEL
@@ -8426,6 +8434,41 @@ def test_admin_setup_custom_ui_channel_creates_matchmaking_channel_with_placehol
     assert_matchmaking_panel_message(persisted_channel.sent_messages[2], MatchFormat.ONE_VS_ONE)
     assert_matchmaking_panel_message(persisted_channel.sent_messages[3], MatchFormat.TWO_VS_TWO)
     assert_matchmaking_panel_message(persisted_channel.sent_messages[4], MatchFormat.THREE_VS_THREE)
+
+
+def test_admin_setup_custom_ui_channel_creates_register_panel_with_terms_link(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    executor_discord_user_id = 10
+    terms_url = "https://example.com/terms"
+    guild = FakeGuild(id=2_108_04)
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({executor_discord_user_id}),
+        terms_url=terms_url,
+    )
+    interaction = FakeInteraction(
+        user=FakeUser(id=executor_discord_user_id),
+        guild_id=guild.id,
+        guild=guild,
+    )
+
+    asyncio.run(
+        handlers.admin_setup_custom_ui_channel(
+            as_interaction(interaction),
+            ManagedUiType.REGISTER_PANEL.value,
+            "レート戦はこちらから",
+        )
+    )
+
+    persisted_message = guild.channels[0].sent_messages[0]
+
+    assert_body_only_embed_message(
+        persisted_message,
+        build_register_panel_message(terms_url),
+    )
+    assert "[利用規約](https://example.com/terms)" in _render_embed_content(persisted_message.embed)
 
 
 def test_admin_setup_custom_ui_channel_creates_admin_operations_channel_for_super_admins(
@@ -8997,7 +9040,10 @@ def test_admin_setup_ui_channels_creates_registered_channel_set(
     register_channel = find_channel_by_name(guild, "レート戦はこちらから")
     assert register_channel.overwrites[guild.default_role].view_channel is True
     assert register_channel.overwrites[guild.default_role].send_messages is False
-    assert_body_only_embed_message(register_channel.sent_messages[0], REGISTER_PANEL_MESSAGE)
+    assert_body_only_embed_message(
+        register_channel.sent_messages[0],
+        build_register_panel_message(DEFAULT_TERMS_URL),
+    )
 
     matchmaking_channel = find_channel_by_name(guild, "レート戦マッチング")
     assert matchmaking_channel.overwrites[guild.default_role].view_channel is False

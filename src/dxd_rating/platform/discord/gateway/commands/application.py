@@ -112,6 +112,7 @@ from dxd_rating.platform.discord.copy.admin import (
     ADMIN_INCORRECT_REPORT_PENALTY_DESCRIPTION,
     ADMIN_INVALID_CHANNEL_NAME_MESSAGE,
     ADMIN_INVALID_CLEANUP_CONFIRM_MESSAGE,
+    ADMIN_INVALID_RESETUP_CONFIRM_MESSAGE,
     ADMIN_INVALID_TEARDOWN_CONFIRM_MESSAGE,
     ADMIN_INVALID_UI_TYPE_MESSAGE,
     ADMIN_LATE_PENALTY_DESCRIPTION,
@@ -134,6 +135,13 @@ from dxd_rating.platform.discord.copy.admin import (
     ADMIN_RENAME_SEASON_NAME_DESCRIPTION,
     ADMIN_RENAME_SEASON_SEASON_ID_DESCRIPTION,
     ADMIN_RENAME_SEASON_SUCCESS_MESSAGE,
+    ADMIN_RESETUP_UI_CHANNEL_COMMAND_DESCRIPTION,
+    ADMIN_RESETUP_UI_CHANNEL_CONFIRM_DESCRIPTION,
+    ADMIN_RESETUP_UI_CHANNEL_FAILED_MESSAGE,
+    ADMIN_RESETUP_UI_CHANNEL_MISSING_CHANNEL_MESSAGE,
+    ADMIN_RESETUP_UI_CHANNEL_NOT_INSTALLED_MESSAGE,
+    ADMIN_RESETUP_UI_CHANNEL_SUCCESS_MESSAGE,
+    ADMIN_RESETUP_UI_CHANNEL_UI_TYPE_DESCRIPTION,
     ADMIN_RESTRICT_USER_COMMAND_DESCRIPTION,
     ADMIN_RESTRICT_USER_DUMMY_USER_DESCRIPTION,
     ADMIN_RESTRICT_USER_DURATION_DESCRIPTION,
@@ -382,6 +390,7 @@ from dxd_rating.platform.discord.message_embeds import (
 )
 from dxd_rating.platform.discord.ui import (
     INFO_THREAD_LEADERBOARD_SEASON_MAX_OPTIONS,
+    InitialManagedUiMessages,
     build_managed_ui_channel_overwrites,
     create_info_thread_leaderboard_initial_view,
     create_info_thread_leaderboard_next_page_view,
@@ -399,6 +408,7 @@ from dxd_rating.shared.constants import (
     is_dummy_discord_user_id,
 )
 
+ADMIN_RESETUP_CONFIRM_VALUE = "resetup"
 ADMIN_CLEANUP_CONFIRM_VALUE = "cleanup"
 ADMIN_TEARDOWN_CONFIRM_VALUE = "teardown"
 MANAGED_UI_CATEGORY_NAME = "レート戦"
@@ -425,6 +435,57 @@ class InteractionResponseContext:
 class ProvisionedManagedUiChannel:
     definition: ManagedUiDefinition
     channel: discord.abc.GuildChannel
+    initial_messages: InitialManagedUiMessages
+
+
+@dataclass(frozen=True, slots=True)
+class ManagedUiChannelRecordInput:
+    channel_id: int
+    message_id: int | None
+    status_message_id: int | None
+    matchmaking_one_v_one_message_id: int | None
+    matchmaking_two_v_two_message_id: int | None
+    matchmaking_three_v_three_message_id: int | None
+    created_by_discord_user_id: int
+
+
+@dataclass(frozen=True, slots=True)
+class ManagedUiChannelSnapshot:
+    id: int
+    ui_type: ManagedUiType
+    channel_id: int
+    message_id: int | None
+    status_message_id: int | None
+    matchmaking_one_v_one_message_id: int | None
+    matchmaking_two_v_two_message_id: int | None
+    matchmaking_three_v_three_message_id: int | None
+    created_by_discord_user_id: int
+
+    @classmethod
+    def from_managed_ui_channel(
+        cls,
+        managed_ui_channel: ManagedUiChannel,
+    ) -> "ManagedUiChannelSnapshot":
+        return cls(
+            id=managed_ui_channel.id,
+            ui_type=managed_ui_channel.ui_type,
+            channel_id=managed_ui_channel.channel_id,
+            message_id=managed_ui_channel.message_id,
+            status_message_id=managed_ui_channel.status_message_id,
+            matchmaking_one_v_one_message_id=managed_ui_channel.matchmaking_one_v_one_message_id,
+            matchmaking_two_v_two_message_id=managed_ui_channel.matchmaking_two_v_two_message_id,
+            matchmaking_three_v_three_message_id=(
+                managed_ui_channel.matchmaking_three_v_three_message_id
+            ),
+            created_by_discord_user_id=managed_ui_channel.created_by_discord_user_id,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ManagedUiResetupTarget:
+    primary_record: ManagedUiChannel
+    primary_channel: discord.abc.GuildChannel
+    stale_records: tuple[ManagedUiChannel, ...]
 
 
 class ManagedUiProvisioningError(Exception):
@@ -2141,6 +2202,351 @@ class BotCommandHandlers:
             ephemeral=True,
         )
 
+    async def admin_resetup_ui_channel(
+        self,
+        interaction: discord.Interaction[Any],
+        ui_type: str,
+        confirm: str,
+    ) -> None:
+        if not await self._ensure_admin(interaction):
+            return
+
+        try:
+            definition = get_managed_ui_definition(self._parse_managed_ui_type(ui_type))
+        except ValueError:
+            await self._send_message(
+                interaction,
+                ADMIN_INVALID_UI_TYPE_MESSAGE,
+                ephemeral=True,
+            )
+            return
+
+        if confirm != ADMIN_RESETUP_CONFIRM_VALUE:
+            await self._send_message(
+                interaction,
+                ADMIN_INVALID_RESETUP_CONFIRM_MESSAGE,
+                ephemeral=True,
+            )
+            return
+
+        await self._defer_message_response(interaction, ephemeral=True)
+
+        try:
+            guild = self._require_guild(interaction)
+            managed_ui_channels = await asyncio.to_thread(
+                self._list_managed_ui_channels_by_type,
+                definition.ui_type,
+            )
+            if not managed_ui_channels:
+                await self._send_message(
+                    interaction,
+                    ADMIN_RESETUP_UI_CHANNEL_NOT_INSTALLED_MESSAGE,
+                    ephemeral=True,
+                )
+                return
+
+            resetup_target = self._resolve_managed_ui_resetup_target(guild, managed_ui_channels)
+            if resetup_target is None:
+                await self._send_message(
+                    interaction,
+                    ADMIN_RESETUP_UI_CHANNEL_MISSING_CHANNEL_MESSAGE,
+                    ephemeral=True,
+                )
+                return
+
+            missing_permissions = self._find_missing_managed_ui_resetup_permissions(
+                guild,
+                [definition],
+            )
+            if missing_permissions:
+                await self._send_message(
+                    interaction,
+                    self._format_managed_ui_permission_message(missing_permissions),
+                    ephemeral=True,
+                )
+                return
+
+            try:
+                managed_ui_category = await self._resolve_or_create_managed_ui_category(guild)
+            except ManagedUiCategoryConflictError as exc:
+                await self._send_message(
+                    interaction,
+                    self._format_managed_ui_category_conflict_message(exc),
+                    ephemeral=True,
+                )
+                return
+            except discord.Forbidden as exc:
+                self._log_managed_ui_forbidden(
+                    action="admin_resetup_ui_channel",
+                    executor_discord_user_id=interaction.user.id,
+                    ui_type=definition.ui_type.value,
+                    exc=exc,
+                )
+                await self._send_message(
+                    interaction,
+                    self._format_managed_ui_permission_message(
+                        self._find_missing_managed_ui_resetup_permissions(guild, [definition]),
+                        forbidden_error=exc,
+                    ),
+                    ephemeral=True,
+                )
+                return
+
+            channel_name = getattr(resetup_target.primary_channel, "name", None)
+            if not isinstance(channel_name, str) or channel_name == "":
+                raise TypeError(
+                    "Managed UI resetup target channel name is unavailable "
+                    f"ui_type={definition.ui_type.value}"
+                )
+
+            private_channel, visible_members = await self._resolve_managed_ui_channel_visibility(
+                interaction=interaction,
+                guild=guild,
+                definition=definition,
+            )
+
+            try:
+                replacement_channel = await self._provision_managed_ui_channel_without_record(
+                    guild=guild,
+                    category=managed_ui_category,
+                    definition=definition,
+                    channel_name=channel_name,
+                    private_channel=private_channel,
+                    visible_members=visible_members,
+                )
+            except discord.Forbidden as exc:
+                self._log_managed_ui_forbidden(
+                    action="admin_resetup_ui_channel",
+                    executor_discord_user_id=interaction.user.id,
+                    ui_type=definition.ui_type.value,
+                    exc=exc,
+                )
+                await self._send_message(
+                    interaction,
+                    self._format_managed_ui_permission_message(
+                        self._find_missing_managed_ui_resetup_permissions(guild, [definition]),
+                        forbidden_error=exc,
+                    ),
+                    ephemeral=True,
+                )
+                return
+            except ManagedUiProvisioningError as exc:
+                rollback_succeeded = await self._rollback_provisioned_managed_ui_channels(
+                    [exc.provisioned_channel],
+                    log_context=(
+                        "admin_resetup_ui_channel "
+                        f"executor_discord_user_id={interaction.user.id} "
+                        f"ui_type={definition.ui_type.value}"
+                    ),
+                )
+                if not rollback_succeeded:
+                    await self._send_message(
+                        interaction,
+                        ADMIN_RESETUP_UI_CHANNEL_FAILED_MESSAGE,
+                        ephemeral=True,
+                    )
+                    return
+
+                forbidden_cause = exc.__cause__
+                if isinstance(forbidden_cause, discord.Forbidden):
+                    self._log_managed_ui_forbidden(
+                        action="admin_resetup_ui_channel",
+                        executor_discord_user_id=interaction.user.id,
+                        ui_type=definition.ui_type.value,
+                        exc=forbidden_cause,
+                    )
+                    await self._send_message(
+                        interaction,
+                        self._format_managed_ui_permission_message(
+                            self._find_missing_managed_ui_resetup_permissions(guild, [definition]),
+                            forbidden_error=forbidden_cause,
+                        ),
+                        ephemeral=True,
+                    )
+                    return
+
+                self.logger.exception(
+                    "Failed to execute /admin_resetup_ui_channel command during provisioning "
+                    "executor_discord_user_id=%s ui_type=%s channel_name=%s",
+                    interaction.user.id,
+                    definition.ui_type.value,
+                    channel_name,
+                )
+                await self._send_message(
+                    interaction,
+                    ADMIN_RESETUP_UI_CHANNEL_FAILED_MESSAGE,
+                    ephemeral=True,
+                )
+                return
+
+            primary_snapshot = ManagedUiChannelSnapshot.from_managed_ui_channel(
+                resetup_target.primary_record
+            )
+            replacement_record_input = self._build_managed_ui_channel_record_input(
+                channel_id=self._require_discord_channel_id(replacement_channel.channel),
+                initial_messages=replacement_channel.initial_messages,
+                created_by_discord_user_id=interaction.user.id,
+            )
+            try:
+                await asyncio.to_thread(
+                    self._update_managed_ui_channel_record_from_input,
+                    resetup_target.primary_record.id,
+                    replacement_record_input,
+                )
+            except Exception:
+                rollback_succeeded = await self._rollback_provisioned_managed_ui_channels(
+                    [replacement_channel],
+                    log_context=(
+                        "admin_resetup_ui_channel "
+                        f"executor_discord_user_id={interaction.user.id} "
+                        f"ui_type={definition.ui_type.value}"
+                    ),
+                )
+                if not rollback_succeeded:
+                    await self._send_message(
+                        interaction,
+                        ADMIN_RESETUP_UI_CHANNEL_FAILED_MESSAGE,
+                        ephemeral=True,
+                    )
+                    return
+
+                self.logger.exception(
+                    "Failed to update managed UI record during /admin_resetup_ui_channel "
+                    "executor_discord_user_id=%s ui_type=%s managed_ui_channel_id=%s",
+                    interaction.user.id,
+                    definition.ui_type.value,
+                    resetup_target.primary_record.id,
+                )
+                await self._send_message(
+                    interaction,
+                    ADMIN_RESETUP_UI_CHANNEL_FAILED_MESSAGE,
+                    ephemeral=True,
+                )
+                return
+
+            try:
+                await resetup_target.primary_channel.delete(
+                    reason=f"Resetup managed UI channel for {definition.ui_type.value}",
+                )
+            except discord.NotFound:
+                pass
+            except discord.Forbidden as exc:
+                rollback_succeeded = await self._rollback_managed_ui_channel_resetup(
+                    managed_ui_channel_snapshot=primary_snapshot,
+                    replacement_channel=replacement_channel,
+                    log_context=(
+                        "admin_resetup_ui_channel "
+                        f"executor_discord_user_id={interaction.user.id} "
+                        f"ui_type={definition.ui_type.value}"
+                    ),
+                )
+                if not rollback_succeeded:
+                    await self._send_message(
+                        interaction,
+                        ADMIN_RESETUP_UI_CHANNEL_FAILED_MESSAGE,
+                        ephemeral=True,
+                    )
+                    return
+
+                self._log_managed_ui_forbidden(
+                    action="admin_resetup_ui_channel",
+                    executor_discord_user_id=interaction.user.id,
+                    ui_type=definition.ui_type.value,
+                    channel_id=primary_snapshot.channel_id,
+                    exc=exc,
+                )
+                await self._send_message(
+                    interaction,
+                    self._format_managed_ui_permission_message(
+                        self._find_missing_managed_ui_resetup_permissions(guild, [definition]),
+                        forbidden_error=exc,
+                    ),
+                    ephemeral=True,
+                )
+                return
+            except Exception:
+                rollback_succeeded = await self._rollback_managed_ui_channel_resetup(
+                    managed_ui_channel_snapshot=primary_snapshot,
+                    replacement_channel=replacement_channel,
+                    log_context=(
+                        "admin_resetup_ui_channel "
+                        f"executor_discord_user_id={interaction.user.id} "
+                        f"ui_type={definition.ui_type.value}"
+                    ),
+                )
+                if not rollback_succeeded:
+                    await self._send_message(
+                        interaction,
+                        ADMIN_RESETUP_UI_CHANNEL_FAILED_MESSAGE,
+                        ephemeral=True,
+                    )
+                    return
+
+                self.logger.exception(
+                    "Failed to delete old managed UI channel during /admin_resetup_ui_channel "
+                    "executor_discord_user_id=%s ui_type=%s channel_id=%s",
+                    interaction.user.id,
+                    definition.ui_type.value,
+                    primary_snapshot.channel_id,
+                )
+                await self._send_message(
+                    interaction,
+                    ADMIN_RESETUP_UI_CHANNEL_FAILED_MESSAGE,
+                    ephemeral=True,
+                )
+                return
+
+            (
+                cleanup_succeeded,
+                cleanup_forbidden_error,
+            ) = await self._cleanup_stale_managed_ui_channels(
+                guild=guild,
+                stale_records=resetup_target.stale_records,
+                executor_discord_user_id=interaction.user.id,
+                log_context=(
+                    "admin_resetup_ui_channel "
+                    f"executor_discord_user_id={interaction.user.id} "
+                    f"ui_type={definition.ui_type.value}"
+                ),
+            )
+            if not cleanup_succeeded:
+                if cleanup_forbidden_error is not None:
+                    await self._send_message(
+                        interaction,
+                        self._format_managed_ui_permission_message(
+                            self._find_missing_managed_ui_resetup_permissions(guild, [definition]),
+                            forbidden_error=cleanup_forbidden_error,
+                        ),
+                        ephemeral=True,
+                    )
+                    return
+
+                await self._send_message(
+                    interaction,
+                    ADMIN_RESETUP_UI_CHANNEL_FAILED_MESSAGE,
+                    ephemeral=True,
+                )
+                return
+        except Exception:
+            self.logger.exception(
+                "Failed to execute /admin_resetup_ui_channel command "
+                "executor_discord_user_id=%s ui_type=%s",
+                interaction.user.id,
+                ui_type,
+            )
+            await self._send_message(
+                interaction,
+                ADMIN_RESETUP_UI_CHANNEL_FAILED_MESSAGE,
+                ephemeral=True,
+            )
+            return
+
+        await self._send_message(
+            interaction,
+            ADMIN_RESETUP_UI_CHANNEL_SUCCESS_MESSAGE,
+            ephemeral=True,
+        )
+
     async def admin_cleanup_ui_channels(
         self,
         interaction: discord.Interaction[Any],
@@ -3546,6 +3952,12 @@ class BotCommandHandlers:
     def _list_managed_ui_channels(self) -> list[ManagedUiChannel]:
         return self.managed_ui_service.list_managed_ui_channels()
 
+    def _list_managed_ui_channels_by_type(
+        self,
+        ui_type: ManagedUiType,
+    ) -> list[ManagedUiChannel]:
+        return self.managed_ui_service.list_managed_ui_channels_by_type(ui_type)
+
     def _get_managed_ui_channel_by_type(
         self,
         ui_type: ManagedUiType,
@@ -3579,6 +3991,29 @@ class BotCommandHandlers:
 
     def _delete_managed_ui_channel_records(self, channel_ids: list[int]) -> int:
         return self.managed_ui_service.delete_managed_ui_channels_by_channel_ids(channel_ids)
+
+    def _update_managed_ui_channel_record(
+        self,
+        managed_ui_channel_id: int,
+        *,
+        channel_id: int,
+        message_id: int | None,
+        status_message_id: int | None,
+        matchmaking_one_v_one_message_id: int | None,
+        matchmaking_two_v_two_message_id: int | None,
+        matchmaking_three_v_three_message_id: int | None,
+        created_by_discord_user_id: int,
+    ) -> ManagedUiChannel:
+        return self.managed_ui_service.update_managed_ui_channel(
+            managed_ui_channel_id,
+            channel_id=channel_id,
+            message_id=message_id,
+            status_message_id=status_message_id,
+            matchmaking_one_v_one_message_id=matchmaking_one_v_one_message_id,
+            matchmaking_two_v_two_message_id=matchmaking_two_v_two_message_id,
+            matchmaking_three_v_three_message_id=matchmaking_three_v_three_message_id,
+            created_by_discord_user_id=created_by_discord_user_id,
+        )
 
     def _require_matching_queue_service(self) -> MatchingQueueCommandService:
         if self._matching_queue_service is None:
@@ -4303,6 +4738,31 @@ class BotCommandHandlers:
                 fallback_channel = channel
         return fallback_channel
 
+    def _resolve_managed_ui_resetup_target(
+        self,
+        guild: discord.Guild,
+        managed_ui_channels: Sequence[ManagedUiChannel],
+    ) -> ManagedUiResetupTarget | None:
+        primary_record: ManagedUiChannel | None = None
+        primary_channel: discord.abc.GuildChannel | None = None
+        stale_records: list[ManagedUiChannel] = []
+        for managed_ui_channel in managed_ui_channels:
+            channel = self._find_guild_channel_by_id(guild, managed_ui_channel.channel_id)
+            if channel is not None and primary_record is None:
+                primary_record = managed_ui_channel
+                primary_channel = channel
+                continue
+            stale_records.append(managed_ui_channel)
+
+        if primary_record is None or primary_channel is None:
+            return None
+
+        return ManagedUiResetupTarget(
+            primary_record=primary_record,
+            primary_channel=primary_channel,
+            stale_records=tuple(stale_records),
+        )
+
     def _format_managed_ui_category_conflict_message(
         self,
         exc: ManagedUiCategoryConflictError,
@@ -4368,6 +4828,21 @@ class BotCommandHandlers:
             return ()
 
         return (MANAGED_UI_PERMISSION_LABEL_MANAGE_CHANNELS,)
+
+    def _find_missing_managed_ui_resetup_permissions(
+        self,
+        guild: discord.Guild,
+        definitions: Sequence[ManagedUiDefinition],
+    ) -> tuple[str, ...]:
+        missing_permissions: list[str] = []
+        for permission_label in (
+            *self._find_missing_managed_ui_setup_permissions(guild, definitions),
+            *self._find_missing_managed_ui_teardown_permissions(guild),
+        ):
+            if permission_label in missing_permissions:
+                continue
+            missing_permissions.append(permission_label)
+        return tuple(missing_permissions)
 
     def _get_bot_guild_permissions(self, guild: discord.Guild) -> discord.Permissions | None:
         bot_member = guild.me
@@ -5023,6 +5498,25 @@ class BotCommandHandlers:
             )
         )
 
+    async def _resolve_managed_ui_channel_visibility(
+        self,
+        *,
+        interaction: discord.Interaction[Any],
+        guild: discord.Guild,
+        definition: ManagedUiDefinition,
+    ) -> tuple[bool, tuple[discord.abc.Snowflake, ...]]:
+        private_channel = self.settings.development_mode
+        visible_members: tuple[discord.abc.Snowflake, ...] = ()
+        if private_channel:
+            visible_members = (interaction.user,)
+        if definition.ui_type is ManagedUiType.ADMIN_OPERATIONS_CHANNEL:
+            private_channel = True
+            visible_members = await self._resolve_admin_operations_channel_visible_members(
+                interaction,
+                guild,
+            )
+        return private_channel, visible_members
+
     def _dedupe_discord_users(
         self,
         users: Sequence[DiscordUserLike],
@@ -5062,6 +5556,39 @@ class BotCommandHandlers:
         private_channel: bool = False,
         visible_members: Sequence[discord.abc.Snowflake] = (),
     ) -> ProvisionedManagedUiChannel:
+        provisioned_channel = await self._provision_managed_ui_channel_without_record(
+            guild=guild,
+            category=category,
+            definition=definition,
+            channel_name=channel_name,
+            private_channel=private_channel,
+            visible_members=visible_members,
+        )
+        try:
+            await asyncio.to_thread(
+                self._create_managed_ui_channel_record_from_input,
+                definition.ui_type,
+                self._build_managed_ui_channel_record_input(
+                    channel_id=self._require_discord_channel_id(provisioned_channel.channel),
+                    initial_messages=provisioned_channel.initial_messages,
+                    created_by_discord_user_id=created_by_discord_user_id,
+                ),
+            )
+        except Exception as exc:
+            raise ManagedUiProvisioningError(provisioned_channel) from exc
+
+        return provisioned_channel
+
+    async def _provision_managed_ui_channel_without_record(
+        self,
+        *,
+        guild: discord.Guild,
+        category: discord.CategoryChannel | None,
+        definition: ManagedUiDefinition,
+        channel_name: str,
+        private_channel: bool = False,
+        visible_members: Sequence[discord.abc.Snowflake] = (),
+    ) -> ProvisionedManagedUiChannel:
         registered_player_role = None
         if definition.requires_registered_player_role:
             registered_player_role = await self._ensure_registered_player_role(guild)
@@ -5090,39 +5617,116 @@ class BotCommandHandlers:
             channel_name,
             **create_channel_kwargs,
         )
-        provisioned_channel = ProvisionedManagedUiChannel(
-            definition=definition,
-            channel=channel,
-        )
         try:
-            messages = await send_initial_managed_ui_message(
+            initial_messages = await send_initial_managed_ui_message(
                 cast(discord.TextChannel, channel),
                 ui_type=definition.ui_type,
                 interaction_handler=self,
                 matchmaking_guide_url=self.settings.matchmaking_guide_url,
                 terms_url=self.settings.terms_url,
             )
-            await asyncio.to_thread(
-                self._create_managed_ui_channel_record,
-                definition.ui_type,
-                channel.id,
-                None if messages.primary_message is None else messages.primary_message.id,
-                None if messages.status_message is None else messages.status_message.id,
-                None
-                if messages.matchmaking_one_v_one_message is None
-                else messages.matchmaking_one_v_one_message.id,
-                None
-                if messages.matchmaking_two_v_two_message is None
-                else messages.matchmaking_two_v_two_message.id,
-                None
-                if messages.matchmaking_three_v_three_message is None
-                else messages.matchmaking_three_v_three_message.id,
-                created_by_discord_user_id,
-            )
         except Exception as exc:
-            raise ManagedUiProvisioningError(provisioned_channel) from exc
+            raise ManagedUiProvisioningError(
+                ProvisionedManagedUiChannel(
+                    definition=definition,
+                    channel=channel,
+                    initial_messages=InitialManagedUiMessages(),
+                )
+            ) from exc
 
-        return provisioned_channel
+        return ProvisionedManagedUiChannel(
+            definition=definition,
+            channel=channel,
+            initial_messages=initial_messages,
+        )
+
+    def _build_managed_ui_channel_record_input(
+        self,
+        *,
+        channel_id: int,
+        initial_messages: InitialManagedUiMessages,
+        created_by_discord_user_id: int,
+    ) -> ManagedUiChannelRecordInput:
+        return ManagedUiChannelRecordInput(
+            channel_id=channel_id,
+            message_id=(
+                None
+                if initial_messages.primary_message is None
+                else initial_messages.primary_message.id
+            ),
+            status_message_id=(
+                None
+                if initial_messages.status_message is None
+                else initial_messages.status_message.id
+            ),
+            matchmaking_one_v_one_message_id=(
+                None
+                if initial_messages.matchmaking_one_v_one_message is None
+                else initial_messages.matchmaking_one_v_one_message.id
+            ),
+            matchmaking_two_v_two_message_id=(
+                None
+                if initial_messages.matchmaking_two_v_two_message is None
+                else initial_messages.matchmaking_two_v_two_message.id
+            ),
+            matchmaking_three_v_three_message_id=(
+                None
+                if initial_messages.matchmaking_three_v_three_message is None
+                else initial_messages.matchmaking_three_v_three_message.id
+            ),
+            created_by_discord_user_id=created_by_discord_user_id,
+        )
+
+    def _create_managed_ui_channel_record_from_input(
+        self,
+        ui_type: ManagedUiType,
+        record_input: ManagedUiChannelRecordInput,
+    ) -> ManagedUiChannel:
+        return self._create_managed_ui_channel_record(
+            ui_type,
+            record_input.channel_id,
+            record_input.message_id,
+            record_input.status_message_id,
+            record_input.matchmaking_one_v_one_message_id,
+            record_input.matchmaking_two_v_two_message_id,
+            record_input.matchmaking_three_v_three_message_id,
+            record_input.created_by_discord_user_id,
+        )
+
+    def _update_managed_ui_channel_record_from_input(
+        self,
+        managed_ui_channel_id: int,
+        record_input: ManagedUiChannelRecordInput,
+    ) -> ManagedUiChannel:
+        return self._update_managed_ui_channel_record(
+            managed_ui_channel_id,
+            channel_id=record_input.channel_id,
+            message_id=record_input.message_id,
+            status_message_id=record_input.status_message_id,
+            matchmaking_one_v_one_message_id=record_input.matchmaking_one_v_one_message_id,
+            matchmaking_two_v_two_message_id=record_input.matchmaking_two_v_two_message_id,
+            matchmaking_three_v_three_message_id=record_input.matchmaking_three_v_three_message_id,
+            created_by_discord_user_id=record_input.created_by_discord_user_id,
+        )
+
+    def _update_managed_ui_channel_record_from_snapshot(
+        self,
+        managed_ui_channel_snapshot: ManagedUiChannelSnapshot,
+    ) -> ManagedUiChannel:
+        return self._update_managed_ui_channel_record(
+            managed_ui_channel_snapshot.id,
+            channel_id=managed_ui_channel_snapshot.channel_id,
+            message_id=managed_ui_channel_snapshot.message_id,
+            status_message_id=managed_ui_channel_snapshot.status_message_id,
+            matchmaking_one_v_one_message_id=(
+                managed_ui_channel_snapshot.matchmaking_one_v_one_message_id
+            ),
+            matchmaking_two_v_two_message_id=managed_ui_channel_snapshot.matchmaking_two_v_two_message_id,
+            matchmaking_three_v_three_message_id=(
+                managed_ui_channel_snapshot.matchmaking_three_v_three_message_id
+            ),
+            created_by_discord_user_id=managed_ui_channel_snapshot.created_by_discord_user_id,
+        )
 
     async def _rollback_provisioned_managed_ui_channels(
         self,
@@ -5171,6 +5775,111 @@ class BotCommandHandlers:
                 )
 
         return rollback_succeeded
+
+    async def _rollback_managed_ui_channel_resetup(
+        self,
+        *,
+        managed_ui_channel_snapshot: ManagedUiChannelSnapshot,
+        replacement_channel: ProvisionedManagedUiChannel,
+        log_context: str,
+    ) -> bool:
+        try:
+            await asyncio.to_thread(
+                self._update_managed_ui_channel_record_from_snapshot,
+                managed_ui_channel_snapshot,
+            )
+        except Exception:
+            self.logger.exception(
+                "Failed to restore managed UI record during resetup rollback %s "
+                "ui_type=%s managed_ui_channel_id=%s channel_id=%s",
+                log_context,
+                managed_ui_channel_snapshot.ui_type.value,
+                managed_ui_channel_snapshot.id,
+                managed_ui_channel_snapshot.channel_id,
+            )
+            return False
+
+        try:
+            await replacement_channel.channel.delete(
+                reason=(
+                    "Rollback managed UI channel resetup "
+                    f"for {replacement_channel.definition.ui_type.value}"
+                ),
+            )
+        except discord.NotFound:
+            return True
+        except Exception:
+            self.logger.exception(
+                "Failed to delete replacement channel during resetup rollback %s "
+                "ui_type=%s channel_id=%s",
+                log_context,
+                replacement_channel.definition.ui_type.value,
+                replacement_channel.channel.id,
+            )
+            return False
+
+        return True
+
+    async def _cleanup_stale_managed_ui_channels(
+        self,
+        *,
+        guild: discord.Guild,
+        stale_records: Sequence[ManagedUiChannel],
+        executor_discord_user_id: int,
+        log_context: str,
+    ) -> tuple[bool, discord.Forbidden | None]:
+        had_failure = False
+        last_forbidden_error: discord.Forbidden | None = None
+        deleted_or_missing_channel_ids: list[int] = []
+        for stale_record in stale_records:
+            channel = self._find_guild_channel_by_id(guild, stale_record.channel_id)
+            if channel is None:
+                deleted_or_missing_channel_ids.append(stale_record.channel_id)
+                continue
+
+            try:
+                await channel.delete(
+                    reason=f"Cleanup stale managed UI channel for {stale_record.ui_type.value}",
+                )
+            except discord.NotFound:
+                deleted_or_missing_channel_ids.append(stale_record.channel_id)
+            except discord.Forbidden as exc:
+                had_failure = True
+                last_forbidden_error = exc
+                self._log_managed_ui_forbidden(
+                    action="admin_resetup_ui_channel",
+                    executor_discord_user_id=executor_discord_user_id,
+                    ui_type=stale_record.ui_type.value,
+                    channel_id=stale_record.channel_id,
+                    exc=exc,
+                )
+            except Exception:
+                had_failure = True
+                self.logger.exception(
+                    "Failed to cleanup stale managed UI channel during resetup %s "
+                    "ui_type=%s channel_id=%s",
+                    log_context,
+                    stale_record.ui_type.value,
+                    stale_record.channel_id,
+                )
+            else:
+                deleted_or_missing_channel_ids.append(stale_record.channel_id)
+
+        if deleted_or_missing_channel_ids:
+            try:
+                await asyncio.to_thread(
+                    self._delete_managed_ui_channel_records,
+                    deleted_or_missing_channel_ids,
+                )
+            except Exception:
+                had_failure = True
+                self.logger.exception(
+                    "Failed to delete stale managed UI records during resetup %s channel_ids=%s",
+                    log_context,
+                    deleted_or_missing_channel_ids,
+                )
+
+        return (not had_failure), last_forbidden_error
 
     async def _send_message(
         self,
@@ -5788,6 +6497,28 @@ def register_app_commands(
                 "admin_setup_ui_channels",
                 interaction,
                 handlers.admin_setup_ui_channels,
+            )
+
+        @tree.command(
+            name="admin_resetup_ui_channel",
+            description=ADMIN_RESETUP_UI_CHANNEL_COMMAND_DESCRIPTION,
+        )
+        @app_commands.describe(
+            ui_type=ADMIN_RESETUP_UI_CHANNEL_UI_TYPE_DESCRIPTION,
+            confirm=ADMIN_RESETUP_UI_CHANNEL_CONFIRM_DESCRIPTION,
+        )
+        @app_commands.choices(ui_type=managed_ui_type_choices)
+        async def admin_resetup_ui_channel_command(
+            interaction: discord.Interaction[Any],
+            ui_type: str,
+            confirm: str,
+        ) -> None:
+            await run_command(
+                "admin_resetup_ui_channel",
+                interaction,
+                handlers.admin_resetup_ui_channel,
+                ui_type,
+                confirm,
             )
 
         @tree.command(

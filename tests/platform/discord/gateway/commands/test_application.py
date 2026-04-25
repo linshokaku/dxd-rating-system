@@ -9323,6 +9323,545 @@ def test_admin_setup_ui_channels_reports_conflict_when_fixed_category_is_ambiguo
     assert session.scalar(select(ManagedUiChannel)) is None
 
 
+def test_admin_resetup_ui_channel_replaces_register_panel_and_updates_record(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    initial_executor_discord_user_id = 10
+    resetup_executor_discord_user_id = 20
+    guild = FakeGuild(id=2_102_6_3)
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset(
+            {initial_executor_discord_user_id, resetup_executor_discord_user_id}
+        ),
+    )
+    setup_interaction = FakeInteraction(
+        user=FakeUser(id=initial_executor_discord_user_id),
+        guild_id=guild.id,
+        guild=guild,
+    )
+    asyncio.run(
+        handlers.admin_setup_custom_ui_channel(
+            as_interaction(setup_interaction),
+            ManagedUiType.REGISTER_PANEL.value,
+            "レート戦はこちらから",
+        )
+    )
+
+    old_channel = find_channel_by_name(guild, "レート戦はこちらから")
+    old_message_id = old_channel.sent_messages[0].id
+
+    resetup_interaction = FakeInteraction(
+        user=FakeUser(id=resetup_executor_discord_user_id),
+        guild_id=guild.id,
+        guild=guild,
+    )
+    asyncio.run(
+        handlers.admin_resetup_ui_channel(
+            as_interaction(resetup_interaction),
+            ManagedUiType.REGISTER_PANEL.value,
+            "resetup",
+        )
+    )
+
+    session.expire_all()
+    managed_ui_channels = session.scalars(
+        select(ManagedUiChannel).where(ManagedUiChannel.ui_type == ManagedUiType.REGISTER_PANEL)
+    ).all()
+    persisted_channel = find_channel_by_name(guild, "レート戦はこちらから")
+
+    assert_response(
+        resetup_interaction,
+        ["指定した UI チャンネルを再セットアップしました。"],
+        ephemeral=True,
+    )
+    assert len(managed_ui_channels) == 1
+    assert old_channel.deleted is True
+    assert persisted_channel is not old_channel
+    assert persisted_channel.category is find_category_by_name(guild, "レート戦")
+    assert managed_ui_channels[0].channel_id == persisted_channel.id
+    assert managed_ui_channels[0].message_id == persisted_channel.sent_messages[0].id
+    assert managed_ui_channels[0].message_id != old_message_id
+    assert managed_ui_channels[0].created_by_discord_user_id == resetup_executor_discord_user_id
+
+
+def test_admin_resetup_ui_channel_recreates_matchmaking_messages(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    executor_discord_user_id = 10
+    guild = FakeGuild(id=2_102_6_4)
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({executor_discord_user_id}),
+    )
+    setup_interaction = FakeInteraction(
+        user=FakeUser(id=executor_discord_user_id),
+        guild_id=guild.id,
+        guild=guild,
+    )
+    asyncio.run(
+        handlers.admin_setup_custom_ui_channel(
+            as_interaction(setup_interaction),
+            ManagedUiType.MATCHMAKING_CHANNEL.value,
+            "レート戦マッチング",
+        )
+    )
+
+    old_channel = find_channel_by_name(guild, "レート戦マッチング")
+    old_message_ids = [message.id for message in old_channel.sent_messages]
+
+    resetup_interaction = FakeInteraction(
+        user=FakeUser(id=executor_discord_user_id),
+        guild_id=guild.id,
+        guild=guild,
+    )
+    asyncio.run(
+        handlers.admin_resetup_ui_channel(
+            as_interaction(resetup_interaction),
+            ManagedUiType.MATCHMAKING_CHANNEL.value,
+            "resetup",
+        )
+    )
+
+    session.expire_all()
+    managed_ui_channel = session.scalar(
+        select(ManagedUiChannel).where(
+            ManagedUiChannel.ui_type == ManagedUiType.MATCHMAKING_CHANNEL
+        )
+    )
+    persisted_channel = find_channel_by_name(guild, "レート戦マッチング")
+
+    assert_response(
+        resetup_interaction,
+        ["指定した UI チャンネルを再セットアップしました。"],
+        ephemeral=True,
+    )
+    assert managed_ui_channel is not None
+    assert old_channel.deleted is True
+    assert persisted_channel is not old_channel
+    assert len(persisted_channel.sent_messages) == 5
+    assert managed_ui_channel.channel_id == persisted_channel.id
+    assert managed_ui_channel.status_message_id == persisted_channel.sent_messages[1].id
+    assert (
+        managed_ui_channel.matchmaking_one_v_one_message_id == persisted_channel.sent_messages[2].id
+    )
+    assert (
+        managed_ui_channel.matchmaking_two_v_two_message_id == persisted_channel.sent_messages[3].id
+    )
+    assert (
+        managed_ui_channel.matchmaking_three_v_three_message_id
+        == persisted_channel.sent_messages[4].id
+    )
+    assert [message.id for message in persisted_channel.sent_messages] != old_message_ids
+    assert managed_ui_channel.status_message_id not in old_message_ids
+    assert_matchmaking_panel_message(persisted_channel.sent_messages[2], MatchFormat.ONE_VS_ONE)
+    assert_matchmaking_panel_message(persisted_channel.sent_messages[3], MatchFormat.TWO_VS_TWO)
+    assert_matchmaking_panel_message(persisted_channel.sent_messages[4], MatchFormat.THREE_VS_THREE)
+
+
+def test_admin_resetup_ui_channel_creates_private_channel_in_development_mode(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    executor_discord_user_id = 10
+    guild = FakeGuild(id=2_102_6_5)
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({executor_discord_user_id}),
+        development_mode=True,
+    )
+    setup_interaction = FakeInteraction(
+        user=FakeUser(id=executor_discord_user_id),
+        guild_id=guild.id,
+        guild=guild,
+    )
+    asyncio.run(
+        handlers.admin_setup_custom_ui_channel(
+            as_interaction(setup_interaction),
+            ManagedUiType.INFO_CHANNEL.value,
+            "レート戦情報",
+        )
+    )
+
+    resetup_interaction = FakeInteraction(
+        user=FakeUser(id=executor_discord_user_id),
+        guild_id=guild.id,
+        guild=guild,
+    )
+    asyncio.run(
+        handlers.admin_resetup_ui_channel(
+            as_interaction(resetup_interaction),
+            ManagedUiType.INFO_CHANNEL.value,
+            "resetup",
+        )
+    )
+
+    persisted_channel = find_channel_by_name(guild, "レート戦情報")
+    registered_role = find_role_by_name(guild, REGISTERED_PLAYER_ROLE_NAME)
+
+    assert_response(
+        resetup_interaction,
+        ["指定した UI チャンネルを再セットアップしました。"],
+        ephemeral=True,
+    )
+    assert registered_role is not None
+    assert persisted_channel.overwrites[guild.default_role].view_channel is False
+    assert persisted_channel.overwrites[resetup_interaction.user].view_channel is True
+    assert persisted_channel.overwrites[resetup_interaction.user].send_messages is False
+    assert persisted_channel.overwrites[registered_role].view_channel is True
+
+
+def test_admin_resetup_ui_channel_preserves_admin_operations_visibility(
+    session_factory: sessionmaker[Session],
+) -> None:
+    executor_discord_user_id = 10
+    second_super_admin_discord_user_id = 20
+    second_super_admin = FakeGuildMember(id=second_super_admin_discord_user_id)
+    guild = FakeGuild(
+        id=2_102_6_6,
+        members={second_super_admin_discord_user_id: second_super_admin},
+    )
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset(
+            {executor_discord_user_id, second_super_admin_discord_user_id}
+        ),
+    )
+    setup_interaction = FakeInteraction(
+        user=FakeUser(id=executor_discord_user_id),
+        guild_id=guild.id,
+        guild=guild,
+    )
+    asyncio.run(
+        handlers.admin_setup_custom_ui_channel(
+            as_interaction(setup_interaction),
+            ManagedUiType.ADMIN_OPERATIONS_CHANNEL.value,
+            "運営専用",
+        )
+    )
+
+    resetup_interaction = FakeInteraction(
+        user=FakeUser(id=executor_discord_user_id),
+        guild_id=guild.id,
+        guild=guild,
+    )
+    asyncio.run(
+        handlers.admin_resetup_ui_channel(
+            as_interaction(resetup_interaction),
+            ManagedUiType.ADMIN_OPERATIONS_CHANNEL.value,
+            "resetup",
+        )
+    )
+
+    persisted_channel = find_channel_by_name(guild, "運営専用")
+
+    assert_response(
+        resetup_interaction,
+        ["指定した UI チャンネルを再セットアップしました。"],
+        ephemeral=True,
+    )
+    assert persisted_channel.overwrites[guild.default_role].view_channel is False
+    assert persisted_channel.overwrites[resetup_interaction.user].view_channel is True
+    assert persisted_channel.overwrites[resetup_interaction.user].send_messages is True
+    assert persisted_channel.overwrites[second_super_admin].view_channel is True
+    assert persisted_channel.overwrites[second_super_admin].send_messages is True
+
+
+def test_admin_resetup_ui_channel_returns_invalid_ui_type_message(
+    session_factory: sessionmaker[Session],
+) -> None:
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({10}),
+    )
+    interaction = FakeInteraction(user=FakeUser(id=10))
+
+    asyncio.run(
+        handlers.admin_resetup_ui_channel(
+            as_interaction(interaction),
+            "unknown",
+            "resetup",
+        )
+    )
+
+    assert_response(interaction, ["指定した UI は存在しません。"], ephemeral=True)
+
+
+def test_admin_resetup_ui_channel_returns_invalid_confirm_message(
+    session_factory: sessionmaker[Session],
+) -> None:
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({10}),
+    )
+    interaction = FakeInteraction(user=FakeUser(id=10))
+
+    asyncio.run(
+        handlers.admin_resetup_ui_channel(
+            as_interaction(interaction),
+            ManagedUiType.REGISTER_PANEL.value,
+            "invalid",
+        )
+    )
+
+    assert_response(interaction, ["confirm が不正です。"], ephemeral=True)
+
+
+def test_admin_resetup_ui_channel_returns_not_installed_when_record_is_missing(
+    session_factory: sessionmaker[Session],
+) -> None:
+    guild = FakeGuild(id=2_102_6_7)
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({10}),
+    )
+    interaction = FakeInteraction(user=FakeUser(id=10), guild_id=guild.id, guild=guild)
+
+    asyncio.run(
+        handlers.admin_resetup_ui_channel(
+            as_interaction(interaction),
+            ManagedUiType.REGISTER_PANEL.value,
+            "resetup",
+        )
+    )
+
+    assert_response(interaction, ["指定した UI は未設置です。"], ephemeral=True)
+
+
+def test_admin_resetup_ui_channel_returns_missing_channel_when_all_records_are_stale(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({10}),
+    )
+    handlers.managed_ui_service.create_managed_ui_channel(
+        ui_type=ManagedUiType.REGISTER_PANEL,
+        channel_id=60_030,
+        message_id=70_030,
+        created_by_discord_user_id=10,
+    )
+    guild = FakeGuild(id=2_102_6_8)
+    interaction = FakeInteraction(user=FakeUser(id=10), guild_id=guild.id, guild=guild)
+
+    asyncio.run(
+        handlers.admin_resetup_ui_channel(
+            as_interaction(interaction),
+            ManagedUiType.REGISTER_PANEL.value,
+            "resetup",
+        )
+    )
+
+    session.expire_all()
+
+    assert_response(
+        interaction,
+        ["指定した UI の管理対象チャンネルが見つかりません。"],
+        ephemeral=True,
+    )
+    assert session.scalar(select(ManagedUiChannel)) is not None
+
+
+def test_admin_resetup_ui_channel_reports_missing_permissions(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    guild = FakeGuild(
+        id=2_102_6_9,
+        me=FakeGuildMember(
+            id=999_999,
+            guild_permissions=discord.Permissions.none(),
+        ),
+    )
+    old_channel = FakeTextChannel(id=60_031, name="レート戦マッチング", guild=guild)
+    guild.channels.append(old_channel)
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({10}),
+    )
+    setup_matchmaking_managed_ui_channel(handlers, old_channel.id)
+    interaction = FakeInteraction(user=FakeUser(id=10), guild_id=guild.id, guild=guild)
+
+    asyncio.run(
+        handlers.admin_resetup_ui_channel(
+            as_interaction(interaction),
+            ManagedUiType.MATCHMAKING_CHANNEL.value,
+            "resetup",
+        )
+    )
+
+    session.expire_all()
+
+    assert_response(
+        interaction,
+        [
+            "Bot に必要な権限がありません。 不足している権限: "
+            "チャンネルの管理, ロールの管理, プライベートスレッドの作成, "
+            "スレッドでメッセージを送信"
+        ],
+        ephemeral=True,
+    )
+    assert old_channel.deleted is False
+    assert len(guild.channels) == 1
+    assert session.scalar(select(ManagedUiChannel)) is not None
+
+
+def test_admin_resetup_ui_channel_rolls_back_replacement_when_initial_send_fails(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    guild = FakeGuild(id=2_102_7_0)
+    old_channel = FakeTextChannel(id=60_032, name="レート戦はこちらから", guild=guild)
+    guild.channels.append(old_channel)
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({10}),
+    )
+    handlers.managed_ui_service.create_managed_ui_channel(
+        ui_type=ManagedUiType.REGISTER_PANEL,
+        channel_id=old_channel.id,
+        message_id=70_032,
+        created_by_discord_user_id=10,
+    )
+    guild.next_channel_fail_send_with = RuntimeError("boom")
+    interaction = FakeInteraction(user=FakeUser(id=10), guild_id=guild.id, guild=guild)
+
+    asyncio.run(
+        handlers.admin_resetup_ui_channel(
+            as_interaction(interaction),
+            ManagedUiType.REGISTER_PANEL.value,
+            "resetup",
+        )
+    )
+
+    session.expire_all()
+    managed_ui_channel = session.scalar(select(ManagedUiChannel))
+
+    assert_response(
+        interaction,
+        ["UI 設置チャンネルの再セットアップに失敗しました。管理者に確認してください。"],
+        ephemeral=True,
+    )
+    assert managed_ui_channel is not None
+    assert managed_ui_channel.channel_id == old_channel.id
+    assert old_channel.deleted is False
+    assert guild.channels == [old_channel]
+
+
+def test_admin_resetup_ui_channel_rolls_back_when_old_channel_delete_fails(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    executor_discord_user_id = 10
+    guild = FakeGuild(id=2_102_7_1)
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({executor_discord_user_id}),
+    )
+    setup_interaction = FakeInteraction(
+        user=FakeUser(id=executor_discord_user_id),
+        guild_id=guild.id,
+        guild=guild,
+    )
+    asyncio.run(
+        handlers.admin_setup_custom_ui_channel(
+            as_interaction(setup_interaction),
+            ManagedUiType.REGISTER_PANEL.value,
+            "レート戦はこちらから",
+        )
+    )
+
+    old_channel = find_channel_by_name(guild, "レート戦はこちらから")
+    old_channel.fail_delete_with = make_forbidden()
+    interaction = FakeInteraction(
+        user=FakeUser(id=executor_discord_user_id),
+        guild_id=guild.id,
+        guild=guild,
+    )
+
+    asyncio.run(
+        handlers.admin_resetup_ui_channel(
+            as_interaction(interaction),
+            ManagedUiType.REGISTER_PANEL.value,
+            "resetup",
+        )
+    )
+
+    session.expire_all()
+    managed_ui_channel = session.scalar(select(ManagedUiChannel))
+
+    assert_response(
+        interaction,
+        ["Bot に必要な権限がありません。 Discord API: 403 Forbidden (error code: 0): Forbidden"],
+        ephemeral=True,
+    )
+    assert managed_ui_channel is not None
+    assert managed_ui_channel.channel_id == old_channel.id
+    assert old_channel.deleted is False
+    assert guild.channels == [old_channel]
+
+
+def test_admin_resetup_ui_channel_cleans_up_stale_duplicate_records(
+    session: Session,
+    session_factory: sessionmaker[Session],
+) -> None:
+    guild = FakeGuild(id=2_102_7_2)
+    primary_channel = FakeTextChannel(id=60_033, name="レート戦情報", guild=guild)
+    duplicate_channel = FakeTextChannel(id=60_034, name="レート戦情報-duplicate", guild=guild)
+    guild.channels.extend([primary_channel, duplicate_channel])
+    handlers = create_handlers(
+        session_factory,
+        super_admin_user_ids=frozenset({10}),
+    )
+    handlers.managed_ui_service.create_managed_ui_channel(
+        ui_type=ManagedUiType.INFO_CHANNEL,
+        channel_id=60_099,
+        message_id=70_099,
+        created_by_discord_user_id=10,
+    )
+    handlers.managed_ui_service.create_managed_ui_channel(
+        ui_type=ManagedUiType.INFO_CHANNEL,
+        channel_id=primary_channel.id,
+        message_id=70_033,
+        created_by_discord_user_id=10,
+    )
+    handlers.managed_ui_service.create_managed_ui_channel(
+        ui_type=ManagedUiType.INFO_CHANNEL,
+        channel_id=duplicate_channel.id,
+        message_id=70_034,
+        created_by_discord_user_id=10,
+    )
+    interaction = FakeInteraction(user=FakeUser(id=10), guild_id=guild.id, guild=guild)
+
+    asyncio.run(
+        handlers.admin_resetup_ui_channel(
+            as_interaction(interaction),
+            ManagedUiType.INFO_CHANNEL.value,
+            "resetup",
+        )
+    )
+
+    session.expire_all()
+    managed_ui_channels = session.scalars(
+        select(ManagedUiChannel).where(ManagedUiChannel.ui_type == ManagedUiType.INFO_CHANNEL)
+    ).all()
+    persisted_channel = find_channel_by_name(guild, "レート戦情報")
+
+    assert_response(
+        interaction,
+        ["指定した UI チャンネルを再セットアップしました。"],
+        ephemeral=True,
+    )
+    assert len(managed_ui_channels) == 1
+    assert primary_channel.deleted is True
+    assert duplicate_channel.deleted is True
+    assert managed_ui_channels[0].channel_id == persisted_channel.id
+    assert persisted_channel.id not in {primary_channel.id, duplicate_channel.id}
+
+
 def test_admin_cleanup_ui_channels_deletes_only_setup_blocking_unmanaged_channels(
     session: Session,
     session_factory: sessionmaker[Session],
@@ -9869,6 +10408,7 @@ def test_production_registers_only_admin_commands() -> None:
     admin_command_names = [
         "admin_match_result",
         "admin_setup_ui_channels",
+        "admin_resetup_ui_channel",
         "admin_add_late",
         "admin_sub_late",
         "admin_restrict_user",
@@ -9980,11 +10520,13 @@ def test_admin_managed_ui_commands_are_registered_with_expected_parameters() -> 
 
     setup_custom_command = tree.get_command("admin_setup_custom_ui_channel")
     setup_all_command = tree.get_command("admin_setup_ui_channels")
+    resetup_command = tree.get_command("admin_resetup_ui_channel")
     cleanup_command = tree.get_command("admin_cleanup_ui_channels")
     teardown_command = tree.get_command("admin_teardown_ui_channels")
 
     assert setup_custom_command is not None
     assert setup_all_command is not None
+    assert resetup_command is not None
     assert cleanup_command is not None
     assert teardown_command is not None
     assert [parameter.name for parameter in setup_custom_command.parameters] == [
@@ -9995,6 +10537,13 @@ def test_admin_managed_ui_commands_are_registered_with_expected_parameters() -> 
         definition.ui_type.value for definition in get_required_managed_ui_definitions()
     ]
     assert [parameter.name for parameter in setup_all_command.parameters] == []
+    assert [parameter.name for parameter in resetup_command.parameters] == [
+        "ui_type",
+        "confirm",
+    ]
+    assert [choice.value for choice in resetup_command.parameters[0].choices] == [
+        definition.ui_type.value for definition in get_required_managed_ui_definitions()
+    ]
     assert [parameter.name for parameter in cleanup_command.parameters] == ["confirm"]
     assert [parameter.name for parameter in teardown_command.parameters] == ["confirm"]
 

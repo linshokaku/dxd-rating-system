@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -308,6 +308,10 @@ class ManagedUiService:
         with session_scope(self.session_factory) as session:
             return _get_managed_ui_channel_by_type(session, ui_type=ui_type)
 
+    def list_managed_ui_channels_by_type(self, ui_type: ManagedUiType) -> list[ManagedUiChannel]:
+        with session_scope(self.session_factory) as session:
+            return _list_managed_ui_channels_by_type(session, ui_type=ui_type)
+
     def create_managed_ui_channel(
         self,
         *,
@@ -324,6 +328,31 @@ class ManagedUiService:
             return _create_managed_ui_channel(
                 session,
                 ui_type=ui_type,
+                channel_id=channel_id,
+                message_id=message_id,
+                status_message_id=status_message_id,
+                matchmaking_one_v_one_message_id=matchmaking_one_v_one_message_id,
+                matchmaking_two_v_two_message_id=matchmaking_two_v_two_message_id,
+                matchmaking_three_v_three_message_id=matchmaking_three_v_three_message_id,
+                created_by_discord_user_id=created_by_discord_user_id,
+            )
+
+    def update_managed_ui_channel(
+        self,
+        managed_ui_channel_id: int,
+        *,
+        channel_id: int,
+        message_id: int | None = None,
+        status_message_id: int | None = None,
+        matchmaking_one_v_one_message_id: int | None = None,
+        matchmaking_two_v_two_message_id: int | None = None,
+        matchmaking_three_v_three_message_id: int | None = None,
+        created_by_discord_user_id: int,
+    ) -> ManagedUiChannel:
+        with session_scope(self.session_factory) as session:
+            return _update_managed_ui_channel(
+                session,
+                managed_ui_channel_id=managed_ui_channel_id,
                 channel_id=channel_id,
                 message_id=message_id,
                 status_message_id=status_message_id,
@@ -363,6 +392,20 @@ def _get_managed_ui_channel_by_type(
     )
 
 
+def _list_managed_ui_channels_by_type(
+    session: Session,
+    *,
+    ui_type: ManagedUiType,
+) -> list[ManagedUiChannel]:
+    return list(
+        session.scalars(
+            select(ManagedUiChannel)
+            .where(ManagedUiChannel.ui_type == ui_type)
+            .order_by(ManagedUiChannel.id.asc())
+        ).all()
+    )
+
+
 def _create_managed_ui_channel(
     session: Session,
     *,
@@ -387,6 +430,42 @@ def _create_managed_ui_channel(
     )
     session.add(managed_ui_channel)
     session.flush()
+    return managed_ui_channel
+
+
+def _update_managed_ui_channel(
+    session: Session,
+    *,
+    managed_ui_channel_id: int,
+    channel_id: int,
+    message_id: int | None,
+    status_message_id: int | None,
+    matchmaking_one_v_one_message_id: int | None,
+    matchmaking_two_v_two_message_id: int | None,
+    matchmaking_three_v_three_message_id: int | None,
+    created_by_discord_user_id: int,
+) -> ManagedUiChannel:
+    managed_ui_channel = session.scalar(
+        select(ManagedUiChannel).where(ManagedUiChannel.id == managed_ui_channel_id)
+    )
+    if managed_ui_channel is None:
+        raise ValueError(f"ManagedUiChannel not found: {managed_ui_channel_id}")
+
+    session.execute(
+        update(ManagedUiChannel)
+        .where(ManagedUiChannel.id == managed_ui_channel_id)
+        .values(
+            channel_id=channel_id,
+            message_id=message_id,
+            status_message_id=status_message_id,
+            matchmaking_one_v_one_message_id=matchmaking_one_v_one_message_id,
+            matchmaking_two_v_two_message_id=matchmaking_two_v_two_message_id,
+            matchmaking_three_v_three_message_id=matchmaking_three_v_three_message_id,
+            created_by_discord_user_id=created_by_discord_user_id,
+        )
+    )
+    session.flush()
+    session.refresh(managed_ui_channel)
     return managed_ui_channel
 
 
